@@ -48,6 +48,9 @@ pub struct Window {
     plugins: RefCell<Vec<Plugin>>,
     /// Where Stereo Tool stands, so a window knows whether to offer it.
     stereotool: RefCell<Status>,
+    /// The settings window while it is up: what it says about plug-ins is
+    /// answered by the engine after the window was drawn.
+    preferences: RefCell<Option<Rc<preferences::Preferences>>>,
     /// Last peak of every channel, so a cell can draw what it passes on.
     channel_levels: RefCell<HashMap<SourceId, f32>>,
     cells: RefCell<HashMap<(SourceId, MixId), Cell>>,
@@ -122,6 +125,7 @@ impl Window {
             apps: RefCell::new(Vec::new()),
             plugins: RefCell::new(Vec::new()),
             stereotool: RefCell::new(Status::Absent),
+            preferences: RefCell::new(None),
             channel_levels: RefCell::new(HashMap::new()),
             cells: RefCell::new(HashMap::new()),
             mix_dialog: RefCell::new(None),
@@ -140,7 +144,8 @@ impl Window {
                     stereotool: &this.stereotool.borrow(),
                     license: license.as_deref(),
                 };
-                preferences::present(&this.window, &this.engine, &latency, &plugins)
+                let open = preferences::present(&this.window, &this.engine, &latency, &plugins);
+                *this.preferences.borrow_mut() = Some(open);
             }
         });
 
@@ -157,14 +162,17 @@ impl Window {
             Event::State(state) => {
                 *self.state.borrow_mut() = state;
                 self.rebuild();
+                self.refresh_settings();
                 self.refresh_dialogs();
             }
             Event::Plugins { available } => {
                 *self.plugins.borrow_mut() = available;
+                self.refresh_settings();
                 self.refresh_dialogs();
             }
             Event::StereoTool(status) => {
                 *self.stereotool.borrow_mut() = status;
+                self.refresh_settings();
                 self.refresh_dialogs();
             }
             Event::Apps { running } => {
@@ -376,6 +384,20 @@ impl Window {
         );
         drop(state);
         *self.channel_dialog.borrow_mut() = Some(dialog);
+    }
+
+    /// Keep the settings window in step with the engine, if it is up.
+    fn refresh_settings(self: &Rc<Self>) {
+        self.preferences
+            .borrow_mut()
+            .take_if(|open| !open.is_open());
+        let open = self.preferences.borrow().clone();
+        let Some(open) = open else {
+            return;
+        };
+        open.set_plugins(self.plugins.borrow().len());
+        let license = self.state.borrow().stereotool_license.clone();
+        open.set_stereotool(&self.stereotool.borrow(), license.as_deref());
     }
 
     /// Keep the open windows in step with the engine, and close one whose

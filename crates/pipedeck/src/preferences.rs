@@ -57,21 +57,79 @@ struct Latency {
     detail: &'static str,
 }
 
+/// The settings window, once it is up.
+///
+/// What it says about plug-ins changes under it: importing one is the whole
+/// point of the page, and the engine answers a moment later, so the rows it
+/// fills are kept to be written again rather than read once.
+pub struct Preferences {
+    count: adw::ActionRow,
+    found: adw::ActionRow,
+    key: adw::EntryRow,
+    /// Set once the window is gone, so nothing is written into it after.
+    closed: Rc<std::cell::Cell<bool>>,
+}
+
+impl Preferences {
+    pub fn is_open(&self) -> bool {
+        !self.closed.get()
+    }
+
+    /// How many VST3 effects the engine now knows.
+    pub fn set_plugins(&self, installed: usize) {
+        if self.is_open() {
+            self.count.set_title(&plugin_count(installed));
+        }
+    }
+
+    /// Where Stereo Tool now stands, and the key it was given.
+    pub fn set_stereotool(&self, status: &Status, license: Option<&str>) {
+        if !self.is_open() {
+            return;
+        }
+        let (title, subtitle) = stereotool_state(status);
+        self.found.set_title(&title);
+        self.found.set_subtitle(&subtitle);
+        // Not while it is being typed into: the engine echoes back what it
+        // was given, and that must not move the cursor under the user.
+        let known = license.unwrap_or_default();
+        if !self.key.has_focus() && self.key.text() != known {
+            self.key.set_text(known);
+        }
+    }
+}
+
 /// Show the settings window.
 pub fn present(
     parent: &impl IsA<gtk::Widget>,
     engine: &EngineLink,
     latency: &str,
     plugins: &PluginState<'_>,
-) {
+) -> Rc<Preferences> {
     let dialog = adw::PreferencesDialog::new();
     dialog.set_title("Settings");
     dialog.add(&general_page());
     dialog.add(&audio_page(engine, latency));
-    dialog.add(&plugins_page(parent, engine, plugins));
+
+    let count = adw::ActionRow::new();
+    let found = adw::ActionRow::new();
+    let key = adw::EntryRow::new();
+    dialog.add(&plugins_page(parent, engine, plugins, &count, &found, &key));
 
     dialog.add(&about_page());
+
+    let closed = Rc::new(std::cell::Cell::new(false));
+    dialog.connect_closed({
+        let closed = closed.clone();
+        move |_| closed.set(true)
+    });
     dialog.present(Some(parent));
+    Rc::new(Preferences {
+        count,
+        found,
+        key,
+        closed,
+    })
 }
 
 /// Where plug-ins come from, and how to add one.
@@ -79,6 +137,9 @@ fn plugins_page(
     parent: &impl IsA<gtk::Widget>,
     engine: &EngineLink,
     state: &PluginState<'_>,
+    count: &adw::ActionRow,
+    found: &adw::ActionRow,
+    key: &adw::EntryRow,
 ) -> adw::PreferencesPage {
     let installed = state.installed;
     let page = adw::PreferencesPage::new();
@@ -92,12 +153,7 @@ fn plugins_page(
          opening one runs its own code.",
     ));
 
-    let count = adw::ActionRow::new();
-    count.set_title(&match installed {
-        0 => "No VST3 effect found".to_owned(),
-        1 => "1 VST3 effect".to_owned(),
-        many => format!("{many} VST3 effects"),
-    });
+    count.set_title(&plugin_count(installed));
     count.set_subtitle(&settings::user_plugin_dir().map_or_else(
         || "and the system directories".to_owned(),
         |path| format!("{} and the system directories", path.display()),
@@ -109,7 +165,7 @@ fn plugins_page(
         move |_| engine.send(Command::RescanPlugins)
     });
     count.add_suffix(&rescan);
-    group.add(&count);
+    group.add(count);
     page.add(&group);
 
     let install = adw::PreferencesGroup::new();
@@ -157,8 +213,44 @@ fn plugins_page(
     install.add(&status);
     page.add(&install);
 
-    page.add(&stereotool_group(parent, engine, state));
+    page.add(&stereotool_group(parent, engine, state, found, key));
     page
+}
+
+/// What the count row says.
+fn plugin_count(installed: usize) -> String {
+    match installed {
+        0 => "No VST3 effect found".to_owned(),
+        1 => "1 VST3 effect".to_owned(),
+        many => format!("{many} VST3 effects"),
+    }
+}
+
+/// What the Stereo Tool row says: what was found, and what it is worth
+/// without a licence.
+fn stereotool_state(status: &Status) -> (String, String) {
+    match status {
+        Status::Absent => (
+            "Not installed".to_owned(),
+            pipedeck_engine::stereotool::library_dir().map_or_else(
+                || "Nowhere to install it: no home directory".to_owned(),
+                |path| format!("It goes in {}", path.display()),
+            ),
+        ),
+        Status::Broken(reason) => ("Installed, but it will not run".to_owned(), reason.clone()),
+        Status::Ready(info) => (
+            format!("Stereo Tool {}", info.version),
+            match (&info.licensed, &info.unlicensed) {
+                (true, _) => format!("Licensed. {}", info.path.display()),
+                (false, Some(features)) => {
+                    format!("No licence for: {features}. It adds speech and beeps to the audio.")
+                }
+                (false, None) => {
+                    "No licence key. It adds speech and beeps to the audio.".to_owned()
+                }
+            },
+        ),
+    }
 }
 
 /// Stereo Tool: what the mixer found, the licence key it passes on, and the
@@ -167,6 +259,8 @@ fn stereotool_group(
     parent: &impl IsA<gtk::Widget>,
     engine: &EngineLink,
     state: &PluginState<'_>,
+    found: &adw::ActionRow,
+    key: &adw::EntryRow,
 ) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Stereo Tool");
@@ -174,35 +268,11 @@ fn stereotool_group(
         "Thimeo's broadcast processor. It is not ours to ship, so download it          from thimeo.com and import the archive here; Pipedeck runs the          library it holds, on a preset you export from Stereo Tool itself.",
     ));
 
-    let found = adw::ActionRow::new();
-    match state.stereotool {
-        Status::Absent => {
-            found.set_title("Not installed");
-            found.set_subtitle(&pipedeck_engine::stereotool::library_dir().map_or_else(
-                || "Nowhere to install it: no home directory".to_owned(),
-                |path| format!("It goes in {}", path.display()),
-            ));
-        }
-        Status::Broken(reason) => {
-            found.set_title("Installed, but it will not run");
-            found.set_subtitle(reason);
-        }
-        Status::Ready(info) => {
-            found.set_title(&format!("Stereo Tool {}", info.version));
-            found.set_subtitle(&match (&info.licensed, &info.unlicensed) {
-                (true, _) => format!("Licensed. {}", info.path.display()),
-                (false, Some(features)) => {
-                    format!("No licence for: {features}. It adds speech and beeps to the audio.")
-                }
-                (false, None) => {
-                    "No licence key. It adds speech and beeps to the audio.".to_owned()
-                }
-            });
-        }
-    }
-    group.add(&found);
+    let (title, subtitle) = stereotool_state(state.stereotool);
+    found.set_title(&title);
+    found.set_subtitle(&subtitle);
+    group.add(found);
 
-    let key = adw::EntryRow::new();
     key.set_title("Licence key");
     key.set_show_apply_button(true);
     key.set_text(state.license.unwrap_or_default());
@@ -215,7 +285,7 @@ fn stereotool_group(
             });
         }
     });
-    group.add(&key);
+    group.add(key);
 
     let status = gtk::Label::new(None);
     status.add_css_class("caption");

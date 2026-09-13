@@ -221,8 +221,9 @@ pub fn import_plugin_into(source: &Path, directory: &Path) -> Result<PathBuf, St
 /// Thimeo ships it as an archive holding one shared library per machine, and
 /// nothing of it is redistributable, so the user downloads it and points at
 /// what they got: the `.zip` as it came, or a `libStereoTool*.so` taken out
-/// of it. Only the libraries are kept, under the names they came with, and
-/// the engine picks the one for this machine.
+/// of it. Only the builds for this machine are kept — half a gigabyte of
+/// other architectures is not worth copying — under the names they came
+/// with, flat, since that is where the engine looks.
 pub fn import_stereotool(source: &Path) -> Result<Vec<PathBuf>, String> {
     let directory = stereotool::library_dir().ok_or("no home directory to install into")?;
     import_stereotool_into(source, &directory)
@@ -261,28 +262,47 @@ pub fn import_stereotool_into(source: &Path, directory: &Path) -> Result<Vec<Pat
         if !entry.is_file() {
             continue;
         }
+        let inside = entry.name().to_owned();
         // Only the base name is used, so nothing in the archive can name a
-        // path of its own choosing.
-        let Some(name) = entry.enclosed_name().and_then(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        }) else {
+        // path of its own choosing. This archive is built on Windows and
+        // separates with backslashes, which no Unix path parser cuts on, so
+        // both separators are cut here.
+        let name = basename(&inside);
+        if !stereotool::is_library(name) || !stereotool::is_for_this_machine(name) {
             continue;
-        };
-        if !stereotool::is_library(&name) {
+        }
+        // The download carries the Kantar build of the same name beside the
+        // plain one. It is a different product, with a licence of its own,
+        // and taking it would silently shadow the one that was asked for.
+        if inside
+            .split(['/', '\\'])
+            .any(|part| part.eq_ignore_ascii_case("kantar"))
+        {
+            continue;
+        }
+        let target = directory.join(name);
+        if installed.contains(&target) {
             continue;
         }
         let mut bytes = Vec::with_capacity(entry.size() as usize);
         std::io::copy(&mut entry, &mut bytes).map_err(|e| format!("cannot unpack {name}: {e}"))?;
-        let target = directory.join(&name);
         replace(&target, &bytes)?;
         installed.push(target);
     }
     if installed.is_empty() {
-        return Err("that archive holds no libStereoTool library".into());
+        return Err(format!(
+            "that archive holds no libStereoTool library for {}",
+            std::env::consts::ARCH
+        ));
     }
     installed.sort();
     Ok(installed)
+}
+
+/// The file name of an archive entry, whichever separator it was written
+/// with. A zip made on Windows carries backslashes.
+fn basename(entry: &str) -> &str {
+    entry.rsplit(['/', '\\']).next().unwrap_or(entry)
 }
 
 /// Write a library, taking the old one out of the way first.
@@ -381,35 +401,90 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The download as Thimeo builds it: made on Windows, so the entries are
+    /// separated with backslashes, every machine's build side by side, and
+    /// the Kantar edition under the same names in a directory of its own.
+    fn thimeo_archive(path: &Path, arch: &str) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        for entry in [
+            format!("libStereoTool_1105\\lib\\Linux\\A\\libStereoTool_{arch}.so"),
+            format!("libStereoTool_1105\\lib\\Linux\\A\\libStereoTool_noX11_{arch}.so"),
+            format!("libStereoTool_1105\\lib\\Linux\\A\\Kantar\\libStereoTool_{arch}.so"),
+            "libStereoTool_1105\\lib\\Linux\\A\\Kantar\\libKantarPlugin300.so".to_owned(),
+            "libStereoTool_1105\\lib\\Linux\\B\\libStereoTool_somewhereelse.so".to_owned(),
+            "libStereoTool_1105\\readme.txt".to_owned(),
+        ] {
+            zip.start_file(&entry, options).unwrap();
+            zip.write_all(entry.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    /// What this machine's build is called, or nothing to check on an
+    /// architecture Thimeo does not name.
+    fn this_machine() -> Option<&'static str> {
+        match std::env::consts::ARCH {
+            "x86_64" => Some("intel64"),
+            "x86" => Some("intel32"),
+            "aarch64" => Some("arm64"),
+            "arm" => Some("arm32"),
+            _ => None,
+        }
+    }
+
     #[test]
-    fn a_stereo_tool_archive_gives_up_its_libraries() {
+    fn a_stereo_tool_archive_gives_up_this_machine_s_libraries() {
+        let Some(arch) = this_machine() else {
+            return;
+        };
         let home = scratch("import-stereotool");
         let archive = home.join("stereo_tool.zip");
-        {
-            let file = std::fs::File::create(&archive).unwrap();
-            let mut zip = zip::ZipWriter::new(file);
-            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
-            zip.start_file("linux/libStereoTool_intel64.so", options)
-                .unwrap();
-            zip.write_all(b"not really a library").unwrap();
-            zip.start_file("linux/libStereoTool_arm64.so", options)
-                .unwrap();
-            zip.write_all(b"not really a library either").unwrap();
-            zip.start_file("readme.txt", options).unwrap();
-            zip.write_all(b"hello").unwrap();
-            zip.finish().unwrap();
-        }
+        thimeo_archive(&archive, arch);
         let into = home.join("stereotool");
 
         let installed = import_stereotool_into(&archive, &into).expect("it installs");
-        assert_eq!(installed.len(), 2, "the libraries and nothing else");
-        assert!(into.join("libStereoTool_intel64.so").exists());
+        assert_eq!(
+            installed,
+            vec![
+                into.join(format!("libStereoTool_{arch}.so")),
+                into.join(format!("libStereoTool_noX11_{arch}.so")),
+            ],
+            "this machine's builds, and not the Kantar edition of the same name"
+        );
+        // The entries are nested with backslashes, and they land flat under
+        // their own names rather than as one long one.
+        assert!(std::fs::read_dir(&into)
+            .unwrap()
+            .flatten()
+            .all(|entry| !entry.file_name().to_string_lossy().contains('\\')));
         assert!(!into.join("readme.txt").exists());
-        // The archive nests them, and they land flat.
-        assert!(!into.join("linux").exists());
+        assert!(!into.join("libKantarPlugin300.so").exists());
+
+        // The plain build is the one taken, not the Kantar file that shares
+        // its name.
+        let plain = std::fs::read_to_string(into.join(format!("libStereoTool_{arch}.so"))).unwrap();
+        assert!(!plain.contains("Kantar"));
 
         // Again is an upgrade, not a refusal.
         assert!(import_stereotool_into(&archive, &into).is_ok());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_archive_for_another_machine_leaves_nothing_behind() {
+        let Some(mine) = this_machine() else {
+            return;
+        };
+        let other = if mine == "arm64" { "intel64" } else { "arm64" };
+        let home = scratch("import-stereotool-foreign");
+        let archive = home.join("stereo_tool.zip");
+        thimeo_archive(&archive, other);
+        let into = home.join("stereotool");
+
+        assert!(import_stereotool_into(&archive, &into).is_err());
+        assert!(std::fs::read_dir(&into).unwrap().next().is_none());
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -42,12 +42,33 @@ pub fn library_dir() -> Option<PathBuf> {
 }
 
 /// The names Thimeo gives the library for this machine, best first.
+///
+/// The download holds one build per machine and, for each, a plain one and
+/// two saying what they do about X11. The plain one is what the vendor
+/// documents; the others are there because a machine without X11 libraries
+/// cannot load a build that wants them, and then the next one down works.
 fn preferred_names() -> &'static [&'static str] {
     match std::env::consts::ARCH {
-        "x86_64" => &["libStereoTool_intel64.so"],
-        "x86" => &["libStereoTool_intel32.so"],
-        "aarch64" => &["libStereoTool_arm64.so", "libStereoTool_pi4_64.so"],
-        "arm" => &["libStereoTool_pi2.so", "libStereoTool_arm32.so"],
+        "x86_64" => &[
+            "libStereoTool_intel64.so",
+            "libStereoTool_noX11_intel64.so",
+            "libStereoToolX11_intel64.so",
+        ],
+        "x86" => &[
+            "libStereoTool_intel32.so",
+            "libStereoTool_noX11_intel32.so",
+            "libStereoToolX11_intel32.so",
+        ],
+        "aarch64" => &[
+            "libStereoTool_arm64.so",
+            "libStereoTool_noX11_arm64.so",
+            "libStereoTool_pi4_64.so",
+        ],
+        "arm" => &[
+            "libStereoTool_arm32.so",
+            "libStereoTool_noX11_arm32.so",
+            "libStereoTool_pi2.so",
+        ],
         _ => &[],
     }
 }
@@ -57,40 +78,70 @@ pub fn is_library(name: &str) -> bool {
     name.starts_with("libStereoTool") && name.ends_with(".so")
 }
 
+/// Is this build the one for this machine?
+///
+/// The archive carries every machine's build side by side, and their names
+/// are all that tells them apart. A build for another architecture is no use
+/// here and would only be tried and refused.
+pub fn is_for_this_machine(name: &str) -> bool {
+    let token = match std::env::consts::ARCH {
+        "x86_64" => "intel64",
+        "x86" => "intel32",
+        "aarch64" => "arm64",
+        "arm" => "arm32",
+        // An architecture Thimeo does not name: take what there is and let
+        // the loader say whether it runs.
+        _ => return true,
+    };
+    name.contains(token)
+}
+
 /// The library to load, if one is installed.
 ///
 /// `PIPEDECK_STEREOTOOL` names a file outright, which is how a user points at
-/// a copy kept elsewhere. Otherwise the mixer's own directory is read: the
-/// build for this machine if it is there, and failing that the only one
-/// present, since a user who put a single file there meant that one.
+/// a copy kept elsewhere.
 pub fn library_path() -> Option<PathBuf> {
-    if let Some(named) = std::env::var_os("PIPEDECK_STEREOTOOL") {
-        let path = PathBuf::from(named);
-        return path.is_file().then_some(path);
-    }
-    choose(&library_dir()?)
+    candidates().into_iter().next()
 }
 
-/// The library to load out of one directory.
-fn choose(directory: &Path) -> Option<PathBuf> {
-    for name in preferred_names() {
-        let candidate = directory.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
+/// Every library worth trying, best first.
+fn candidates() -> Vec<PathBuf> {
+    if let Some(named) = std::env::var_os("PIPEDECK_STEREOTOOL") {
+        let path = PathBuf::from(named);
+        return if path.is_file() {
+            vec![path]
+        } else {
+            Vec::new()
+        };
     }
+    library_dir().map(|dir| choose(&dir)).unwrap_or_default()
+}
+
+/// The libraries in one directory, the build for this machine first.
+fn choose(directory: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = preferred_names()
+        .iter()
+        .map(|name| directory.join(name))
+        .filter(|path| path.is_file())
+        .collect();
+
+    // A name the vendor has not used before, or a single file a user put
+    // there by hand: worth trying once the known ones are exhausted.
     let mut others: Vec<PathBuf> = std::fs::read_dir(directory)
-        .ok()?
+        .into_iter()
+        .flatten()
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(is_library)
+                .is_some_and(|name| is_library(name) && is_for_this_machine(name))
         })
+        .filter(|path| !found.contains(path))
         .collect();
     others.sort();
-    (others.len() == 1).then(|| others.remove(0))
+    found.append(&mut others);
+    found
 }
 
 /// What the settings window says about the installed copy.
@@ -141,12 +192,23 @@ fn api() -> Result<&'static Api, String> {
     if let Some(api) = API.get() {
         return Ok(api);
     }
-    let path = library_path().ok_or("Stereo Tool is not installed")?;
-    // SAFETY: loading is the library's own code, which is the only way to
-    // host it; the symbols are read straight after and none is called yet.
-    let loaded = unsafe { load(&path) }?;
-    let leaked: &'static Api = Box::leak(Box::new(loaded));
-    Ok(API.get_or_init(|| leaked))
+    let mut refused = None;
+    for path in candidates() {
+        // SAFETY: loading is the library's own code, which is the only way
+        // to host it; the symbols are read straight after and none is
+        // called yet.
+        match unsafe { load(&path) } {
+            Ok(loaded) => {
+                let leaked: &'static Api = Box::leak(Box::new(loaded));
+                return Ok(API.get_or_init(|| leaked));
+            }
+            Err(e) => {
+                log::warn!("{}: {e}", path.display());
+                refused = Some(e);
+            }
+        }
+    }
+    Err(refused.unwrap_or_else(|| "Stereo Tool is not installed".to_owned()))
 }
 
 /// Load the library and take its entry points.
@@ -209,7 +271,7 @@ unsafe fn load(path: &Path) -> Result<Api, String> {
 
 /// Is a copy installed at all? Answers without loading anything.
 pub fn installed() -> bool {
-    library_path().is_some()
+    !candidates().is_empty()
 }
 
 /// What to tell the user about the installed copy, asking the library
@@ -413,6 +475,33 @@ mod tests {
         assert!(!is_library("libStereoTool_intel64.so.bak"));
         assert!(!is_library("StereoTool.vst3"));
         assert!(!is_library("libsomethingelse.so"));
+        // The download carries the Kantar build alongside, under the same
+        // name in a directory of its own.
+        assert!(!is_library("libKantarPlugin300.so"));
+    }
+
+    #[test]
+    fn a_build_for_another_machine_is_not_offered() {
+        let mine = match std::env::consts::ARCH {
+            "x86_64" => "libStereoTool_intel64.so",
+            "x86" => "libStereoTool_intel32.so",
+            "aarch64" => "libStereoTool_arm64.so",
+            "arm" => "libStereoTool_arm32.so",
+            // Nothing is ruled out on an architecture the vendor does not
+            // name, so there is nothing to check.
+            _ => return,
+        };
+        assert!(is_for_this_machine(mine));
+        for other in [
+            "libStereoTool_intel64.so",
+            "libStereoTool_intel32.so",
+            "libStereoTool_arm64.so",
+            "libStereoTool_arm32.so",
+        ] {
+            if other != mine {
+                assert!(!is_for_this_machine(other), "{other} is not for us");
+            }
+        }
     }
 
     #[test]
@@ -420,22 +509,27 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("pipedeck-st-{}", std::process::id()));
         std::fs::remove_dir_all(&directory).ok();
         std::fs::create_dir_all(&directory).expect("a temp directory");
-        assert_eq!(choose(&directory), None);
+        assert!(choose(&directory).is_empty());
 
-        // A single file is taken whatever it is called, because a user who
-        // put one there meant that one.
-        let odd = directory.join("libStereoTool_whatever.so");
-        std::fs::write(&odd, b"not really a library").expect("a file");
-        assert_eq!(choose(&directory), Some(odd));
-
-        // With several, the one built for this machine wins.
         let Some(preferred) = preferred_names().first() else {
             std::fs::remove_dir_all(&directory).ok();
             return;
         };
+        // A name the vendor has not used, but for this machine, is still
+        // worth trying.
+        let odd = directory.join(format!(
+            "libStereoTool_whatever_{}.so",
+            preferred
+                .trim_start_matches("libStereoTool_")
+                .replace(".so", "")
+        ));
+        std::fs::write(&odd, b"not really a library").expect("a file");
+        assert_eq!(choose(&directory), vec![odd.clone()]);
+
+        // With both, the one the vendor documents comes first.
         let mine = directory.join(preferred);
         std::fs::write(&mine, b"not really a library either").expect("a file");
-        assert_eq!(choose(&directory), Some(mine));
+        assert_eq!(choose(&directory), vec![mine, odd]);
 
         std::fs::remove_dir_all(&directory).ok();
     }

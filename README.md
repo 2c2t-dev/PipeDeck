@@ -104,9 +104,17 @@ where the plug-in would need an editor window Pipedeck has no way to embed.
 
 It is proprietary and nothing of it is bundled. Download it from
 [thimeo.com](https://www.thimeo.com/stereo-tool/download/) and import the
-archive from the **Plug-ins** page: the `libStereoTool_*.so` it holds land in
-`~/.local/share/pipedeck/stereotool/` and the build for this machine is the
-one loaded. `PIPEDECK_STEREOTOOL` points at a copy kept elsewhere.
+archive from the **Plug-ins** page. The archive is built on Windows and holds
+every machine's build — half a gigabyte of them, the Kantar edition under the
+same names in a directory of its own — so only the builds for this machine are
+kept, flat, in `~/.local/share/pipedeck/stereotool/`. The one the vendor
+documents is loaded first, and the `noX11` build after it, for a machine whose
+X11 libraries a normal build would ask for and not find.
+`PIPEDECK_STEREOTOOL` points at a copy kept elsewhere.
+
+The library talks to stderr on its own account — it looks for a JACK server at
+load and says so, and it keeps its state in `~/.libStereoTool_*.so.rc`. That is
+the library, not the mixer.
 
 The licence key is a field on the same page, passed to the library and to
 nothing else. Without one Stereo Tool still runs and puts speech and beeps in
