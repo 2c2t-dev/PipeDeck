@@ -605,6 +605,10 @@ impl Graph {
             let app = App {
                 key,
                 name: app_name(props),
+                icon: props
+                    .get("application.icon-name")
+                    .or_else(|| props.get("application.id"))
+                    .map(str::to_owned),
             };
             // An application the user has assigned lands on its row's sink as
             // soon as it starts playing.

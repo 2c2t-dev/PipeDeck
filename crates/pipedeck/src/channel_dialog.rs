@@ -10,6 +10,7 @@ use libadwaita as adw;
 
 use pipedeck_engine::{App, Command, Device, SourceConfig, SourceId};
 
+use crate::desktop::{self, DesktopApp};
 use crate::engine_link::EngineLink;
 use crate::widgets;
 
@@ -28,6 +29,8 @@ pub struct ChannelDialog {
     device: gtk::Label,
     apps: gtk::Box,
     add_app: gtk::MenuButton,
+    /// Installed applications, read once when the window opens.
+    installed: Vec<DesktopApp>,
     /// Set while engine state is pushed into the widgets.
     syncing: Rc<StdCell<bool>>,
 }
@@ -74,6 +77,11 @@ impl ChannelDialog {
             mute,
             apps: gtk::Box::new(gtk::Orientation::Vertical, 8),
             add_app,
+            installed: if source.is_input() {
+                Vec::new()
+            } else {
+                desktop::installed()
+            },
             syncing: Rc::new(StdCell::new(false)),
         });
 
@@ -275,11 +283,7 @@ impl ChannelDialog {
         for key in &source.apps {
             // An assigned application that is not playing right now is still
             // listed, since the assignment is what outlives the stream.
-            let name = running
-                .iter()
-                .find(|app| &app.key == key)
-                .map(|app| app.name.clone());
-            let row = self.app_row(key, name);
+            let row = self.app_row(key, running.iter().find(|app| &app.key == key));
             self.apps.append(&row);
         }
 
@@ -288,12 +292,25 @@ impl ChannelDialog {
         self.syncing.set(false);
     }
 
-    fn app_row(self: &Rc<Self>, key: &str, running_as: Option<String>) -> gtk::Widget {
-        let (card, inner) = widgets::list_card();
-        let (top, title) = widgets::card_title(running_as.as_deref().unwrap_or(key));
-        title.set_tooltip_text(Some(key));
+    fn app_row(self: &Rc<Self>, key: &str, running: Option<&App>) -> gtk::Widget {
+        let installed = self.installed.iter().find(|app| app.key == key);
+        let label = running
+            .map(|app| app.name.clone())
+            .or_else(|| installed.map(|app| app.name.clone()))
+            .unwrap_or_else(|| key.to_owned());
+        let icon = running
+            .and_then(|app| app.icon.clone())
+            .or_else(|| installed.and_then(|app| app.icon.clone()));
 
-        let state = gtk::Label::new(Some(if running_as.is_some() {
+        let (card, inner) = widgets::list_card();
+        let (top, title) = widgets::card_title(&label);
+        title.set_tooltip_text(Some(key));
+        top.insert_child_after(
+            &widgets::app_icon(icon.as_deref(), 24),
+            None::<&gtk::Widget>,
+        );
+
+        let state = gtk::Label::new(Some(if running.is_some() {
             "Playing"
         } else {
             "Not running"
@@ -321,51 +338,135 @@ impl ChannelDialog {
         card.upcast()
     }
 
-    /// The applications playing right now that this channel does not hold.
+    /// What the picker offers: the applications playing right now, then the
+    /// ones the system knows how to launch.
+    ///
+    /// An application that is not playing cannot be matched against the
+    /// graph, so its key comes from its desktop entry and only proves itself
+    /// the first time it opens a stream.
     fn app_popover(self: &Rc<Self>, source: &SourceConfig, running: &[App]) -> gtk::Popover {
-        let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let popover = gtk::Popover::new();
-        popover.set_child(Some(&list));
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        content.set_width_request(280);
 
-        let mut offered = 0;
-        for app in running {
-            if source.apps.contains(&app.key) {
-                continue;
+        let search = gtk::SearchEntry::new();
+        search.set_placeholder_text(Some("Search"));
+        content.append(&search);
+
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let scroller = gtk::ScrolledWindow::new();
+        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroller.set_max_content_height(320);
+        scroller.set_propagate_natural_height(true);
+        scroller.set_child(Some(&list));
+        content.append(&scroller);
+        popover.set_child(Some(&content));
+
+        // Rows are built once and filtered on search, so typing never
+        // rebuilds the list.
+        let mut rows: Vec<(String, gtk::Widget)> = Vec::new();
+
+        let held = |key: &str| source.apps.iter().any(|app| app == key);
+        let playing: Vec<&App> = running.iter().filter(|app| !held(&app.key)).collect();
+        if !playing.is_empty() {
+            rows.push((String::new(), section("Playing now")));
+            for app in playing {
+                rows.push((
+                    app.name.to_lowercase(),
+                    self.app_choice(&popover, &app.key, &app.name, app.icon.as_deref()),
+                ));
             }
-            offered += 1;
-            let button = gtk::Button::new();
-            button.add_css_class("flat");
-            button.set_child(Some(
-                &gtk::Label::builder()
-                    .label(&app.name)
-                    .xalign(0.0)
-                    .ellipsize(gtk::pango::EllipsizeMode::End)
-                    .max_width_chars(32)
-                    .build(),
-            ));
-            button.connect_clicked({
-                let this = self.clone();
-                let popover = popover.clone();
-                let key = app.key.clone();
-                move |_| {
-                    this.engine.send(Command::AssignApp {
-                        id: this.id,
-                        app: key.clone(),
-                    });
-                    popover.popdown();
-                }
-            });
-            list.append(&button);
         }
-        if offered == 0 {
-            let empty = gtk::Label::new(Some("No other application is playing."));
+
+        let installed: Vec<&DesktopApp> = self
+            .installed
+            .iter()
+            .filter(|app| !held(&app.key) && !running.iter().any(|r| r.key == app.key))
+            .collect();
+        if !installed.is_empty() {
+            rows.push((String::new(), section("Installed")));
+            for app in installed {
+                rows.push((
+                    app.name.to_lowercase(),
+                    self.app_choice(&popover, &app.key, &app.name, app.icon.as_deref()),
+                ));
+            }
+        }
+
+        if rows.is_empty() {
+            let empty = gtk::Label::new(Some("Nothing left to add."));
             empty.add_css_class("dim-label");
-            empty.set_margin_top(6);
-            empty.set_margin_bottom(6);
-            empty.set_margin_start(6);
-            empty.set_margin_end(6);
+            empty.set_margin_top(12);
+            empty.set_margin_bottom(12);
             list.append(&empty);
         }
+        for (_, row) in &rows {
+            list.append(row);
+        }
+
+        search.connect_search_changed(move |entry| {
+            let needle = entry.text().to_lowercase();
+            for (haystack, row) in &rows {
+                // A section heading has no name of its own; it follows the
+                // rows under it, so it hides as soon as a search starts.
+                row.set_visible(if haystack.is_empty() {
+                    needle.is_empty()
+                } else {
+                    haystack.contains(&needle)
+                });
+            }
+        });
+
         popover
     }
+
+    /// One line of the picker.
+    fn app_choice(
+        self: &Rc<Self>,
+        popover: &gtk::Popover,
+        key: &str,
+        name: &str,
+        icon: Option<&str>,
+    ) -> gtk::Widget {
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        content.append(&widgets::app_icon(icon, 20));
+        content.append(
+            &gtk::Label::builder()
+                .label(name)
+                .xalign(0.0)
+                .hexpand(true)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .max_width_chars(28)
+                .build(),
+        );
+
+        let button = gtk::Button::new();
+        button.add_css_class("flat");
+        button.set_child(Some(&content));
+        button.set_tooltip_text(Some(key));
+        button.connect_clicked({
+            let this = self.clone();
+            let popover = popover.clone();
+            let key = key.to_owned();
+            move |_| {
+                this.engine.send(Command::AssignApp {
+                    id: this.id,
+                    app: key.clone(),
+                });
+                popover.popdown();
+            }
+        });
+        button.upcast()
+    }
+}
+
+/// A heading between two groups of the picker.
+fn section(label: &str) -> gtk::Widget {
+    let heading = gtk::Label::new(Some(label));
+    heading.add_css_class("caption-heading");
+    heading.add_css_class("dim-label");
+    heading.set_xalign(0.0);
+    heading.set_margin_top(6);
+    heading.set_margin_start(6);
+    heading.upcast()
 }

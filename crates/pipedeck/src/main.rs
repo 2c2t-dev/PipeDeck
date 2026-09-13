@@ -2,6 +2,7 @@
 
 mod cell;
 mod channel_dialog;
+mod desktop;
 mod dialogs;
 mod engine_link;
 mod mix_dialog;
@@ -36,9 +37,6 @@ fn main() -> glib::ExitCode {
 
     ignore_prefer_dark_theme();
 
-    // A second instance normally hands over to the first one. Overriding the
-    // id starts a separate application, which is how you run a development
-    // build next to an installed one.
     let app_id = std::env::var("PIPEDECK_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
     let app = adw::Application::builder().application_id(app_id).build();
     app.connect_activate(activate);

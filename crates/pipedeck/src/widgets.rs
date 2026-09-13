@@ -35,6 +35,20 @@ pub fn level_row(mute: &gtk::ToggleButton, fader: &gtk::Scale) -> gtk::Box {
     row
 }
 
+/// An application icon, from the icon theme or from a path when a desktop
+/// entry gives one. Falls back to a neutral glyph.
+pub fn app_icon(icon: Option<&str>, size: i32) -> gtk::Image {
+    let image = match icon {
+        Some(icon) if icon.starts_with('/') && std::path::Path::new(icon).exists() => {
+            gtk::Image::from_file(icon)
+        }
+        Some(icon) if !icon.is_empty() => gtk::Image::from_icon_name(icon),
+        _ => gtk::Image::from_icon_name("application-x-executable-symbolic"),
+    };
+    image.set_pixel_size(size);
+    image
+}
+
 /// The large icon that stands for the object a window is about.
 pub fn big_badge(icon_name: &str) -> gtk::Image {
     let icon = gtk::Image::from_icon_name(icon_name);

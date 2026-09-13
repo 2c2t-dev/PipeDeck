@@ -10,6 +10,8 @@ stream, because they are different columns.
   any application can select in its audio settings, or a capture device such
   as a microphone. A channel can also hold applications: their audio is moved
   onto it as they start playing, so you pick them once instead of every time.
+  The picker offers what is playing right now and what the system knows how
+  to launch, read from the desktop entries.
 - A **mix** collects the sources you send to it into a sink a capture client
   such as OBS can read, and plays to any number of output devices you attach
   to it, each with its own level. It has a master level of its own. Up to

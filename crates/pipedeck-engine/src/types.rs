@@ -292,6 +292,9 @@ pub struct App {
     pub key: String,
     /// What to show.
     pub name: String,
+    /// Icon name the application advertises, if it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// An audio device the user can attach to a mix or turn into a source.
