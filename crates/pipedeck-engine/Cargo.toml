@@ -1,0 +1,19 @@
+[package]
+name = "pipedeck-engine"
+description = "PipeWire graph management for Pipedeck (no UI dependencies)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pipewire = { version = "0.10.1", features = ["v1_2_0"] }
+libspa = "0.10.1"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+log.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+env_logger = "0.11"
