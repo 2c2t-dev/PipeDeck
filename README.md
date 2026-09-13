@@ -10,7 +10,8 @@ stream, because they are different columns.
   audio settings, or a capture device such as a microphone.
 - A **mix** collects the sources you send to it into a sink a capture client
   such as OBS can read, and plays to any number of output devices you attach
-  to it. Up to five mixes.
+  to it, each with its own level. It has a master level of its own. Up to
+  five mixes.
 - A **cell** exists only when you press `+` on it. It is what links a source
   to a mix, and it carries that pair's fader and mute.
 
@@ -37,6 +38,9 @@ Stream Mix and Monitor, keeping every fader.
 
 Set `PIPEDECK_APP_ID` to run a development build next to an installed one,
 instead of handing over to the running instance.
+
+Clicking a mix or a channel card opens its window: rename it, set its
+levels, attach or detach devices, or remove it.
 
 ## Using it with OBS
 

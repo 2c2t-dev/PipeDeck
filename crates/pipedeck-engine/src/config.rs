@@ -239,6 +239,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MixOutput;
 
     #[test]
     fn roundtrip_toml() {
@@ -247,7 +248,8 @@ mod tests {
             .push(SourceConfig::virtual_sink(SourceId(1), "Game"));
         cfg.sources
             .push(SourceConfig::input(SourceId(2), "Mic", "alsa_input.x"));
-        cfg.mixes[0].outputs.push("alsa_output.y".into());
+        cfg.mixes[0].outputs.push(MixOutput::new("alsa_output.y"));
+        cfg.mixes[0].gain = 0.7;
         let mut link = LinkConfig::new(SourceId(1), MixId(1));
         link.gain = 0.5;
         link.muted = true;
@@ -268,6 +270,22 @@ mod tests {
             .push(SourceConfig::virtual_sink(SourceId(2), "b"));
         assert_eq!(cfg.next_source_id(), SourceId(5));
         assert_eq!(cfg.next_mix_id(), MixId(1));
+    }
+
+    #[test]
+    fn an_output_written_as_a_bare_name_still_loads() {
+        let text = r#"
+[[mix]]
+id = 1
+name = "Monitor"
+outputs = ["alsa_output.legacy"]
+"#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        assert_eq!(
+            cfg.mixes[0].outputs,
+            vec![MixOutput::new("alsa_output.legacy")]
+        );
+        assert_eq!(cfg.mixes[0].gain, 1.0);
     }
 
     #[test]

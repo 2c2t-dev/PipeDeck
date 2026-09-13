@@ -43,10 +43,32 @@ pub enum Command {
         id: MixId,
         name: String,
     },
-    /// Replace the devices a mix plays to, in one go.
+    /// Replace the devices a mix plays to, in one go. A device that stays
+    /// attached keeps the level it had.
     SetMixOutputs {
         id: MixId,
         devices: Vec<String>,
+    },
+    /// Master level of a mix, applied to its sink, so it scales the outputs
+    /// and a capture client alike.
+    SetMixGain {
+        id: MixId,
+        gain: f32,
+    },
+    SetMixMute {
+        id: MixId,
+        muted: bool,
+    },
+    /// Level of one output of a mix.
+    SetOutputGain {
+        id: MixId,
+        index: usize,
+        gain: f32,
+    },
+    SetOutputMute {
+        id: MixId,
+        index: usize,
+        muted: bool,
     },
     /// Add a row: a virtual sink, or a capture device when `device` is set.
     AddSource {
@@ -97,6 +119,14 @@ pub enum Event {
     Devices {
         outputs: Vec<Device>,
         inputs: Vec<Device>,
+    },
+    /// A mix's master level moved.
+    MixChanged { id: MixId, state: ChainState },
+    /// The level of one output of a mix moved.
+    OutputChanged {
+        id: MixId,
+        index: usize,
+        state: ChainState,
     },
     /// One cell's fader moved. Sent on every change so that every client
     /// (there will be several once this is a daemon) stays in sync without
@@ -337,6 +367,22 @@ fn handle_command(
         }),
         Command::RenameMix { id, name } => rename_mix(&mut g, id, name),
         Command::SetMixOutputs { id, devices } => g.set_mix_outputs(id, devices),
+        Command::SetMixGain { id, gain } => {
+            structural = false;
+            g.update_mix(id, |c| c.gain = gain.clamp(0.0, 1.0))
+        }
+        Command::SetMixMute { id, muted } => {
+            structural = false;
+            g.update_mix(id, |c| c.muted = muted)
+        }
+        Command::SetOutputGain { id, index, gain } => {
+            structural = false;
+            g.update_output(id, index, |c| c.gain = gain.clamp(0.0, 1.0))
+        }
+        Command::SetOutputMute { id, index, muted } => {
+            structural = false;
+            g.update_output(id, index, |c| c.muted = muted)
+        }
         Command::AddSource { name, device } => add_source(&mut g, name, device),
         Command::RemoveSource(id) => g.remove_source(id).map(|()| {
             let cfg = g.config_mut();

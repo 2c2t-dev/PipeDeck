@@ -16,6 +16,7 @@ use pipedeck_engine::{
 use crate::cell::{link_button, Cell};
 use crate::dialogs;
 use crate::engine_link::EngineLink;
+use crate::mix_dialog::MixDialog;
 
 const MIX_COLUMN_WIDTH: i32 = 240;
 const SOURCE_COLUMN_WIDTH: i32 = 180;
@@ -36,6 +37,8 @@ pub struct Window {
     outputs: RefCell<Vec<Device>>,
     inputs: RefCell<Vec<Device>>,
     cells: RefCell<HashMap<(SourceId, MixId), Cell>>,
+    /// The mix window, while one is open, so engine changes reach it.
+    mix_dialog: RefCell<Option<Rc<MixDialog>>>,
 }
 
 impl Window {
@@ -92,6 +95,7 @@ impl Window {
             outputs: RefCell::new(Vec::new()),
             inputs: RefCell::new(Vec::new()),
             cells: RefCell::new(HashMap::new()),
+            mix_dialog: RefCell::new(None),
         });
 
         this.rebuild();
@@ -107,10 +111,16 @@ impl Window {
             Event::State(state) => {
                 *self.state.borrow_mut() = state;
                 self.rebuild();
+                self.refresh_mix_dialog();
             }
             Event::Devices { outputs, inputs } => {
                 *self.outputs.borrow_mut() = outputs;
                 *self.inputs.borrow_mut() = inputs;
+                self.refresh_mix_dialog();
+            }
+            Event::MixChanged { .. } | Event::OutputChanged { .. } => {
+                // The window that sent it already shows the new value, and
+                // the grid only shows the mix name and its output count.
             }
             Event::LinkChanged { source, mix, state } => {
                 if let Some(cell) = self.cells.borrow().get(&(source, mix)) {
@@ -190,6 +200,36 @@ impl Window {
             .set_label("Add a source to get a virtual output, then press + to send it to a mix.");
     }
 
+    /// Open the window of one mix, replacing whichever was open.
+    fn open_mix_dialog(self: &Rc<Self>, id: MixId) {
+        let state = self.state.borrow();
+        let Some(mix) = state.mixes.iter().find(|m| m.id == id) else {
+            return;
+        };
+        if let Some(open) = self.mix_dialog.borrow_mut().take() {
+            open.close();
+        }
+        let dialog = MixDialog::present(&self.window, &self.engine, mix, &self.outputs.borrow());
+        *self.mix_dialog.borrow_mut() = Some(dialog);
+    }
+
+    /// Keep an open mix window in step with the engine, and close it if its
+    /// mix is gone.
+    fn refresh_mix_dialog(self: &Rc<Self>) {
+        let open = self.mix_dialog.borrow().clone();
+        let Some(dialog) = open else {
+            return;
+        };
+        let state = self.state.borrow();
+        match state.mixes.iter().find(|m| m.id == dialog.id()) {
+            Some(mix) => dialog.refresh(mix, &self.outputs.borrow()),
+            None => {
+                dialog.close();
+                *self.mix_dialog.borrow_mut() = None;
+            }
+        }
+    }
+
     fn add_mix_button(self: &Rc<Self>) -> gtk::Widget {
         // Icon only: this one sits in the header row next to named mixes, so
         // it stays out of the way until you look for it.
@@ -255,8 +295,8 @@ impl Window {
         card.set_tooltip_text(Some("Rename this mix, choose its outputs, or remove it"));
         card.connect_clicked({
             let this = self.clone();
-            let mix = mix.clone();
-            move |_| dialogs::edit_mix(&this.window, &this.engine, &mix, &this.outputs.borrow())
+            let id = mix.id;
+            move |_| this.open_mix_dialog(id)
         });
         card.set_margin_bottom(6);
         card.upcast()
@@ -336,6 +376,13 @@ pub fn load_css() {
         .pd-card .pd-pencil { opacity: 0; transition: opacity 120ms ease-out; }
         .pd-card:hover .pd-pencil,
         .pd-card:focus-visible .pd-pencil { opacity: 1; }
+        .pd-badge-large {
+            background-color: @window_fg_color;
+            color: @window_bg_color;
+            border-radius: 28px;
+            min-width: 148px;
+            min-height: 148px;
+        }
         .pd-badge {
             background-color: @window_fg_color;
             color: @window_bg_color;

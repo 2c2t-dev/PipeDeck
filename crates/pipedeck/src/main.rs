@@ -3,6 +3,7 @@
 mod cell;
 mod dialogs;
 mod engine_link;
+mod mix_dialog;
 mod signals;
 mod window;
 

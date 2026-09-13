@@ -35,7 +35,9 @@ use pipewire::types::ObjectType;
 use crate::config::Config;
 use crate::engine::{Event, StateSnapshot};
 use crate::error::EngineError;
-use crate::types::{ChainState, Device, LinkConfig, MixConfig, MixId, SourceConfig, SourceId};
+use crate::types::{
+    ChainState, Device, LinkConfig, MixConfig, MixId, MixOutput, SourceConfig, SourceId,
+};
 
 use loopback::{LoopbackSpec, AUDIO_POSITION, CHANNELS};
 use module::LoadedModule;
@@ -51,39 +53,52 @@ struct BoundNode {
     proxy: Node,
 }
 
-/// One cell of the matrix.
-struct Link {
-    /// `node.name` of the playback node carrying the fader.
+/// Write a level onto a node we hold a proxy for.
+fn apply_props(node: &Node, name: &str, state: &ChainState) {
+    let bytes = props::volume_props(state, CHANNELS);
+    let pod = Pod::from_bytes(&bytes).expect("volume_props builds a valid pod");
+    node.set_param(ParamType::Props, 0, pod);
+    log::trace!(
+        "{name}: volume {:.3} mute {}",
+        state.linear_volume(),
+        state.muted
+    );
+}
+
+/// One loopback with a level on it: a cell of the matrix, or one output of a
+/// mix. Both are the same object in the graph, so they are the same here.
+struct Stage {
+    /// `node.name` of the playback node carrying the level.
     node_name: String,
-    /// Kept alive as long as the cell exists. See [`LoadedModule`].
+    /// Kept alive as long as the stage exists. See [`LoadedModule`].
     _module: LoadedModule,
     node: Option<BoundNode>,
     wanted: ChainState,
 }
 
-impl Link {
+impl Stage {
     fn apply(&self) {
-        let Some(node) = &self.node else {
-            return;
-        };
-        let bytes = props::volume_props(&self.wanted, CHANNELS);
-        let pod = Pod::from_bytes(&bytes).expect("volume_props builds a valid pod");
-        node.proxy.set_param(ParamType::Props, 0, pod);
-        log::trace!(
-            "{}: volume {:.3} mute {}",
-            self.node_name,
-            self.wanted.linear_volume(),
-            self.wanted.muted
-        );
+        if let Some(node) = &self.node {
+            apply_props(&node.proxy, &self.node_name, &self.wanted);
+        }
     }
+}
+
+/// What a Pipedeck playback node belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StageRef {
+    Cell(SourceId, MixId),
+    Output(MixId, usize),
 }
 
 /// A column: the sink a capture client reads, plus one loopback per device.
 struct Mix {
     // Field order matters: the outputs are destroyed before the sink they
     // capture from.
-    outputs: Vec<LoadedModule>,
-    #[allow(dead_code)] // held only to keep the remote object alive
+    outputs: Vec<Stage>,
+    /// Also carries the master level of the mix, which the sink applies to
+    /// its monitor ports, so it scales the outputs and a capture client
+    /// alike.
     sink: Node,
 }
 
@@ -104,12 +119,12 @@ pub struct Graph {
     // Drop order: cells first (their modules capture the sinks below), then
     // the mixes and sources, while context, core and registry are still
     // alive further down.
-    links: HashMap<(SourceId, MixId), Link>,
+    links: HashMap<(SourceId, MixId), Stage>,
     mixes: HashMap<MixId, Mix>,
     sources: HashMap<SourceId, Source>,
-    /// Playback node name -> owning cell. Filled before the module is loaded,
-    /// so a registry announcement always finds its cell.
-    link_index: HashMap<String, (SourceId, MixId)>,
+    /// Playback node name -> what it belongs to. Filled before the module is
+    /// loaded, so a registry announcement always finds its owner.
+    stage_index: HashMap<String, StageRef>,
     devices: HashMap<u32, DeviceEntry>,
     devices_dirty: bool,
     registry: RegistryRc,
@@ -136,7 +151,7 @@ impl Graph {
             links: HashMap::new(),
             mixes: HashMap::new(),
             sources: HashMap::new(),
-            link_index: HashMap::new(),
+            stage_index: HashMap::new(),
             devices: HashMap::new(),
             devices_dirty: false,
             registry,
@@ -195,22 +210,36 @@ impl Graph {
 
     /// Load the loopbacks feeding a mix's devices. Any output that fails is
     /// reported and skipped: one dead device must not take the mix down.
-    fn load_outputs(&self, cfg: &MixConfig) -> Vec<LoadedModule> {
-        let mut modules = Vec::with_capacity(cfg.outputs.len());
-        for (index, device) in cfg.outputs.iter().enumerate() {
-            let spec = LoopbackSpec::for_output(cfg, index, device, &self.config.latency);
+    fn load_outputs(&mut self, cfg: &MixConfig) -> Vec<Stage> {
+        let mut stages = Vec::with_capacity(cfg.outputs.len());
+        for (index, output) in cfg.outputs.iter().enumerate() {
+            let node_name = loopback::output_node_name(cfg.id, index);
+            self.stage_index
+                .insert(node_name.clone(), StageRef::Output(cfg.id, index));
+            let spec = LoopbackSpec::for_output(cfg, index, &output.device, &self.config.latency);
             match LoadedModule::load(&self.context, LOOPBACK_MODULE, &spec.to_args()) {
-                Ok(module) => modules.push(module),
+                Ok(module) => stages.push(Stage {
+                    node_name,
+                    _module: module,
+                    node: None,
+                    wanted: output.state(),
+                }),
                 Err(e) => {
                     log::error!("{e}");
+                    self.stage_index.remove(&node_name);
                     self.emit(Event::Error(format!(
-                        "cannot send {} to {device}: {e}",
-                        cfg.name
+                        "cannot send {} to {}: {e}",
+                        cfg.name, output.device
                     )));
                 }
             }
         }
-        modules
+        stages
+    }
+
+    fn forget_outputs(&mut self, id: MixId) {
+        self.stage_index
+            .retain(|_, owner| !matches!(owner, StageRef::Output(mix, _) if *mix == id));
     }
 
     // --- mixes --------------------------------------------------------------
@@ -220,6 +249,7 @@ impl Graph {
             return Ok(());
         }
         let sink = self.create_sink(cfg.id.sink_node_name(), format!("Pipedeck {}", cfg.name))?;
+        apply_props(&sink, &cfg.id.sink_node_name(), &cfg.state());
         let outputs = self.load_outputs(cfg);
         self.mixes.insert(cfg.id, Mix { outputs, sink });
         log::info!("mix {} ({}) created", cfg.id, cfg.name);
@@ -230,6 +260,7 @@ impl Graph {
     /// handler, never from a listener (see [`LoadedModule`]).
     pub fn remove_mix(&mut self, id: MixId) -> Result<(), EngineError> {
         let mix = self.mixes.remove(&id).ok_or(EngineError::UnknownMix(id))?;
+        self.forget_outputs(id);
         let cells: Vec<(SourceId, MixId)> = self
             .links
             .keys()
@@ -248,12 +279,24 @@ impl Graph {
     /// capture client such as OBS keeps its connection across the change.
     pub fn set_mix_outputs(&mut self, id: MixId, devices: Vec<String>) -> Result<(), EngineError> {
         let cfg = self.config.mix_mut(id).ok_or(EngineError::UnknownMix(id))?;
-        cfg.outputs = devices;
+        // A device that stays attached keeps the level it had.
+        cfg.outputs = devices
+            .into_iter()
+            .map(|device| match cfg.output(&device) {
+                Some(existing) => existing.clone(),
+                None => MixOutput::new(device),
+            })
+            .collect();
         let cfg = cfg.clone();
-        let mix = self.mixes.get_mut(&id).ok_or(EngineError::UnknownMix(id))?;
-        // Drop the old loopbacks before loading the new ones, so a device
-        // that stays attached is not captured twice for an instant.
-        mix.outputs.clear();
+
+        self.mixes
+            .get_mut(&id)
+            .ok_or(EngineError::UnknownMix(id))?
+            // Drop the old loopbacks before loading the new ones, so a device
+            // that stays attached is not captured twice for an instant.
+            .outputs
+            .clear();
+        self.forget_outputs(id);
         let outputs = self.load_outputs(&cfg);
         self.mixes
             .get_mut(&id)
@@ -261,6 +304,51 @@ impl Graph {
             .outputs = outputs;
         self.dirty = true;
         log::info!("mix {id} now feeds {} device(s)", cfg.outputs.len());
+        Ok(())
+    }
+
+    /// Master level of a mix, applied to its sink.
+    pub fn update_mix(
+        &mut self,
+        id: MixId,
+        f: impl FnOnce(&mut ChainState),
+    ) -> Result<(), EngineError> {
+        let cfg = self.config.mix_mut(id).ok_or(EngineError::UnknownMix(id))?;
+        let mut state = cfg.state();
+        f(&mut state);
+        cfg.set_state(state);
+        let mix = self.mixes.get(&id).ok_or(EngineError::UnknownMix(id))?;
+        apply_props(&mix.sink, &id.sink_node_name(), &state);
+        self.dirty = true;
+        self.emit(Event::MixChanged { id, state });
+        Ok(())
+    }
+
+    /// Level of one output of a mix.
+    pub fn update_output(
+        &mut self,
+        id: MixId,
+        index: usize,
+        f: impl FnOnce(&mut ChainState),
+    ) -> Result<(), EngineError> {
+        let cfg = self.config.mix_mut(id).ok_or(EngineError::UnknownMix(id))?;
+        let output = cfg
+            .outputs
+            .get_mut(index)
+            .ok_or(EngineError::UnknownOutput(id, index))?;
+        let mut state = output.state();
+        f(&mut state);
+        output.set_state(state);
+
+        let stage = self
+            .mixes
+            .get_mut(&id)
+            .and_then(|mix| mix.outputs.get_mut(index))
+            .ok_or(EngineError::UnknownOutput(id, index))?;
+        stage.wanted = state;
+        stage.apply();
+        self.dirty = true;
+        self.emit(Event::OutputChanged { id, index, state });
         Ok(())
     }
 
@@ -324,20 +412,21 @@ impl Graph {
         // Index before loading: the registry announces the playback node only
         // once the loop iterates again, and this way `on_global` never has to
         // cope with an unknown Pipedeck node.
-        self.link_index.insert(node_name.clone(), cell);
+        self.stage_index
+            .insert(node_name.clone(), StageRef::Cell(link.source, link.mix));
 
         let spec = LoopbackSpec::for_link(&source, &mix, &self.config.latency);
         let module = match LoadedModule::load(&self.context, LOOPBACK_MODULE, &spec.to_args()) {
             Ok(module) => module,
             Err(e) => {
-                self.link_index.remove(&node_name);
+                self.stage_index.remove(&node_name);
                 return Err(e);
             }
         };
 
         self.links.insert(
             cell,
-            Link {
+            Stage {
                 node_name,
                 _module: module,
                 node: None,
@@ -350,7 +439,7 @@ impl Graph {
 
     fn drop_link(&mut self, cell: (SourceId, MixId)) {
         if let Some(link) = self.links.remove(&cell) {
-            self.link_index.remove(&link.node_name);
+            self.stage_index.remove(&link.node_name);
         }
     }
 
@@ -426,8 +515,8 @@ impl Graph {
             return;
         };
 
-        if let Some(&cell) = self.link_index.get(name) {
-            self.bind_link(cell, global);
+        if let Some(&owner) = self.stage_index.get(name) {
+            self.bind_stage(owner, global);
             return;
         }
         if name.starts_with(NODE_PREFIX) {
@@ -452,8 +541,15 @@ impl Graph {
         self.devices_dirty = true;
     }
 
-    fn bind_link(&mut self, cell: (SourceId, MixId), global: &GlobalObject<&DictRef>) {
-        let Some(link) = self.links.get_mut(&cell) else {
+    fn bind_stage(&mut self, owner: StageRef, global: &GlobalObject<&DictRef>) {
+        let stage = match owner {
+            StageRef::Cell(source, mix) => self.links.get_mut(&(source, mix)),
+            StageRef::Output(mix, index) => self
+                .mixes
+                .get_mut(&mix)
+                .and_then(|mix| mix.outputs.get_mut(index)),
+        };
+        let Some(link) = stage else {
             return;
         };
         let failure = match self.registry.bind::<Node, _>(global) {
@@ -480,10 +576,18 @@ impl Graph {
         if self.devices.remove(&global_id).is_some() {
             self.devices_dirty = true;
         }
-        for link in self.links.values_mut() {
-            if link.node.as_ref().is_some_and(|n| n.global_id == global_id) {
-                log::debug!("{} gone from the graph", link.node_name);
-                link.node = None;
+        let outputs = self
+            .mixes
+            .values_mut()
+            .flat_map(|mix| mix.outputs.iter_mut());
+        for stage in self.links.values_mut().chain(outputs) {
+            if stage
+                .node
+                .as_ref()
+                .is_some_and(|n| n.global_id == global_id)
+            {
+                log::debug!("{} gone from the graph", stage.node_name);
+                stage.node = None;
             }
         }
     }

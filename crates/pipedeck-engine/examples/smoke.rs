@@ -233,6 +233,44 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
+    // The master level lands on the mix sink, the output level on the
+    // loopback that feeds the device.
+    engine
+        .send(Command::SetMixGain { id: mix, gain: 0.5 })
+        .unwrap();
+    engine
+        .send(Command::SetOutputGain {
+            id: mix,
+            index: 0,
+            gain: 0.8,
+        })
+        .unwrap();
+    engine
+        .send(Command::SetOutputMute {
+            id: mix,
+            index: 0,
+            muted: true,
+        })
+        .unwrap();
+    settle();
+    let dump = pw_dump();
+    let master = node_volume(&dump, &format!("pipedeck.mix.{mix}"));
+    check(
+        master
+            .as_ref()
+            .is_some_and(|(v, _)| v.iter().all(|x| (x - 0.125).abs() < 1e-3)),
+        &format!("the mix sink carries the master level: {master:?}"),
+        &mut failures,
+    );
+    let output = node_volume(&dump, &format!("pipedeck.out.{mix}.0"));
+    check(
+        output
+            .as_ref()
+            .is_some_and(|(v, m)| v.iter().all(|x| (x - 0.512).abs() < 1e-3) && *m),
+        &format!("the output carries its own level and mute: {output:?}"),
+        &mut failures,
+    );
+
     let cfg = std::fs::read_to_string(&config_path).unwrap_or_default();
     check(
         cfg.contains("[[link]]") && cfg.contains("gain = 0.5") && cfg.contains(&device.name),

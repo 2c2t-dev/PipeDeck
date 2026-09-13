@@ -110,15 +110,86 @@ impl ChainState {
     }
 }
 
+pub(crate) fn unity_gain() -> f32 {
+    1.0
+}
+
+/// One device a mix plays to, with its own level.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MixOutput {
+    /// `node.name` of the device.
+    pub device: String,
+    pub gain: f32,
+    pub muted: bool,
+}
+
+impl MixOutput {
+    pub fn new(device: impl Into<String>) -> Self {
+        Self {
+            device: device.into(),
+            gain: 1.0,
+            muted: false,
+        }
+    }
+
+    pub fn state(&self) -> ChainState {
+        ChainState {
+            gain: self.gain,
+            muted: self.muted,
+        }
+    }
+
+    pub fn set_state(&mut self, state: ChainState) {
+        self.gain = state.gain;
+        self.muted = state.muted;
+    }
+}
+
+/// Accepts both the table an output is written as today and the bare device
+/// name earlier versions wrote, so a config keeps loading across upgrades.
+impl<'de> Deserialize<'de> for MixOutput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Name(String),
+            Full {
+                device: String,
+                #[serde(default = "unity_gain")]
+                gain: f32,
+                #[serde(default)]
+                muted: bool,
+            },
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Name(device) => MixOutput::new(device),
+            Repr::Full {
+                device,
+                gain,
+                muted,
+            } => MixOutput {
+                device,
+                gain,
+                muted,
+            },
+        })
+    }
+}
+
 /// A column of the matrix. A mix starts with no output: it exists as a sink
 /// a capture client can read, and the user attaches devices to it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MixConfig {
     pub id: MixId,
     pub name: String,
-    /// `node.name` of each output device this mix plays to.
+    /// Master level, applied to the mix sink, so it scales what the outputs
+    /// play and what a capture client reads alike.
+    #[serde(default = "unity_gain")]
+    pub gain: f32,
     #[serde(default)]
-    pub outputs: Vec<String>,
+    pub muted: bool,
+    #[serde(default)]
+    pub outputs: Vec<MixOutput>,
 }
 
 impl MixConfig {
@@ -126,8 +197,26 @@ impl MixConfig {
         Self {
             id,
             name: name.into(),
+            gain: 1.0,
+            muted: false,
             outputs: Vec::new(),
         }
+    }
+
+    pub fn state(&self) -> ChainState {
+        ChainState {
+            gain: self.gain,
+            muted: self.muted,
+        }
+    }
+
+    pub fn set_state(&mut self, state: ChainState) {
+        self.gain = state.gain;
+        self.muted = state.muted;
+    }
+
+    pub fn output(&self, device: &str) -> Option<&MixOutput> {
+        self.outputs.iter().find(|o| o.device == device)
     }
 }
 
@@ -140,10 +229,6 @@ pub struct LinkConfig {
     pub gain: f32,
     #[serde(default)]
     pub muted: bool,
-}
-
-fn unity_gain() -> f32 {
-    1.0
 }
 
 impl LinkConfig {
@@ -211,6 +296,21 @@ mod tests {
     fn node_names_derive_from_ids() {
         assert_eq!(SourceId(7).sink_node_name(), "pipedeck.src.7");
         assert_eq!(MixId(2).sink_node_name(), "pipedeck.mix.2");
+    }
+
+    #[test]
+    fn an_output_reads_from_a_name_or_a_table() {
+        let from_name: MixOutput = toml::from_str("value = \"alsa.x\"")
+            .map(|v: toml::Value| v["value"].clone())
+            .and_then(MixOutput::deserialize)
+            .unwrap();
+        assert_eq!(from_name, MixOutput::new("alsa.x"));
+
+        let mut full = MixOutput::new("alsa.y");
+        full.gain = 0.4;
+        full.muted = true;
+        let text = toml::to_string(&full).unwrap();
+        assert_eq!(toml::from_str::<MixOutput>(&text).unwrap(), full);
     }
 
     #[test]

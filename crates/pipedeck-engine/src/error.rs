@@ -25,6 +25,8 @@ pub enum EngineError {
     UnknownMix(MixId),
     #[error("source {0} does not feed mix {1}")]
     UnknownLink(SourceId, MixId),
+    #[error("mix {0} has no output {1}")]
+    UnknownOutput(MixId, usize),
     #[error("a mixer holds at most {0} mixes")]
     TooManyMixes(usize),
     #[error("the engine thread is no longer running")]
