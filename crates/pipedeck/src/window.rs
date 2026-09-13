@@ -237,6 +237,10 @@ impl Window {
                 // The window that moved it already shows the new value.
             }
             Event::Error(message) => self.toast(&message),
+            Event::Notice(message) => {
+                log::info!("{message}");
+                self.toast_quietly(&message);
+            }
             Event::Stopped => {
                 self.stopped.set(true);
                 self.rebuild();
@@ -247,6 +251,11 @@ impl Window {
 
     fn toast(&self, message: &str) {
         log::warn!("{message}");
+        self.toast_quietly(message);
+    }
+
+    /// The same, for what is worth saying rather than worth warning about.
+    fn toast_quietly(&self, message: &str) {
         self.toasts.add_toast(adw::Toast::new(message));
     }
 

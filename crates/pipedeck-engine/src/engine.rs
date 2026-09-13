@@ -10,8 +10,8 @@
 //! - The real-time data thread belongs to libpipewire (the loopback modules
 //!   do the mixing). The engine thread only does control-plane work.
 
-use std::cell::RefCell;
-use std::path::PathBuf;
+use std::cell::{Cell as StdCell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -229,6 +229,9 @@ pub enum Event {
     },
     /// Non-fatal problem worth showing to the user.
     Error(String),
+    /// Something worth saying that is not a problem: the connection to the
+    /// server coming and going, which the mixer now lives through.
+    Notice(String),
     /// The engine thread is exiting; no further events follow.
     Stopped,
 }
@@ -317,37 +320,78 @@ fn load_config(path: &PathBuf, events: &dyn Fn(Event)) -> Config {
     }
 }
 
-fn run(
-    config_path: PathBuf,
-    rx: pw::channel::Receiver<Command>,
-    events: Rc<dyn Fn(Event)>,
-) -> Result<(), EngineError> {
-    let config = load_config(&config_path, &*events);
+/// Why a session ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ending {
+    /// The client asked the engine to stop.
+    Asked,
+    /// The server went away under a session that was running.
+    Lost,
+    /// There was no server to begin with.
+    Unreachable,
+}
 
-    pw::init();
-    let mainloop = MainLoopRc::new(None)?;
-    let context = ContextRc::new(&mainloop, None)?;
-    let core = context.connect_rc(None)?;
-    let registry = core.get_registry_rc()?;
+/// Put the whole mixer on the graph from the config, and keep it there.
+///
+/// Everything a connection owns — the loop, the context, the core, the graph
+/// and its modules — is a local here, so that ending a session tears it down
+/// in the one order that is safe: the loop stopped first, then the graph,
+/// then the way to the server. Taking a graph apart while its loop still
+/// runs double-frees whatever the broken connection has already freed.
+///
+/// The receiver is handed back either way, for the next session or for the
+/// wait before it.
+#[allow(clippy::type_complexity)]
+fn serve(
+    config_path: &Path,
+    rx: pw::channel::Receiver<Command>,
+    events: &Rc<dyn Fn(Event)>,
+    config: Config,
+) -> (pw::channel::Receiver<Command>, Ending, Config) {
+    let mainloop = match MainLoopRc::new(None) {
+        Ok(mainloop) => mainloop,
+        Err(e) => {
+            log::error!("cannot make a loop: {e}");
+            return (rx, Ending::Unreachable, config);
+        }
+    };
+    let connected = ContextRc::new(&mainloop, None).and_then(|context| {
+        let core = context.connect_rc(None)?;
+        let registry = core.get_registry_rc()?;
+        Ok((context, core, registry))
+    });
+    let (context, core, registry) = match connected {
+        Ok(parts) => parts,
+        Err(e) => {
+            log::warn!("cannot reach PipeWire: {e}");
+            return (rx, Ending::Unreachable, config);
+        }
+    };
 
     let graph = Rc::new(RefCell::new(Graph::new(
         context.clone(),
         core.clone(),
         registry.clone(),
         config,
-        config_path,
+        config_path.to_path_buf(),
         events.clone(),
     )));
+    let ending = Rc::new(StdCell::new(Ending::Lost));
 
-    // Lose the server: stop the loop, the client will see Error + Stopped.
+    // Losing the server ends the session the same way being asked to stop
+    // does, and the thread decides which of the two it was.
     let _core_listener = {
         let mainloop = mainloop.clone();
         let events = events.clone();
+        let ending = ending.clone();
         core.add_listener_local()
             .error(move |id, seq, res, message| {
                 log::warn!("core error: id {id} seq {seq} res {res}: {message}");
                 if id == pw::core::PW_ID_CORE && res == -libc_epipe() {
-                    events(Event::Error("connection to PipeWire lost".into()));
+                    ending.set(Ending::Lost);
+                    events(Event::Error(
+                        "PipeWire went away; putting the mixer back when it returns".into(),
+                    ));
                     mainloop.quit();
                 }
             })
@@ -372,7 +416,6 @@ fn run(
             .register()
     };
 
-    // Build the initial graph from the config.
     {
         let mut g = graph.borrow_mut();
         let snapshot = g.snapshot();
@@ -409,11 +452,15 @@ fn run(
         g.emit_stereotool();
     }
 
-    let _receiver = {
+    let receiver = {
         let graph = graph.clone();
         let loop_owner = mainloop.clone();
         let events = events.clone();
+        let ending = ending.clone();
         rx.attach(mainloop.loop_(), move |cmd| {
+            if matches!(cmd, Command::Shutdown) {
+                ending.set(Ending::Asked);
+            }
             handle_command(&graph, &loop_owner, &events, cmd)
         })
     };
@@ -439,16 +486,109 @@ fn run(
 
     log::info!("engine running");
     mainloop.run();
-    log::info!("engine shutting down");
+    log::info!("session ending");
 
-    graph.borrow_mut().flush_config();
+    // The mixer is not the graph: what it was goes to the next session.
+    let saved = {
+        let mut g = graph.borrow_mut();
+        g.flush_config();
+        g.config().clone()
+    };
+    let rx = receiver.deattach();
+    (rx, ending.get(), saved)
+    // Locals drop in reverse order: the timers first, then the listeners,
+    // then `graph` (modules, proxies) while context and core are still
+    // alive, then core disconnects.
+}
+
+/// Wait for a server to come back, and answer the client meanwhile.
+///
+/// Nothing of the mixer exists here: this is a loop, the command channel and
+/// a timer that knocks. A command that arrives now is answered rather than
+/// kept, since there is no graph to put it on.
+fn wait_for_server(
+    rx: pw::channel::Receiver<Command>,
+    events: &Rc<dyn Fn(Event)>,
+) -> (pw::channel::Receiver<Command>, Ending) {
+    let Ok(mainloop) = MainLoopRc::new(None) else {
+        return (rx, Ending::Asked);
+    };
+    let ending = Rc::new(StdCell::new(Ending::Unreachable));
+
+    let receiver = {
+        let loop_owner = mainloop.clone();
+        let events = events.clone();
+        let ending = ending.clone();
+        rx.attach(mainloop.loop_(), move |cmd| {
+            if matches!(cmd, Command::Shutdown) {
+                ending.set(Ending::Asked);
+                loop_owner.quit();
+            } else {
+                events(Event::Notice(
+                    "PipeWire is not there; the mixer is waiting for it".into(),
+                ));
+            }
+        })
+    };
+
+    let timer = {
+        let knocking = mainloop.clone();
+        mainloop.loop_().add_timer(move |_| {
+            // Knocking is a context and a connection and nothing else, so
+            // there is nothing to take apart when it answers.
+            let reached = ContextRc::new(&knocking, None)
+                .and_then(|context| context.connect_rc(None).map(|core| (context, core)));
+            if reached.is_ok() {
+                knocking.quit();
+            }
+        })
+    };
+    timer.update_timer(Some(RETRY), Some(RETRY));
+
+    log::info!("waiting for PipeWire");
+    mainloop.run();
+    (receiver.deattach(), ending.get())
+}
+
+fn run(
+    config_path: PathBuf,
+    rx: pw::channel::Receiver<Command>,
+    events: Rc<dyn Fn(Event)>,
+) -> Result<(), EngineError> {
+    pw::init();
+    let mut config = load_config(&config_path, &*events);
+    let mut rx = rx;
+
+    loop {
+        let (back, ending, saved) = serve(&config_path, rx, &events, config);
+        rx = back;
+        config = saved;
+        match ending {
+            Ending::Asked => break,
+            // A session that ran has already said what happened to it.
+            Ending::Lost => {}
+            Ending::Unreachable => events(Event::Notice(
+                "PipeWire is not there; the mixer is waiting for it".into(),
+            )),
+        }
+
+        let (back, ending) = wait_for_server(rx, &events);
+        rx = back;
+        if ending == Ending::Asked {
+            break;
+        }
+        log::info!("PipeWire is back; the mixer with it");
+        events(Event::Notice(
+            "PipeWire is back, and the mixer with it".into(),
+        ));
+    }
     Ok(())
-    // Locals drop in reverse order: timer and receiver first, then the
-    // listeners, then `graph` (modules, proxies) while context/core are
-    // still alive, then core disconnects.
 }
 
 const TICK: Duration = Duration::from_millis(250);
+/// How often to knock at a server that is not there. A restarting PipeWire
+/// takes a moment, and asking constantly says nothing new.
+const RETRY: Duration = Duration::from_secs(1);
 const METER_TICK: Duration = Duration::from_millis(50);
 
 fn libc_epipe() -> i32 {

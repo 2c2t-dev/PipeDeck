@@ -165,6 +165,21 @@ thing the symbols alone cannot tell you. `PIPEDECK_SMOKE_WINDOW=1` adds the
 same check to the smoke test, where the window is opened the way the interface
 opens it: from the engine thread.
 
+## When PipeWire restarts
+
+The mixer lives through it. Losing the server ends a session and nothing
+more: the graph is taken apart with the loop already stopped — taking one
+apart while its loop runs double-frees what the broken connection has
+already freed — and what the mixer *is* outlives it, since the config is
+handed from one session to the next. A loop with nothing on it but the
+command channel then knocks once a second until a server answers, and the
+whole mixer goes back on the graph.
+
+`cargo run -p pipedeck-engine --example reconnect_check` watches that happen.
+Point `PIPEWIRE_REMOTE` at a server you are willing to kill — a private one,
+started with `PIPEWIRE_RUNTIME_DIR=/tmp/pdw PIPEWIRE_CORE=pdtest pipewire`,
+since restarting the session's own cuts everybody's audio.
+
 ## Settings
 
 The gear in the header bar opens them: the colour theme, whether Pipedeck

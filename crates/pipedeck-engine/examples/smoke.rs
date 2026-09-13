@@ -306,6 +306,16 @@ fn wait_error(rx: &mpsc::Receiver<Event>, window: Duration) -> Option<String> {
     None
 }
 
+/// Throw away what queued while something was settling.
+///
+/// Levels are sent several times a second whatever anyone is waiting for, so
+/// a window opened after a change would otherwise take in the moment before
+/// it as well, and report the loudest of the two. What is being measured
+/// here is what is true now.
+fn drain(rx: &mpsc::Receiver<Event>) {
+    while rx.try_recv().is_ok() {}
+}
+
 fn settle() {
     std::thread::sleep(Duration::from_millis(900));
 }
@@ -561,6 +571,7 @@ fn main() -> ExitCode {
         })
         .unwrap();
     settle();
+    drain(&rx);
     let muted = wait_levels(&rx, source, mix, Duration::from_secs(3));
     check(
         muted.0 > 0.05,
@@ -585,6 +596,7 @@ fn main() -> ExitCode {
     // The peaks are maxima over a window, so the tail of the tone would
     // still show in one that starts the moment the player dies.
     settle();
+    drain(&rx);
     let quiet = wait_levels(&rx, source, mix, Duration::from_secs(2));
     let what = format!("the meters fall back to silence: {:.3}", quiet.0);
     if alone {
@@ -785,6 +797,7 @@ fn main() -> ExitCode {
     // so what counts is the quietest of several windows once it has settled
     // rather than the loudest moment of one.
     std::thread::sleep(Duration::from_secs(2));
+    drain(&rx);
     let cut = (0..4)
         .map(|_| wait_levels(&rx, source, mix, Duration::from_millis(500)).0)
         .fold(f32::INFINITY, f32::min);
