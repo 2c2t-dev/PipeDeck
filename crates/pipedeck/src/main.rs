@@ -6,7 +6,9 @@ mod desktop;
 mod dialogs;
 mod engine_link;
 mod mix_dialog;
+mod preferences;
 mod presets;
+mod settings;
 mod signals;
 mod widgets;
 mod window;
@@ -110,6 +112,9 @@ fn activate(app: &adw::Application) {
     });
 
     window::load_css();
+    // The chosen theme is applied before the first window is drawn, so it
+    // never shows in the wrong one for a frame.
+    preferences::apply_theme(settings::Settings::load().theme);
     let window = Window::new(app, engine.clone());
 
     // Stop the engine (and wait for the graph teardown) when the app exits.

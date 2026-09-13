@@ -610,6 +610,27 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
+    // The quantum is a setting, not a fader: changing it reloads every
+    // loopback, and the new value has to show on the nodes that come back.
+    engine
+        .send(Command::SetLatency {
+            latency: "1024/48000".into(),
+        })
+        .unwrap();
+    wait_state(&rx, "the new quantum", |s| s.latency == "1024/48000");
+    settle();
+    let reloaded = our_node(&pw_dump(), &format!("pipedeck.link.{source}.{mix}")).map(|node| {
+        props(node)["node.latency"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    });
+    check(
+        reloaded.as_deref() == Some("1024/48000"),
+        &format!("the routes came back at the new quantum: {reloaded:?}"),
+        &mut failures,
+    );
+
     // Unlinking removes the cell and nothing else.
     engine
         .send(Command::SetLink {

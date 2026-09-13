@@ -130,6 +130,11 @@ pub enum Command {
         mix: MixId,
         muted: bool,
     },
+    /// Quantum asked of our nodes, as `frames/rate`. Every loopback is
+    /// reloaded, which cuts the audio for as long as that takes.
+    SetLatency {
+        latency: String,
+    },
     /// Tear the graph down and stop the thread.
     Shutdown,
 }
@@ -137,6 +142,8 @@ pub enum Command {
 /// The matrix as the engine holds it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StateSnapshot {
+    /// Quantum asked of our nodes, so the settings window can show it.
+    pub latency: String,
     pub mixes: Vec<MixConfig>,
     pub sources: Vec<SourceConfig>,
     pub links: Vec<LinkConfig>,
@@ -478,6 +485,7 @@ fn handle_command(
             structural = false;
             g.update_link(source, mix, |c| c.muted = muted)
         }
+        Command::SetLatency { latency } => g.set_latency(latency),
         Command::Shutdown => {
             structural = false;
             mainloop.quit();

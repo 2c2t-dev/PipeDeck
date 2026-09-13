@@ -905,6 +905,8 @@ dependencies = [
  "libc",
  "log",
  "pipedeck-engine",
+ "serde",
+ "toml",
 ]
 
 [[package]]

@@ -62,6 +62,12 @@ A channel bound to a capture device shows that device instead, since
 applications play into virtual outputs, not into a microphone. Both are where you rename or
 remove the object.
 
+## Settings
+
+The gear in the header bar opens them: the colour theme, whether Pipedeck
+starts with the session, and the quantum asked of its nodes. Changing the
+quantum reloads every route, so the audio stops for a moment.
+
 ## Using it with OBS
 
 A mix is capturable whether or not it has an output device: add an audio
@@ -77,10 +83,9 @@ different mix to hear a different balance.
 ```
 
 Audio crosses two of our nodes on its way to a device, one for the cell and
-one for the mix output. Both request the quantum set by `latency` in the
-config, 512 frames by default, so the round trip stays in the same ballpark
-as a single hop at PipeWire's usual 1024. Raise it if the machine reports
-xruns.
+one for the mix output. Both request the quantum set in the settings, 512 frames by default, so the
+round trip stays in the same ballpark as a single hop at PipeWire's usual
+1024. Raise it if the machine reports xruns.
 
 The faders are the `Props` volume of each loopback's playback node. Capture
 sides are internal streams (`Stream/Input/Audio/Internal`) so they stay out of

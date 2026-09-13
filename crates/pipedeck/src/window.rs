@@ -18,6 +18,7 @@ use crate::channel_dialog::ChannelDialog;
 use crate::dialogs;
 use crate::engine_link::EngineLink;
 use crate::mix_dialog::MixDialog;
+use crate::preferences;
 use crate::presets;
 use crate::widgets;
 
@@ -59,6 +60,9 @@ impl Window {
             .build();
 
         let header = adw::HeaderBar::new();
+        let settings = gtk::Button::from_icon_name("preferences-system-symbolic");
+        settings.set_tooltip_text(Some("Settings"));
+        header.pack_end(&settings);
 
         let grid = gtk::Grid::new();
         // Cards keep their size in a wide window instead of stretching: a
@@ -101,6 +105,7 @@ impl Window {
             toasts,
             stopped: StdCell::new(false),
             state: RefCell::new(StateSnapshot {
+                latency: String::new(),
                 mixes: Vec::new(),
                 sources: Vec::new(),
                 links: Vec::new(),
@@ -112,6 +117,14 @@ impl Window {
             cells: RefCell::new(HashMap::new()),
             mix_dialog: RefCell::new(None),
             channel_dialog: RefCell::new(None),
+        });
+
+        settings.connect_clicked({
+            let this = this.clone();
+            move |_| {
+                let latency = this.state.borrow().latency.clone();
+                preferences::present(&this.window, &this.engine, &latency)
+            }
         });
 
         this.rebuild();

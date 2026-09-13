@@ -263,6 +263,7 @@ impl Graph {
     /// The current matrix, as the clients see it.
     pub fn snapshot(&self) -> StateSnapshot {
         StateSnapshot {
+            latency: self.config.latency.clone(),
             mixes: self.config.mixes.clone(),
             sources: self.config.sources.clone(),
             links: self.config.links.clone(),
@@ -743,6 +744,46 @@ impl Graph {
         }
         self.dirty = true;
         self.emit(Event::LinkChanged { source, mix, state });
+        Ok(())
+    }
+
+    /// Ask the server for a different quantum on our nodes.
+    ///
+    /// It is a property of each loopback, fixed when the module is loaded, so
+    /// every one of them is reloaded. The audio stops for as long as that
+    /// takes, which is why this lives in a settings window and not on a
+    /// fader.
+    pub fn set_latency(&mut self, latency: String) -> Result<(), EngineError> {
+        if self.config.latency == latency {
+            return Ok(());
+        }
+        self.config.latency = latency;
+        self.dirty = true;
+
+        let cells: Vec<LinkConfig> = self.config.links.clone();
+        for link in &cells {
+            self.drop_link((link.source, link.mix));
+        }
+        for link in &cells {
+            if let Err(e) = self.create_link(link) {
+                log::error!("{e}");
+                self.emit(Event::Error(e.to_string()));
+            }
+        }
+
+        let mixes: Vec<MixId> = self.config.mixes.iter().map(|mix| mix.id).collect();
+        for id in mixes {
+            let devices = self
+                .config
+                .mix(id)
+                .map(|mix| mix.outputs.iter().map(|o| o.device.clone()).collect())
+                .unwrap_or_default();
+            if let Err(e) = self.set_mix_outputs(id, devices) {
+                log::error!("{e}");
+                self.emit(Event::Error(e.to_string()));
+            }
+        }
+        log::info!("nodes reloaded at {}", self.config.latency);
         Ok(())
     }
 
