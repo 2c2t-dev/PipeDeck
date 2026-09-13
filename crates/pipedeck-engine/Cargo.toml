@@ -16,6 +16,7 @@ log.workspace = true
 thiserror.workspace = true
 vst3 = "0.3"
 libloading = "0.8"
+libc = "0.2.189"
 
 [dev-dependencies]
 env_logger = "0.11"

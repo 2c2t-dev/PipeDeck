@@ -112,9 +112,15 @@ documents is loaded first, and the `noX11` build after it, for a machine whose
 X11 libraries a normal build would ask for and not find.
 `PIPEDECK_STEREOTOOL` points at a copy kept elsewhere.
 
-The library talks to stderr on its own account — it looks for a JACK server at
-load and says so, and it keeps its state in `~/.libStereoTool_*.so.rc`. That is
-the library, not the mixer.
+The library is talkative on its own account: creating a processor walks every
+ALSA device on the machine and looks for a JACK server, some fifty lines of
+complaint each time, written in C straight to the standard error. Pipedeck
+points that descriptor at `/dev/null` for the length of those calls and puts
+it back after; `PIPEDECK_STEREOTOOL_NOISE=1` leaves it alone when the
+library's own words are what is wanted. It is asked where it stands once per
+run — at startup, after an import, and when a licence key is given — because
+a library already loaded cannot be swapped inside one run anyway. It also
+keeps its state in `~/.libStereoTool_*.so.rc`.
 
 The licence key is a field on the same page, passed to the library and to
 nothing else. Without one Stereo Tool still runs and puts speech and beeps in

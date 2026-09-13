@@ -219,7 +219,11 @@ fn api() -> Result<&'static Api, String> {
 /// never unloaded, so they stay valid for the life of the process. Each
 /// signature is the one the API documents.
 unsafe fn load(path: &Path) -> Result<Api, String> {
+    // Loading runs whatever the library does at load time, which is already
+    // where some of the noise comes from.
+    let quiet = Hushed::new();
     let library = libloading::Library::new(path).map_err(|e| e.to_string())?;
+    drop(quiet);
     let symbol = |name: &[u8]| -> Result<*mut c_void, String> {
         library
             .get::<*mut c_void>(name)
@@ -300,6 +304,56 @@ pub fn probe(license: Option<&str>) -> Result<Info, String> {
     })
 }
 
+/// Keeps the library's chatter off the terminal.
+///
+/// Stereo Tool walks every ALSA device and looks for a JACK server each time
+/// a processor is created, and says so on the standard error — a few hundred
+/// lines, written in C straight to the descriptor, which no Rust logger can
+/// filter. The descriptor is pointed at `/dev/null` for exactly as long as
+/// the call takes and put back after.
+///
+/// The descriptor belongs to the whole process, so a line the mixer itself
+/// logs during that moment is lost with it. That is the trade: a handful of
+/// milliseconds against a screenful on every start. `PIPEDECK_STEREOTOOL_NOISE`
+/// turns it off when the library's own words are what is wanted.
+struct Hushed(Option<c_int>);
+
+impl Hushed {
+    fn new() -> Self {
+        if std::env::var_os("PIPEDECK_STEREOTOOL_NOISE").is_some() {
+            return Self(None);
+        }
+        // SAFETY: plain descriptor calls, each checked; nothing is kept on
+        // failure, and the drop below only acts on what was taken.
+        unsafe {
+            let saved = libc::dup(libc::STDERR_FILENO);
+            if saved < 0 {
+                return Self(None);
+            }
+            let null = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
+            if null < 0 {
+                libc::close(saved);
+                return Self(None);
+            }
+            libc::dup2(null, libc::STDERR_FILENO);
+            libc::close(null);
+            Self(Some(saved))
+        }
+    }
+}
+
+impl Drop for Hushed {
+    fn drop(&mut self) {
+        if let Some(saved) = self.0 {
+            // SAFETY: `saved` is ours, taken in `new` and released once.
+            unsafe {
+                libc::dup2(saved, libc::STDERR_FILENO);
+                libc::close(saved);
+            }
+        }
+    }
+}
+
 /// Why a block did not go through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ProcessError {
@@ -345,8 +399,10 @@ impl Instance {
             .transpose()?;
         // SAFETY: the key outlives the call, and a null pointer is what the
         // API takes for "no licence".
-        let handle =
-            unsafe { (api.create)(key.as_ref().map_or(std::ptr::null(), |key| key.as_ptr())) };
+        let handle = {
+            let _quiet = Hushed::new();
+            unsafe { (api.create)(key.as_ref().map_or(std::ptr::null(), |key| key.as_ptr())) }
+        };
         if handle.is_null() {
             return Err("Stereo Tool refused to start".into());
         }
@@ -459,6 +515,8 @@ impl Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
+        // Closing is as talkative as opening.
+        let _quiet = Hushed::new();
         // SAFETY: the handle came from `create` and is released once.
         unsafe { (self.api.delete)(self.handle) };
     }

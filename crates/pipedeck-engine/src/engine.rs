@@ -392,6 +392,7 @@ fn run(
         g.emit_devices();
         g.emit_apps();
         g.emit_plugins();
+        g.refresh_stereotool();
         g.emit_stereotool();
     }
 

@@ -275,6 +275,12 @@ pub struct Graph {
     /// runs its code, and doing that on every tick would be both slow and
     /// rude.
     plugins: Vec<Plugin>,
+    /// Where Stereo Tool stands, as it last said. Kept because asking means
+    /// opening a processor, which is neither quick nor quiet.
+    stereotool: crate::stereotool::Status,
+    /// Set when the answer above can have changed although the library is
+    /// already loaded, which only a new licence key does.
+    stereotool_stale: bool,
     /// Application playback streams currently on the graph.
     streams: HashMap<u32, AppStream>,
     streams_dirty: bool,
@@ -314,6 +320,8 @@ impl Graph {
             devices: HashMap::new(),
             devices_dirty: false,
             plugins: crate::vst3::installed(),
+            stereotool: crate::stereotool::Status::Absent,
+            stereotool_stale: false,
             source_meters: HashMap::new(),
             mix_meters: HashMap::new(),
             streams: HashMap::new(),
@@ -1167,6 +1175,10 @@ impl Graph {
         }
         self.config.stereotool_license = key;
         self.dirty = true;
+        // A processor is told its key when it is created, so what the
+        // library says about the licence is worth asking again.
+        self.stereotool_stale = true;
+        self.refresh_stereotool();
         self.reopen_stereotool();
         Ok(())
     }
@@ -1626,6 +1638,9 @@ impl Graph {
         self.plugins = crate::vst3::installed();
         log::info!("{} plug-in(s) installed", self.plugins.len());
         self.emit_plugins();
+        // A copy may have just been imported, which is the other half of
+        // what this button is for.
+        self.refresh_stereotool();
         self.emit_stereotool();
     }
 
@@ -1636,13 +1651,26 @@ impl Graph {
         });
     }
 
-    /// Say where Stereo Tool stands. Asking the library means loading it and
-    /// opening one processor, so this is sent when something changed rather
-    /// than on a timer.
+    /// Say where Stereo Tool stands, from what was found last time.
     pub fn emit_stereotool(&self) {
-        self.emit(Event::StereoTool(crate::stereotool::status(
-            self.config.stereotool_license.as_deref(),
-        )));
+        self.emit(Event::StereoTool(self.stereotool.clone()));
+    }
+
+    /// Ask the library itself where it stands.
+    ///
+    /// This loads it and opens one processor, which takes a moment and walks
+    /// every audio device on the machine, so it is done when the answer can
+    /// have changed and not otherwise: at startup, when a licence key is
+    /// given, and when a copy may have just been installed. A library
+    /// already loaded cannot be swapped inside one run, so a second look at
+    /// one that answered gives the same answer.
+    pub fn refresh_stereotool(&mut self) {
+        if matches!(self.stereotool, crate::stereotool::Status::Ready(_)) && !self.stereotool_stale
+        {
+            return;
+        }
+        self.stereotool_stale = false;
+        self.stereotool = crate::stereotool::status(self.config.stereotool_license.as_deref());
     }
 
     pub fn emit_devices(&mut self) {
