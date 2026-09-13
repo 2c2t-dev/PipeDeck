@@ -80,11 +80,19 @@ mix hears the result.
 Their windows are not implemented: a plug-in's own editor is an X11 surface
 to embed, and GTK4 has no socket for one. Parameters are at their defaults.
 
+A VST3 on Linux is a directory named `something.vst3`, not a file, and it
+holds the shared object under `Contents/x86_64-linux/`. The **Plug-ins** page
+of the settings installs one into `~/.vst3`: point it at the directory and it
+is copied whole, or at a bare `.so` and the directory is built around it. It
+then reads the paths again, so the effect is offered right away. Plug-ins are
+read once per run, because opening one runs its own code.
+
 ## Settings
 
 The gear in the header bar opens them: the colour theme, whether Pipedeck
-starts with the session, and the quantum asked of its nodes. Changing the
-quantum reloads every route, so the audio stops for a moment.
+starts with the session, the quantum asked of its nodes, and the VST3 plug-ins
+it found. Changing the quantum reloads every route, so the audio stops for a
+moment.
 
 ## Using it with OBS
 

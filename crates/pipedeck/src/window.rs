@@ -127,7 +127,8 @@ impl Window {
             let this = this.clone();
             move |_| {
                 let latency = this.state.borrow().latency.clone();
-                preferences::present(&this.window, &this.engine, &latency)
+                let plugins = this.plugins.borrow().len();
+                preferences::present(&this.window, &this.engine, &latency, plugins)
             }
         });
 

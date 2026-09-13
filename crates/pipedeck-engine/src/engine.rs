@@ -136,6 +136,8 @@ pub enum Command {
         mix: MixId,
         muted: bool,
     },
+    /// Read the installed plug-ins again, after one was added or removed.
+    RescanPlugins,
     /// Quantum asked of our nodes, as `frames/rate`. Every loopback is
     /// reloaded, which cuts the audio for as long as that takes.
     SetLatency {
@@ -494,6 +496,11 @@ fn handle_command(
         Command::SetLinkMute { source, mix, muted } => {
             structural = false;
             g.update_link(source, mix, |c| c.muted = muted)
+        }
+        Command::RescanPlugins => {
+            structural = false;
+            g.rescan_plugins();
+            Ok(())
         }
         Command::SetLatency { latency } => g.set_latency(latency),
         Command::Shutdown => {

@@ -1384,6 +1384,16 @@ impl Graph {
         (outputs, inputs)
     }
 
+    /// Look for plug-ins again, after one was installed or removed.
+    ///
+    /// Opening a bundle runs its code, so this happens when asked rather
+    /// than on a timer.
+    pub fn rescan_plugins(&mut self) {
+        self.plugins = crate::vst3::installed();
+        log::info!("{} plug-in(s) installed", self.plugins.len());
+        self.emit_plugins();
+    }
+
     /// What the interface can offer to put on a channel.
     pub fn emit_plugins(&self) {
         self.emit(Event::Plugins {
