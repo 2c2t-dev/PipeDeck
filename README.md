@@ -39,8 +39,11 @@ Stream Mix and Monitor, keeping every fader.
 Set `PIPEDECK_APP_ID` to run a development build next to an installed one,
 instead of handing over to the running instance.
 
-Clicking a mix or a channel card opens its window: rename it, set its
-levels, attach or detach devices, or remove it.
+Clicking a card opens the window of that object. A mix window holds its
+name, its master level and the devices it plays to, each with a level of
+its own. A channel window holds its name, its trim and the mixes it feeds,
+each with the fader that pair has in the grid. Both are where you rename or
+remove the object.
 
 ## Using it with OBS
 

@@ -271,6 +271,22 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
+    // A channel trim rides on its own sink, ahead of every cell.
+    engine
+        .send(Command::SetSourceGain {
+            id: source,
+            gain: 0.5,
+        })
+        .unwrap();
+    settle();
+    let trim = node_volume(&pw_dump(), &format!("pipedeck.src.{source}"));
+    check(
+        trim.as_ref()
+            .is_some_and(|(v, _)| v.iter().all(|x| (x - 0.125).abs() < 1e-3)),
+        &format!("the channel sink carries its trim: {trim:?}"),
+        &mut failures,
+    );
+
     let cfg = std::fs::read_to_string(&config_path).unwrap_or_default();
     check(
         cfg.contains("[[link]]") && cfg.contains("gain = 0.5") && cfg.contains(&device.name),

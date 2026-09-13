@@ -4,7 +4,7 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
-use pipedeck_engine::{Command, Device, SourceConfig};
+use pipedeck_engine::{Command, Device};
 
 use crate::engine_link::EngineLink;
 
@@ -98,49 +98,6 @@ pub fn add_source(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, inputs: &
                 .and_then(|i| inputs.get(i))
                 .map(|d| d.name.clone());
             engine.send(Command::AddSource { name, device });
-        }
-    });
-    dialog.present(Some(parent));
-}
-
-/// Rename or remove a channel. What it captures is fixed when it is created,
-/// because that is what its place in the graph is made of.
-pub fn edit_channel(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, source: &SourceConfig) {
-    let dialog = adw::AlertDialog::new(
-        Some(&format!("Edit {}", source.name)),
-        source
-            .device
-            .as_deref()
-            .map(|device| format!("Captures {device}"))
-            .as_deref(),
-    );
-
-    let name = gtk::Entry::new();
-    name.set_text(&source.name);
-    name.set_activates_default(true);
-    dialog.set_extra_child(Some(&name));
-
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("remove", "Remove channel");
-    dialog.add_response("apply", "Apply");
-    dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
-    dialog.set_response_appearance("apply", adw::ResponseAppearance::Suggested);
-    dialog.set_default_response(Some("apply"));
-    dialog.set_close_response("cancel");
-
-    let id = source.id;
-    let previous = source.name.clone();
-    dialog.connect_response(None, {
-        let engine = engine.clone();
-        move |_, response| match response {
-            "apply" => {
-                let chosen = name.text().trim().to_owned();
-                if !chosen.is_empty() && chosen != previous {
-                    engine.send(Command::RenameSource { id, name: chosen });
-                }
-            }
-            "remove" => engine.send(Command::RemoveSource(id)),
-            _ => {}
         }
     });
     dialog.present(Some(parent));

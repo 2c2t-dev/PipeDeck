@@ -11,8 +11,10 @@ use libadwaita as adw;
 use pipedeck_engine::{ChainState, Command, Device, MixConfig, MixId};
 
 use crate::engine_link::EngineLink;
+use crate::widgets;
 
-const FADER_MAX: f64 = 100.0;
+use widgets::FADER_MAX;
+
 const LEFT_PANE_WIDTH: i32 = 240;
 
 pub struct MixDialog {

@@ -81,6 +81,15 @@ pub enum Command {
         id: SourceId,
         name: String,
     },
+    /// Trim of a row, applied to its sink ahead of every cell.
+    SetSourceGain {
+        id: SourceId,
+        gain: f32,
+    },
+    SetSourceMute {
+        id: SourceId,
+        muted: bool,
+    },
     /// Create or destroy one cell of the matrix.
     SetLink {
         source: SourceId,
@@ -122,6 +131,8 @@ pub enum Event {
     },
     /// A mix's master level moved.
     MixChanged { id: MixId, state: ChainState },
+    /// A row's trim moved.
+    SourceChanged { id: SourceId, state: ChainState },
     /// The level of one output of a mix moved.
     OutputChanged {
         id: MixId,
@@ -390,6 +401,14 @@ fn handle_command(
             cfg.prune_links();
         }),
         Command::RenameSource { id, name } => rename_source(&mut g, id, name),
+        Command::SetSourceGain { id, gain } => {
+            structural = false;
+            g.update_source(id, |c| c.gain = gain.clamp(0.0, 1.0))
+        }
+        Command::SetSourceMute { id, muted } => {
+            structural = false;
+            g.update_source(id, |c| c.muted = muted)
+        }
         Command::SetLink {
             source,
             mix,

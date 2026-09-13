@@ -1,10 +1,12 @@
-//! Pipedeck: a PipeWire mixer with a Stream mix and a Monitor mix per source.
+//! Pipedeck: a PipeWire mixer built as a matrix of channels and mixes.
 
 mod cell;
+mod channel_dialog;
 mod dialogs;
 mod engine_link;
 mod mix_dialog;
 mod signals;
+mod widgets;
 mod window;
 
 use adw::gtk::glib;

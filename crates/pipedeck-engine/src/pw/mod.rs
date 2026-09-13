@@ -105,7 +105,7 @@ struct Mix {
 /// A row. Virtual rows own a sink; input rows capture a device directly and
 /// own nothing in the graph.
 struct Source {
-    #[allow(dead_code)] // held only to keep the remote object alive
+    /// The row's sink, which also carries its trim. An input row has none.
     sink: Option<Node>,
 }
 
@@ -387,6 +387,28 @@ impl Graph {
         }
         drop(source);
         log::info!("source {id} removed");
+        Ok(())
+    }
+
+    /// Trim of a row, applied to its sink. An input row has no sink, so it
+    /// keeps the value for the interface and changes nothing in the graph.
+    pub fn update_source(
+        &mut self,
+        id: SourceId,
+        f: impl FnOnce(&mut ChainState),
+    ) -> Result<(), EngineError> {
+        let cfg = self
+            .config
+            .source_mut(id)
+            .ok_or(EngineError::UnknownSource(id))?;
+        let mut state = cfg.state();
+        f(&mut state);
+        cfg.set_state(state);
+        if let Some(sink) = self.sources.get(&id).and_then(|s| s.sink.as_ref()) {
+            apply_props(sink, &id.sink_node_name(), &state);
+        }
+        self.dirty = true;
+        self.emit(Event::SourceChanged { id, state });
         Ok(())
     }
 

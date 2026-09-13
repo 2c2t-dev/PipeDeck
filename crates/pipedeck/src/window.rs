@@ -14,6 +14,7 @@ use pipedeck_engine::{
 };
 
 use crate::cell::{link_button, Cell};
+use crate::channel_dialog::ChannelDialog;
 use crate::dialogs;
 use crate::engine_link::EngineLink;
 use crate::mix_dialog::MixDialog;
@@ -37,8 +38,9 @@ pub struct Window {
     outputs: RefCell<Vec<Device>>,
     inputs: RefCell<Vec<Device>>,
     cells: RefCell<HashMap<(SourceId, MixId), Cell>>,
-    /// The mix window, while one is open, so engine changes reach it.
+    /// The object windows, while they are open, so engine changes reach them.
     mix_dialog: RefCell<Option<Rc<MixDialog>>>,
+    channel_dialog: RefCell<Option<Rc<ChannelDialog>>>,
 }
 
 impl Window {
@@ -96,6 +98,7 @@ impl Window {
             inputs: RefCell::new(Vec::new()),
             cells: RefCell::new(HashMap::new()),
             mix_dialog: RefCell::new(None),
+            channel_dialog: RefCell::new(None),
         });
 
         this.rebuild();
@@ -111,14 +114,16 @@ impl Window {
             Event::State(state) => {
                 *self.state.borrow_mut() = state;
                 self.rebuild();
-                self.refresh_mix_dialog();
+                self.refresh_dialogs();
             }
             Event::Devices { outputs, inputs } => {
                 *self.outputs.borrow_mut() = outputs;
                 *self.inputs.borrow_mut() = inputs;
-                self.refresh_mix_dialog();
+                self.refresh_dialogs();
             }
-            Event::MixChanged { .. } | Event::OutputChanged { .. } => {
+            Event::MixChanged { .. }
+            | Event::OutputChanged { .. }
+            | Event::SourceChanged { .. } => {
                 // The window that sent it already shows the new value, and
                 // the grid only shows the mix name and its output count.
             }
@@ -213,19 +218,54 @@ impl Window {
         *self.mix_dialog.borrow_mut() = Some(dialog);
     }
 
-    /// Keep an open mix window in step with the engine, and close it if its
-    /// mix is gone.
-    fn refresh_mix_dialog(self: &Rc<Self>) {
-        let open = self.mix_dialog.borrow().clone();
-        let Some(dialog) = open else {
+    /// Open the window of one channel, replacing whichever was open.
+    fn open_channel_dialog(self: &Rc<Self>, id: SourceId) {
+        let state = self.state.borrow();
+        let Some(source) = state.sources.iter().find(|s| s.id == id) else {
             return;
         };
-        let state = self.state.borrow();
-        match state.mixes.iter().find(|m| m.id == dialog.id()) {
-            Some(mix) => dialog.refresh(mix, &self.outputs.borrow()),
-            None => {
-                dialog.close();
-                *self.mix_dialog.borrow_mut() = None;
+        if let Some(open) = self.channel_dialog.borrow_mut().take() {
+            open.close();
+        }
+        let dialog = ChannelDialog::present(
+            &self.window,
+            &self.engine,
+            source,
+            &state.mixes,
+            &state.links,
+            &self.inputs.borrow(),
+        );
+        drop(state);
+        *self.channel_dialog.borrow_mut() = Some(dialog);
+    }
+
+    /// Keep the open windows in step with the engine, and close one whose
+    /// object is gone.
+    fn refresh_dialogs(self: &Rc<Self>) {
+        let open_mix = self.mix_dialog.borrow().clone();
+        if let Some(dialog) = open_mix {
+            let state = self.state.borrow();
+            match state.mixes.iter().find(|m| m.id == dialog.id()) {
+                Some(mix) => dialog.refresh(mix, &self.outputs.borrow()),
+                None => {
+                    drop(state);
+                    dialog.close();
+                    *self.mix_dialog.borrow_mut() = None;
+                }
+            }
+        }
+        let open_channel = self.channel_dialog.borrow().clone();
+        if let Some(dialog) = open_channel {
+            let state = self.state.borrow();
+            match state.sources.iter().find(|s| s.id == dialog.id()) {
+                Some(source) => {
+                    dialog.refresh(source, &state.mixes, &state.links, &self.inputs.borrow())
+                }
+                None => {
+                    drop(state);
+                    dialog.close();
+                    *self.channel_dialog.borrow_mut() = None;
+                }
             }
         }
     }
@@ -319,11 +359,11 @@ impl Window {
         content.append(&title);
 
         let card = clickable_card(&content, SOURCE_COLUMN_WIDTH, ROW_HEIGHT);
-        card.set_tooltip_text(Some("Rename or remove this channel"));
+        card.set_tooltip_text(Some("Rename this channel, set its levels, or remove it"));
         card.connect_clicked({
             let this = self.clone();
-            let source = source.clone();
-            move |_| dialogs::edit_channel(&this.window, &this.engine, &source)
+            let id = source.id;
+            move |_| this.open_channel_dialog(id)
         });
         card.upcast()
     }

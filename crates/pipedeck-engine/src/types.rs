@@ -57,6 +57,13 @@ impl std::fmt::Display for MixId {
 pub struct SourceConfig {
     pub id: SourceId,
     pub name: String,
+    /// Trim applied to the row's sink before any cell. The sink passes it on
+    /// to its monitor ports, so it scales every mix this row feeds at once.
+    /// An input row has no sink and ignores it.
+    #[serde(default = "unity_gain")]
+    pub gain: f32,
+    #[serde(default)]
+    pub muted: bool,
     /// `node.name` of the capture device, for an input row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
@@ -67,6 +74,8 @@ impl SourceConfig {
         Self {
             id,
             name: name.into(),
+            gain: 1.0,
+            muted: false,
             device: None,
         }
     }
@@ -75,8 +84,22 @@ impl SourceConfig {
         Self {
             id,
             name: name.into(),
+            gain: 1.0,
+            muted: false,
             device: Some(device.into()),
         }
+    }
+
+    pub fn state(&self) -> ChainState {
+        ChainState {
+            gain: self.gain,
+            muted: self.muted,
+        }
+    }
+
+    pub fn set_state(&mut self, state: ChainState) {
+        self.gain = state.gain;
+        self.muted = state.muted;
     }
 
     /// True when this row captures a device instead of exposing a sink.
