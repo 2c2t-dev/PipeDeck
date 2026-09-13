@@ -61,6 +61,10 @@ pub struct EffectPanel {
     /// What was last drawn, so an echo of our own change does not redraw it
     /// under the pointer.
     shown: RefCell<Vec<Effect>>,
+    /// Whether anything has been drawn at all. An empty chain is what a
+    /// panel starts with, so without this the first state to arrive would
+    /// match and the list would be left blank rather than told it is empty.
+    drawn: StdCell<bool>,
     /// The plug-ins the engine found installed.
     plugins: RefCell<Vec<Plugin>>,
     /// Where Stereo Tool stands, which decides whether it is offered at all.
@@ -81,6 +85,7 @@ impl EffectPanel {
             list: gtk::Box::new(gtk::Orientation::Vertical, 8),
             add: gtk::MenuButton::new(),
             shown: RefCell::new(Vec::new()),
+            drawn: StdCell::new(false),
             plugins: RefCell::new(Vec::new()),
             stereotool: RefCell::new(Status::Absent),
             pending: RefCell::new(None),
@@ -140,9 +145,10 @@ impl EffectPanel {
 
     /// Redraw the chain, unless it is already what is on screen.
     fn show(self: &Rc<Self>, effects: &[Effect]) {
-        if self.shown.borrow().as_slice() == effects {
+        if self.drawn.get() && self.shown.borrow().as_slice() == effects {
             return;
         }
+        self.drawn.set(true);
         *self.shown.borrow_mut() = effects.to_vec();
 
         while let Some(child) = self.list.first_child() {
@@ -355,25 +361,29 @@ impl EffectPanel {
             return;
         };
         effect.plugin = preset.map(|path| path.display().to_string());
-        self.send(chain.clone(), false);
-        // The row shows the preset, so draw it again at once rather than
-        // waiting for the engine to echo the chain back.
-        self.shown.borrow_mut().clear();
-        self.show(&chain);
+        self.send(chain, false);
     }
 
     /// Send a chain to the engine, waiting for a dragged control to settle.
     fn send(self: &Rc<Self>, chain: Vec<Effect>, debounce: bool) {
-        // What is on screen is the truth while the engine catches up, so a
-        // second change reads the first one rather than the state before it.
-        *self.shown.borrow_mut() = chain.clone();
         if let Some(pending) = self.pending.borrow_mut().take() {
             pending.remove();
         }
         if !debounce {
+            // Drawn here rather than when the engine echoes it back: the
+            // echo is this very chain, and a panel that only redraws on a
+            // difference would find none and leave the list as it was.
+            self.shown.borrow_mut().clear();
+            self.drawn.set(false);
+            self.show(&chain);
             self.engine.send(self.target.command(chain));
             return;
         }
+        // A control that moved already shows its own value, and redrawing
+        // would take the slider out from under the pointer. What is on
+        // screen is the truth while the engine catches up, so the next
+        // change reads this one rather than the state before it.
+        *self.shown.borrow_mut() = chain.clone();
         let this = self.clone();
         let source =
             gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
