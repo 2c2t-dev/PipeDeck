@@ -15,35 +15,19 @@ use adw::prelude::*;
 use libadwaita as adw;
 
 use pipedeck_engine::stereotool::Status;
-use pipedeck_engine::{vst3::Plugin, Command, Control, Effect, EffectKind, EffectTarget};
+use pipedeck_engine::{vst3::Plugin, Command, Control, Effect, EffectKind, SourceId};
 
 use crate::effects;
 use crate::engine_link::EngineLink;
 use crate::widgets;
 
-/// Which object the chain belongs to. The engine names them the same way.
-pub type Target = EffectTarget;
-
-fn command(target: Target, effects: Vec<Effect>) -> Command {
-    match target {
-        Target::Channel(id) => Command::SetEffects { id, effects },
-        Target::Mix(id) => Command::SetMixEffects { id, effects },
-    }
-}
+/// The channel whose chain this is. Only a channel runs effects: a mix is
+/// what comes out of them.
+pub type Target = SourceId;
 
 /// What the tab says about where the chain runs.
-fn hint(target: Target) -> &'static str {
-    match target {
-        Target::Channel(_) => {
-            "Every mix hears this channel through these, in order. Changing one reloads the \
-             chain, so the audio stops for a moment."
-        }
-        Target::Mix(_) => {
-            "This mix runs these on its way out, in order, and nothing else hears them. \
-             Changing one reloads the chain, so the audio stops for a moment."
-        }
-    }
-}
+const HINT: &str = "Every mix hears this channel through these, in order. Changing one reloads \
+                    the chain, so the audio stops for a moment.";
 
 pub struct EffectPanel {
     engine: EngineLink,
@@ -97,7 +81,7 @@ impl EffectPanel {
     fn build(self: &Rc<Self>) {
         self.page.set_margin_top(12);
 
-        let hint = gtk::Label::new(Some(hint(self.target)));
+        let hint = gtk::Label::new(Some(HINT));
         hint.add_css_class("caption");
         hint.add_css_class("dim-label");
         hint.set_xalign(0.0);
@@ -116,10 +100,8 @@ impl EffectPanel {
                 .label("Add effect")
                 .build(),
         ));
-        self.add.set_tooltip_text(Some(match self.target {
-            Target::Channel(_) => "Add an effect to this channel",
-            Target::Mix(_) => "Add an effect to this mix",
-        }));
+        self.add
+            .set_tooltip_text(Some("Add an effect to this channel"));
         self.add.set_halign(gtk::Align::Center);
         self.add.set_popover(Some(&self.popover()));
         self.page.append(&self.add);
@@ -149,10 +131,7 @@ impl EffectPanel {
             self.list.remove(&child);
         }
         if effects.is_empty() {
-            let empty = gtk::Label::new(Some(match self.target {
-                Target::Channel(_) => "No effect on this channel.",
-                Target::Mix(_) => "No effect on this mix.",
-            }));
+            let empty = gtk::Label::new(Some("No effect on this channel."));
             empty.add_css_class("dim-label");
             empty.set_margin_top(24);
             self.list.append(&empty);
@@ -188,7 +167,7 @@ impl EffectPanel {
                 let this = self.clone();
                 move |_| {
                     this.engine.send(Command::SetEffectWindow {
-                        target: this.target,
+                        id: this.target,
                         index: position,
                         open: true,
                     })
@@ -396,7 +375,10 @@ impl EffectPanel {
             self.shown.borrow_mut().clear();
             self.drawn.set(false);
             self.show(&chain);
-            self.engine.send(command(self.target, chain));
+            self.engine.send(Command::SetEffects {
+                id: self.target,
+                effects: chain,
+            });
             return;
         }
         // A control that moved already shows its own value, and redrawing
@@ -408,7 +390,10 @@ impl EffectPanel {
         let source =
             gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
                 this.pending.borrow_mut().take();
-                this.engine.send(command(this.target, chain));
+                this.engine.send(Command::SetEffects {
+                    id: this.target,
+                    effects: chain,
+                });
             });
         *self.pending.borrow_mut() = Some(source);
     }

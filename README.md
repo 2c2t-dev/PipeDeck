@@ -75,10 +75,8 @@ A channel bound to a microphone runs them too, in a tab of its own: it has no
 sink to read, so the chain captures the device itself and every mix hears the
 microphone through it.
 
-The engine can also run a chain on a *mix*, treated the other way round — its
-cells play into the chain and the chain into the mix sink, so a capture client
-reads the treated signal. The interface does not offer it; the smoke test
-exercises it.
+A mix runs none: a mix is what comes out of the channels, not another place to
+treat them.
 
 A channel can also run **VST3 plug-ins**, which the mixer hosts itself. It
 reads the bundles installed under the usual paths, plus `VST3_PATH`, and
@@ -189,35 +187,40 @@ so the audio stops for a moment.
 
 ## Using it with OBS
 
-Every mix is an input device of its own, named after it, so OBS, Discord or a
-browser list it where they list microphones: add an audio input capture and
-pick the mix by name. It is there whether or not the mix plays to a device,
-and renaming the mix renames it — the one node this mixer rebuilds on a
-rename, since that name is the whole of what it is for. Attach your headphones
-to a different mix to hear a different balance.
+Every mix *is* an input device, named after it, so OBS, Discord or a browser
+list it where they list microphones and nowhere else: add an audio input
+capture and pick the mix by name. It is there whether or not the mix plays to
+a device. Renaming one makes the node again, since a node carries the
+description it was born with and that description is the name in someone's
+list; a recorder has to pick it again. Attach your headphones to a different
+mix to hear a different balance.
 
 A channel is the opposite: a sink, which the system lists among the outputs
-like a pair of headphones, so an application can be pointed at it.
+like a pair of headphones, so an application can be pointed at it. Rows are
+what you play into, columns are what you record — and each is only ever in the
+one list.
 
 ## How the graph looks
 
 ```
  apps ──▶ [pipedeck.src.N] ──monitor──┐
-           an output device           ├─ loopback (cell fader) ──▶ [pipedeck.mix.M] ──┬─ loopback ──▶ device
- mic  ────────────────────────────────┘                                              ├─ loopback ──▶ device
-                                                                                      └─ loopback ──▶ [pipedeck.in.M]
-                                                                                                      an input device
+           an output device           ├─ loopback (cell fader) ═▶ [pipedeck.mix.M] ──┬─ loopback ──▶ device
+ mic  ────────────────────────────────┘                            an input device   └─ loopback ──▶ device
+                                                                   (recorded by OBS)
 ```
 
-A row is a sink and a column is a source, which is what each of them is to
-the rest of the system: applications play into a channel as they would into
-headphones, and a capture client records a mix as it would a microphone. The
-column is a sink underneath, because a session manager routes into sinks and
-not into sources; the loopback on the end of it is what carries the class the
-lists read. `Audio/Source/Virtual` is what the documentation calls a source
-made up rather than found, and it segfaults libspa's audioconvert on PipeWire
-1.6.8 when the other side of the loopback is a stream — `Audio/Source` is
-listed the same way and survives.
+A row is a sink and a column is a source, which is what each of them is to the
+rest of the system, and the reason each appears in one list only. Both are the
+same null node underneath — a column has input ports like any sink, and what
+plays into them comes out of its capture ports — but its class says source,
+and a session manager routes nothing into a source. So the cells (`═▶` above)
+are linked into their column by hand, port to port, by the mixer itself. That
+is the one place here where PipeWire's own routing is not asked to do the
+work; everything else still is.
+
+Volume comes with it: `monitor.channel-volumes` makes a node apply its volume
+to what it hands on, which is a pre-fader trim on a row and the master on a
+column, and it works on a source made this way as well as on a sink.
 
 With effects, a channel grows a stage or two before the cells read it. A row
 bound to a microphone starts on that microphone instead of on a sink:

@@ -348,16 +348,11 @@ fn main() -> ExitCode {
     settle();
     let nodes = node_names(&pw_dump());
     check(
-        nodes
-            == [
-                format!("pipedeck.in.{mix}"),
-                format!("pipedeck.in.{mix}.in"),
-                format!("pipedeck.mix.{mix}"),
-            ],
-        &format!("a fresh config yields one mix, and the input device it is: {nodes:?}"),
+        nodes == [format!("pipedeck.mix.{mix}")],
+        &format!("a fresh config yields one mix and nothing else: {nodes:?}"),
         &mut failures,
     );
-    let offered = our_node(&pw_dump(), &format!("pipedeck.in.{mix}")).map(|node| {
+    let offered = our_node(&pw_dump(), &format!("pipedeck.mix.{mix}")).map(|node| {
         (
             props(node)["media.class"].as_str().unwrap_or("").to_owned(),
             props(node)["node.description"]
@@ -368,9 +363,9 @@ fn main() -> ExitCode {
     });
     check(
         offered.as_ref().is_some_and(|(class, description)| {
-            class == "Audio/Source" && description.contains("Personal Mix")
+            class == "Audio/Source/Virtual" && description.contains("Personal Mix")
         }),
-        &format!("and it is offered as a microphone would be: {offered:?}"),
+        &format!("and it is a microphone to the system, not a speaker: {offered:?}"),
         &mut failures,
     );
     check(
@@ -394,8 +389,6 @@ fn main() -> ExitCode {
     check(
         nodes
             == [
-                format!("pipedeck.in.{mix}"),
-                format!("pipedeck.in.{mix}.in"),
                 format!("pipedeck.mix.{mix}"),
                 format!("pipedeck.src.{source}"),
             ],
@@ -553,7 +546,7 @@ fn main() -> ExitCode {
     // What a capture client gets, taken the way one takes it: by naming the
     // device and recording it. The mix is heard through the cell and the
     // master alike, so this is the same signal its meter reads.
-    let recorded = node_serial(&pw_dump(), &format!("pipedeck.in.{mix}"))
+    let recorded = node_serial(&pw_dump(), &format!("pipedeck.mix.{mix}"))
         .map(|serial| record_peak(serial, 3, &dir.join("recorded.wav")))
         .unwrap_or(0.0);
     let what = format!("a recorder hears the mix on its input device: {recorded:.3}");
@@ -909,97 +902,12 @@ fn main() -> ExitCode {
         println!("[skip] no VST3 effect installed, so nothing to host");
     }
 
-    // Every fader goes back to unity first, and the cell is unmuted: the
-    // mute test above left it closed, and the mix meter reads through the
-    // channel's trim, the cell and the mix master alike. What follows is
-    // about a chain passing audio, so nothing else may be in the way.
-    for command in [
-        Command::SetLinkMute {
-            source,
-            mix,
-            muted: false,
-        },
-        Command::SetSourceGain {
-            id: source,
-            gain: 1.0,
-        },
-        Command::SetLinkGain {
-            source,
-            mix,
-            gain: 1.0,
-        },
-        Command::SetMixGain { id: mix, gain: 1.0 },
-    ] {
-        engine.send(command).unwrap();
-    }
-    settle();
-
-    // A mix is treated the other way round from a channel: its cells play
-    // into the chain and the chain into the sink, so that what OBS reads on
-    // the mix is the treated signal.
-    engine
-        .send(Command::SetMixEffects {
-            id: mix,
-            effects: vec![pipedeck_engine::Effect {
-                name: "Low cut".into(),
-                kind: pipedeck_engine::EffectKind::Builtin,
-                plugin: None,
-                label: "bq_highpass".into(),
-                controls: vec![pipedeck_engine::Control {
-                    name: "Freq".into(),
-                    value: 90.0,
-                }],
-            }],
-        })
-        .unwrap();
-    wait_state(&rx, "the mix effect", |s| {
-        s.mixes.iter().any(|column| !column.effects.is_empty())
-    });
-    settle();
-    let dump = pw_dump();
-    let names = node_names(&dump);
-    check(
-        names.contains(&format!("pipedeck.mixfx.{mix}"))
-            && names.contains(&format!("pipedeck.mix.{mix}")),
-        &format!("the mix chain has its own sink and keeps the one OBS reads: {names:?}"),
-        &mut failures,
-    );
-    let into = our_node(&dump, &format!("pipedeck.link.{source}.{mix}")).map(|node| {
-        props(node)["target.object"]
-            .as_str()
-            .unwrap_or("")
-            .to_owned()
-    });
-    check(
-        into.as_deref() == Some(format!("pipedeck.mixfx.{mix}").as_str()),
-        &format!("the cell plays into the chain rather than the mix sink: {into:?}"),
-        &mut failures,
-    );
-
-    let mut player = Process::new("pw-play")
-        .arg(format!("--target={sink_serial}"))
-        .arg(&tone)
-        .spawn()
-        .expect("pw-play must be installed");
-    let through = wait_levels(&rx, source, mix, Duration::from_secs(5));
-    let _ = player.kill();
-    let _ = player.wait();
-    // Same caveat as a channel's chain: it names the nodes it sits between,
-    // and another mixer answers to those names.
-    let what = format!("the mix is still heard through its chain: {:.3}", through.1);
-    if alone {
-        check(through.1 > 0.01, &what, &mut failures);
-    } else {
-        println!("[skip] {what}");
-    }
-
-    // Stereo Tool is the reason a mix runs anything at all: a broadcast
-    // processor belongs on the stream, not on the channel every mix hears.
-    // It is proprietary, so this runs only where it has been imported.
+    // Stereo Tool is hosted the same way, and is the one plug-in most likely
+    // to be installed. It is proprietary, so this runs only where it is.
     if pipedeck_engine::stereotool::installed() {
         engine
-            .send(Command::SetMixEffects {
-                id: mix,
+            .send(Command::SetEffects {
+                id: source,
                 effects: vec![pipedeck_engine::Effect {
                     name: "Stereo Tool".into(),
                     kind: pipedeck_engine::EffectKind::StereoTool,
@@ -1009,10 +917,9 @@ fn main() -> ExitCode {
                 }],
             })
             .unwrap();
-        wait_state(&rx, "Stereo Tool on the mix", |s| {
-            s.mixes.iter().any(|column| {
-                column
-                    .effects
+        wait_state(&rx, "Stereo Tool on the channel", |s| {
+            s.sources.iter().any(|row| {
+                row.effects
                     .iter()
                     .any(|effect| effect.kind == pipedeck_engine::EffectKind::StereoTool)
             })
@@ -1021,47 +928,32 @@ fn main() -> ExitCode {
         let dump = pw_dump();
         let names = node_names(&dump);
         check(
-            names.contains(&format!("pipedeck.mixvst.{mix}")),
-            &format!("Stereo Tool reads a sink of its own: {names:?}"),
-            &mut failures,
-        );
-        let into = our_node(&dump, &format!("pipedeck.link.{source}.{mix}")).map(|node| {
-            props(node)["target.object"]
-                .as_str()
-                .unwrap_or("")
-                .to_owned()
-        });
-        check(
-            into.as_deref() == Some(format!("pipedeck.mixvst.{mix}").as_str()),
-            &format!("the cell plays into Stereo Tool: {into:?}"),
+            names.contains(&format!("pipedeck.vst.{source}")),
+            &format!("Stereo Tool runs on a sink of its own: {names:?}"),
             &mut failures,
         );
 
         // Fed straight into the chain's own sink rather than through the
-        // cell: the chain and the meter both name ids, so this holds whether
-        // or not another mixer answers to our node names.
-        let into_chain = node_serial(&dump, &format!("pipedeck.mixvst.{mix}"));
-        match into_chain {
+        // channel: the chain names ids, so this holds whether or not another
+        // mixer answers to our node names.
+        match node_serial(&dump, &format!("pipedeck.vst.{source}")) {
             Some(serial) => {
                 let mut player = Process::new("pw-play")
                     .arg(format!("--target={serial}"))
                     .arg(&tone)
                     .spawn()
                     .expect("pw-play must be installed");
+                drain(&rx);
                 let heard = wait_levels(&rx, source, mix, Duration::from_secs(6));
                 let _ = player.kill();
                 let _ = player.wait();
                 check(
-                    heard.1 > 0.005,
-                    &format!("the mix hears the tone through Stereo Tool: {:.3}", heard.1),
+                    heard.0 > 0.005,
+                    &format!("the channel hears the tone through it: {:.3}", heard.0),
                     &mut failures,
                 );
             }
-            None => check(
-                false,
-                "the chain sink has no serial to play into",
-                &mut failures,
-            ),
+            None => check(false, "its sink has no serial to play into", &mut failures),
         }
 
         // Its own window, opened the way the interface asks for it: from the
@@ -1070,69 +962,39 @@ fn main() -> ExitCode {
         // whole mixer down rather than report anything. Off by default
         // because it puts a window on the screen of whoever runs the test.
         if std::env::var_os("PIPEDECK_SMOKE_WINDOW").is_some() {
-            engine
-                .send(Command::SetEffectWindow {
-                    target: pipedeck_engine::EffectTarget::Mix(mix),
-                    index: 0,
-                    open: true,
-                })
-                .unwrap();
-            let complaint = wait_error(&rx, Duration::from_secs(6));
-            check(
-                complaint.is_none(),
-                &format!("its window opens from the engine thread: {complaint:?}"),
-                &mut failures,
-            );
-
-            // And closes again on being asked, since nothing else can close
-            // it: the library ignores the window manager's request.
-            engine
-                .send(Command::SetEffectWindow {
-                    target: pipedeck_engine::EffectTarget::Mix(mix),
-                    index: 0,
-                    open: false,
-                })
-                .unwrap();
-            let complaint = wait_error(&rx, Duration::from_secs(3));
-            check(
-                complaint.is_none(),
-                &format!("and closes on being asked: {complaint:?}"),
-                &mut failures,
-            );
+            for open in [true, false] {
+                engine
+                    .send(Command::SetEffectWindow {
+                        id: source,
+                        index: 0,
+                        open,
+                    })
+                    .unwrap();
+                let complaint = wait_error(&rx, Duration::from_secs(4));
+                check(
+                    complaint.is_none(),
+                    &format!(
+                        "its window {} from the engine thread: {complaint:?}",
+                        if open { "opens" } else { "closes" }
+                    ),
+                    &mut failures,
+                );
+            }
         }
-    } else {
-        println!("[skip] Stereo Tool is not installed, so nothing to run on the mix");
-    }
 
-    engine
-        .send(Command::SetMixEffects {
-            id: mix,
-            effects: Vec::new(),
-        })
-        .unwrap();
-    wait_state(&rx, "the mix effect removed", |s| {
-        s.mixes.iter().all(|column| column.effects.is_empty())
-    });
-    settle();
-    let dump = pw_dump();
-    let names = node_names(&dump);
-    check(
-        !names.contains(&format!("pipedeck.mixfx.{mix}"))
-            && !names.contains(&format!("pipedeck.mixvst.{mix}")),
-        &format!("removing them takes both sinks with them: {names:?}"),
-        &mut failures,
-    );
-    let into = our_node(&dump, &format!("pipedeck.link.{source}.{mix}")).map(|node| {
-        props(node)["target.object"]
-            .as_str()
-            .unwrap_or("")
-            .to_owned()
-    });
-    check(
-        into.as_deref() == Some(format!("pipedeck.mix.{mix}").as_str()),
-        &format!("the cell plays into the mix sink again: {into:?}"),
-        &mut failures,
-    );
+        engine
+            .send(Command::SetEffects {
+                id: source,
+                effects: Vec::new(),
+            })
+            .unwrap();
+        wait_state(&rx, "Stereo Tool removed", |s| {
+            s.sources.iter().all(|row| row.effects.is_empty())
+        });
+        settle();
+    } else {
+        println!("[skip] Stereo Tool is not installed, so nothing to host");
+    }
 
     // A row bound to a microphone has no sink of its own, so its effects
     // read the device itself rather than a monitor. It is left unlinked on
@@ -1254,7 +1116,7 @@ fn main() -> ExitCode {
     let nodes = node_names(&pw_dump());
     check(
         nodes.is_empty(),
-        &format!("removing the mix takes its output and its input device with it: {nodes:?}"),
+        &format!("removing the mix takes its output with it: {nodes:?}"),
         &mut failures,
     );
 

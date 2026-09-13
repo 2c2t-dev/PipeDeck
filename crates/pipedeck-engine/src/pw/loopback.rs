@@ -135,49 +135,12 @@ impl LoopbackSpec {
             "node.description",
             Val::from(format!("Pipedeck: {} to {}", source.name, mix.name)),
         ));
-        // A column may be treated on the way in, so a cell ends on the node
-        // the column starts with rather than on its sink.
-        playback.push(("target.object", Val::from(crate::pw::mix_input(mix))));
+        // A mix is a source, and a session manager routes nothing into a
+        // source: it would send this to the default speakers instead. So it
+        // is told to route nothing at all, and the mixer links the cell into
+        // its column by hand. See `Graph::hook_up_links`.
+        playback.push(("node.autoconnect", Val::from(false)));
 
-        Self { capture, playback }
-    }
-
-    /// A mix as an input device: it reads the mix and *is* a source, rather
-    /// than playing into one.
-    ///
-    /// A mix is something you record, so it belongs in the microphone list
-    /// of whatever records it — OBS, Discord, a browser — and not in the
-    /// list of things to play into. A monitor would do for the audio, but a
-    /// monitor is not what those lists show. The playback side of this
-    /// loopback carries `Audio/Source` and so is the device itself: nothing
-    /// routes into it, which is just as well, since the session manager
-    /// refuses to route anything into a source.
-    ///
-    /// `Audio/Source/Virtual`, which is what the documentation calls a
-    /// source made up rather than found, segfaults libspa's audioconvert on
-    /// PipeWire 1.6.8 when the other side of the loopback is a stream, and
-    /// takes the mixer down with it. `Audio/Source` is listed the same way
-    /// and survives.
-    pub fn for_capture(mix: &MixConfig, latency: &str) -> Self {
-        let node_name = mix.id.source_node_name();
-
-        let mut capture = capture_props(
-            format!("{node_name}.in"),
-            latency,
-            mix.id.sink_node_name(),
-            true,
-        );
-        capture.push((
-            "node.description",
-            Val::from(format!("Pipedeck: {} capture", mix.name)),
-        ));
-
-        let mut playback = common(node_name, latency);
-        playback.push(("media.class", Val::from("Audio/Source")));
-        playback.push((
-            "node.description",
-            Val::from(format!("Pipedeck {}", mix.name)),
-        ));
         Self { capture, playback }
     }
 
@@ -185,11 +148,13 @@ impl LoopbackSpec {
     pub fn for_output(mix: &MixConfig, index: usize, device: &str, latency: &str) -> Self {
         let node_name = output_node_name(mix.id, index);
 
+        // A mix is a source, so its output reads it the way anything reads
+        // a microphone, rather than through the monitor of a sink.
         let mut capture = capture_props(
             format!("{node_name}.in"),
             latency,
             mix.id.sink_node_name(),
-            true,
+            false,
         );
         capture.push((
             "node.description",
@@ -244,28 +209,15 @@ mod tests {
         assert!(args.contains("node.name = \"pipedeck.link.3.2.in\""));
         assert!(args.contains("stream.capture.sink = true"));
         assert!(args.contains("target.object = \"pipedeck.src.3\""));
-        assert!(args.contains("target.object = \"pipedeck.mix.2\""));
+        // The playback side names no target: a cell is linked into its mix
+        // by hand, since nothing routes into a source.
+        assert!(args.contains("node.autoconnect = false"));
+        assert_eq!(args.matches("target.object").count(), 1);
         assert!(args.contains("media.class = \"Stream/Input/Audio/Internal\""));
         assert!(args.contains("node.latency = \"512/48000\""));
         assert!(args.contains("node.description = \"Pipedeck: Ga\\\"me to Stream Mix\""));
         assert_eq!(args.matches("state.restore-props = false").count(), 2);
         assert!(args.ends_with("} }"));
-    }
-
-    #[test]
-    fn a_cell_ends_on_what_the_mix_starts_with() {
-        let source = SourceConfig::virtual_sink(SourceId(3), "Game");
-        let mut treated = mix();
-        treated.effects = vec![crate::types::Effect {
-            name: "Low cut".into(),
-            kind: crate::types::EffectKind::Builtin,
-            plugin: None,
-            label: "bq_highpass".into(),
-            controls: Vec::new(),
-        }];
-        let args = LoopbackSpec::for_link(&source, &treated, "512/48000").to_args();
-        assert!(args.contains("target.object = \"pipedeck.mixfx.2\""));
-        assert!(!args.contains("target.object = \"pipedeck.mix.2\""));
     }
 
     #[test]
@@ -279,26 +231,10 @@ mod tests {
     }
 
     #[test]
-    fn a_mix_is_an_input_device_of_its_own() {
-        let args = LoopbackSpec::for_capture(&mix(), "512/48000").to_args();
-        // It reads the mix, and what it offers is a source rather than
-        // something that plays into one.
-        assert!(args.contains("node.name = \"pipedeck.in.2.in\""));
-        assert!(args.contains("stream.capture.sink = true"));
-        assert!(args.contains("target.object = \"pipedeck.mix.2\""));
-        assert!(args.contains("node.name = \"pipedeck.in.2\""));
-        assert!(args.contains("media.class = \"Audio/Source\""));
-        // Nothing routes into a source, so it names no target of its own.
-        assert_eq!(args.matches("target.object").count(), 1);
-        // What the microphone list shows.
-        assert!(args.contains("node.description = \"Pipedeck Stream Mix\""));
-    }
-
-    #[test]
     fn an_output_goes_from_the_mix_sink_to_a_device() {
         let args = LoopbackSpec::for_output(&mix(), 0, "alsa_output.usb", "512/48000").to_args();
         assert!(args.contains("node.name = \"pipedeck.out.2.0.in\""));
-        assert!(args.contains("stream.capture.sink = true"));
+        assert!(!args.contains("stream.capture.sink"));
         assert!(args.contains("target.object = \"pipedeck.mix.2\""));
         assert!(args.contains("target.object = \"alsa_output.usb\""));
         assert_eq!(output_node_name(MixId(2), 1), "pipedeck.out.2.1");

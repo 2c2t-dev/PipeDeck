@@ -75,26 +75,6 @@ impl MixId {
     pub fn sink_node_name(self) -> String {
         format!("pipedeck.mix.{}", self.0)
     }
-
-    /// `node.name` of the input device this mix is, as the rest of the
-    /// system sees it: what a capture client such as OBS or Discord picks
-    /// out of its microphone list.
-    pub fn source_node_name(self) -> String {
-        format!("pipedeck.in.{}", self.0)
-    }
-
-    /// `node.name` of the sink the cells play into when the mix runs effects
-    /// of PipeWire's own. The chain reads it and hands the result on.
-    pub fn effects_node_name(self) -> String {
-        format!("pipedeck.mixfx.{}", self.0)
-    }
-
-    /// `node.name` of the sink the mixer's own plug-ins read. Unlike a
-    /// channel's, this one is their input: a column is treated on its way
-    /// into the sink everything else reads.
-    pub fn plugins_node_name(self) -> String {
-        format!("pipedeck.mixvst.{}", self.0)
-    }
 }
 
 impl std::fmt::Display for SourceId {
@@ -314,14 +294,6 @@ pub struct MixConfig {
     pub muted: bool,
     #[serde(default)]
     pub outputs: Vec<MixOutput>,
-    /// Effects the whole mix runs, in order, between the cells and the sink.
-    ///
-    /// A column is the right place for a processor meant for one destination
-    /// — a broadcast chain on the stream, nothing on the headphones — and it
-    /// is also where the delay such a processor adds stays out of the way of
-    /// monitoring.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub effects: Vec<Effect>,
 }
 
 impl MixConfig {
@@ -333,7 +305,6 @@ impl MixConfig {
             gain: 1.0,
             muted: false,
             outputs: Vec::new(),
-            effects: Vec::new(),
         }
     }
 
@@ -386,16 +357,6 @@ impl LinkConfig {
         self.gain = state.gain;
         self.muted = state.muted;
     }
-}
-
-/// Which object a chain belongs to.
-///
-/// A channel and a mix run the same effects, so anything said about one
-/// stage of a chain has to say which chain as well.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EffectTarget {
-    Channel(SourceId),
-    Mix(MixId),
 }
 
 /// One control of an effect, by the name the plugin gives it.
@@ -506,9 +467,6 @@ mod tests {
     fn node_names_derive_from_ids() {
         assert_eq!(SourceId(7).sink_node_name(), "pipedeck.src.7");
         assert_eq!(MixId(2).sink_node_name(), "pipedeck.mix.2");
-        assert_eq!(MixId(2).source_node_name(), "pipedeck.in.2");
-        assert_eq!(MixId(2).effects_node_name(), "pipedeck.mixfx.2");
-        assert_eq!(MixId(2).plugins_node_name(), "pipedeck.mixvst.2");
     }
 
     #[test]

@@ -24,8 +24,8 @@ use crate::config::Config;
 use crate::error::EngineError;
 use crate::pw::Graph;
 use crate::types::{
-    self, App, ChainState, Device, Effect, EffectTarget, LinkConfig, MixConfig, MixId,
-    SourceConfig, SourceId, MAX_MIXES,
+    self, App, ChainState, Device, Effect, LinkConfig, MixConfig, MixId, SourceConfig, SourceId,
+    MAX_MIXES,
 };
 
 /// Requests from a client to the engine.
@@ -35,11 +35,10 @@ pub enum Command {
     /// [`MAX_MIXES`](crate::types::MAX_MIXES).
     AddMix,
     RemoveMix(MixId),
-    /// Rename a column. The graph keeps the description its nodes were born
-    /// with: `node.name` derives from the id and never moves, and rebuilding
-    /// the sink just to refresh a label would cut the audio and make a
-    /// capture client reselect it. The one node made again is the input
-    /// device the mix is, whose description is that name.
+    /// Rename a column, which means making it again: a mix *is* the input
+    /// device someone picks out of a list, and a node carries the
+    /// description it was born with. `node.name` still derives from the id
+    /// and never moves. A recorder has to pick it again.
     RenameMix {
         id: MixId,
         name: String,
@@ -109,13 +108,6 @@ pub enum Command {
         id: SourceId,
         effects: Vec<Effect>,
     },
-    /// Replace the effects a column runs, in order. A mix is treated between
-    /// its cells and its sink, so this reloads the cells feeding it while
-    /// the sink a capture client reads stays put.
-    SetMixEffects {
-        id: MixId,
-        effects: Vec<Effect>,
-    },
     /// Put the interface of one hosted plug-in on the screen, or take it
     /// away, by its place in the chain. Stereo Tool has one; a VST3 does
     /// not, here.
@@ -124,7 +116,7 @@ pub enum Command {
     /// any other, and the library does nothing with it, so the button that
     /// opened it is what closes it.
     SetEffectWindow {
-        target: EffectTarget,
+        id: SourceId,
         index: usize,
         open: bool,
     },
@@ -611,11 +603,9 @@ fn handle_command(
             cfg.mixes.retain(|m| m.id != id);
             cfg.prune_links();
         }),
-        Command::RenameMix { id, name } => rename_mix(&mut g, id, name).inspect(|()| {
-            // The name is what a capture client sees in its list, so the
-            // device it picks from there is made again to carry it.
-            g.rename_mix_capture(id);
-        }),
+        Command::RenameMix { id, name } => {
+            rename_mix(&mut g, id, name).and_then(|()| g.rebuild_mix(id))
+        }
         Command::SetMixIcon { id, icon } => g
             .config_mut()
             .mix_mut(id)
@@ -659,14 +649,9 @@ fn handle_command(
             g.update_source(id, |c| c.muted = muted)
         }
         Command::SetEffects { id, effects } => g.set_effects(id, effects),
-        Command::SetMixEffects { id, effects } => g.set_mix_effects(id, effects),
-        Command::SetEffectWindow {
-            target,
-            index,
-            open,
-        } => {
+        Command::SetEffectWindow { id, index, open } => {
             structural = false;
-            g.set_effect_window(target, index, open)
+            g.set_effect_window(id, index, open)
         }
         Command::SetStereoToolLicense { key } => {
             structural = false;

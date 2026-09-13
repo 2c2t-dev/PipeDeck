@@ -12,7 +12,7 @@ use pipedeck_engine::stereotool::Status;
 use pipedeck_engine::{vst3::Plugin, App, ChainState, Command, Device, SourceConfig, SourceId};
 
 use crate::desktop::{self, DesktopApp};
-use crate::effect_panel::{EffectPanel, Target};
+use crate::effect_panel::EffectPanel;
 use crate::engine_link::EngineLink;
 use crate::widgets;
 
@@ -95,7 +95,7 @@ impl ChannelDialog {
             mute,
             meter: widgets::meter(),
             apps: gtk::Box::new(gtk::Orientation::Vertical, 8),
-            effects: EffectPanel::new(engine, Target::Channel(source.id)),
+            effects: EffectPanel::new(engine, source.id),
             add_app,
             installed: if source.is_input() {
                 Vec::new()
