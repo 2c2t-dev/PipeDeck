@@ -239,6 +239,15 @@ impl MixDialog {
         });
     }
 
+    /// Show a level that was set elsewhere, without sending it back.
+    pub fn set_state(&self, state: ChainState) {
+        self.syncing.set(true);
+        self.volume
+            .set_value(f64::from(state.gain) * widgets::FADER_MAX);
+        self.mute.set_active(state.muted);
+        self.syncing.set(false);
+    }
+
     /// Move the meter of the object this window is about.
     pub fn set_level(&self, peak: f32) {
         self.meter.set_value(widgets::meter_position(peak));

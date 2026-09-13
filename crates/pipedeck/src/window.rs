@@ -139,16 +139,56 @@ impl Window {
                 self.refresh_dialogs();
             }
             Event::Levels { sources, mixes } => self.draw_levels(&sources, &mixes),
-            Event::MixChanged { .. }
-            | Event::OutputChanged { .. }
-            | Event::SourceChanged { .. } => {
-                // The window that sent it already shows the new value, and
-                // the grid only shows the mix name and its output count.
-            }
             Event::LinkChanged { source, mix, state } => {
                 if let Some(cell) = self.cells.borrow().get(&(source, mix)) {
                     cell.set_state(state);
                 }
+                if let Some(link) = self
+                    .state
+                    .borrow_mut()
+                    .links
+                    .iter_mut()
+                    .find(|l| l.source == source && l.mix == mix)
+                {
+                    link.set_state(state);
+                }
+            }
+            Event::MixChanged { id, state } => {
+                // A level can move outside the mixer: a media key, a volume
+                // applet, anything holding the same sink.
+                if let Some(mix) = self
+                    .state
+                    .borrow_mut()
+                    .mixes
+                    .iter_mut()
+                    .find(|m| m.id == id)
+                {
+                    mix.set_state(state);
+                }
+                if let Some(dialog) = self.mix_dialog.borrow().as_ref() {
+                    if dialog.id() == id {
+                        dialog.set_state(state);
+                    }
+                }
+            }
+            Event::SourceChanged { id, state } => {
+                if let Some(source) = self
+                    .state
+                    .borrow_mut()
+                    .sources
+                    .iter_mut()
+                    .find(|s| s.id == id)
+                {
+                    source.set_state(state);
+                }
+                if let Some(dialog) = self.channel_dialog.borrow().as_ref() {
+                    if dialog.id() == id {
+                        dialog.set_state(state);
+                    }
+                }
+            }
+            Event::OutputChanged { .. } => {
+                // The window that moved it already shows the new value.
             }
             Event::Error(message) => self.toast(&message),
             Event::Stopped => {

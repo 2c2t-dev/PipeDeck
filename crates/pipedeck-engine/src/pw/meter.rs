@@ -61,6 +61,7 @@ impl Meter {
         core: &CoreRc,
         name: &str,
         target: &str,
+        target_id: Option<u32>,
         from_sink: bool,
     ) -> Result<Self, EngineError> {
         let mut props = properties! {
@@ -69,7 +70,7 @@ impl Meter {
             *pipewire::keys::MEDIA_ROLE => "Production",
             *pipewire::keys::NODE_NAME => name,
             *pipewire::keys::NODE_DESCRIPTION => "Pipedeck level meter",
-            *pipewire::keys::TARGET_OBJECT => target,
+            "pipedeck.instance" => crate::pw::instance(),
             // Same class as our other capture streams, so a meter does not
             // show up as a recording application.
             *pipewire::keys::MEDIA_CLASS => "Stream/Input/Audio/Internal",
@@ -82,6 +83,11 @@ impl Meter {
         };
         if from_sink {
             props.insert(*pipewire::keys::STREAM_CAPTURE_SINK, "true");
+        }
+        // A name and an id would disagree when another mixer holds the same
+        // name, and the name wins, so only one of the two is ever set.
+        if target_id.is_none() {
+            props.insert(*pipewire::keys::TARGET_OBJECT, target);
         }
 
         let stream = StreamRc::new(core.clone(), name, props)?;
@@ -145,7 +151,7 @@ impl Meter {
 
         stream.connect(
             Direction::Input,
-            None,
+            target_id,
             StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS | StreamFlags::RT_PROCESS,
             &mut params,
         )?;

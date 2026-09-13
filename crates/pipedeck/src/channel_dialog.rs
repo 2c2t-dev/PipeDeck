@@ -8,7 +8,7 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
-use pipedeck_engine::{App, Command, Device, SourceConfig, SourceId};
+use pipedeck_engine::{App, ChainState, Command, Device, SourceConfig, SourceId};
 
 use crate::desktop::{self, DesktopApp};
 use crate::engine_link::EngineLink;
@@ -253,6 +253,15 @@ impl ChannelDialog {
                 });
             }
         });
+    }
+
+    /// Show a level that was set elsewhere, without sending it back.
+    pub fn set_state(&self, state: ChainState) {
+        self.syncing.set(true);
+        self.volume
+            .set_value(f64::from(state.gain) * widgets::FADER_MAX);
+        self.mute.set_active(state.muted);
+        self.syncing.set(false);
     }
 
     /// Move the meter of the object this window is about.

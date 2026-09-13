@@ -19,6 +19,7 @@ pub mod meter;
 pub mod module;
 pub mod props;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -29,8 +30,9 @@ use libspa::utils::dict::DictRef;
 use pipewire::context::ContextRc;
 use pipewire::core::CoreRc;
 use pipewire::metadata::Metadata;
-use pipewire::node::Node;
+use pipewire::node::{Node, NodeListener};
 use pipewire::properties::properties;
+use pipewire::proxy::{ProxyListener, ProxyT};
 use pipewire::registry::{GlobalObject, RegistryRc};
 use pipewire::types::ObjectType;
 
@@ -46,14 +48,30 @@ use meter::Meter;
 use module::LoadedModule;
 
 const NODE_PREFIX: &str = "pipedeck.";
+/// Marks the nodes of this mixer. Node names come from ids that are private
+/// to each mixer, so two Pipedecks on one graph answer to the same names;
+/// this says which ones are ours.
+const INSTANCE_KEY: &str = "pipedeck.instance";
 const ADAPTER_FACTORY: &str = "adapter";
 const NULL_SINK_FACTORY: &str = "support.null-audio-sink";
 const LOOPBACK_MODULE: &str = "libpipewire-module-loopback";
+
+/// Where a level read back from the graph belongs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Owner {
+    Source(SourceId),
+    Mix(MixId),
+}
 
 /// A node proxy bound from the registry.
 struct BoundNode {
     global_id: u32,
     proxy: Node,
+}
+
+/// This process, as written on the nodes it owns.
+pub fn instance() -> String {
+    std::process::id().to_string()
 }
 
 /// Write a level onto a node we hold a proxy for.
@@ -103,6 +121,8 @@ struct Mix {
     // Field order matters: the outputs are destroyed before the sink they
     // capture from.
     outputs: Vec<Stage>,
+    _sink_listener: NodeListener,
+    _sink_bound: ProxyListener,
     /// Also carries the master level of the mix, which the sink applies to
     /// its monitor ports, so it scales the outputs and a capture client
     /// alike.
@@ -114,6 +134,8 @@ struct Mix {
 struct Source {
     /// The row's sink, which also carries its trim. An input row has none.
     sink: Option<Node>,
+    _sink_listener: Option<NodeListener>,
+    _sink_bound: Option<ProxyListener>,
 }
 
 /// A device the user can attach to a mix or turn into a row.
@@ -156,6 +178,15 @@ pub struct Graph {
     /// Playback node name -> what it belongs to. Filled before the module is
     /// loaded, so a registry announcement always finds its owner.
     stage_index: HashMap<String, StageRef>,
+    /// Sinks the server has just named, whose meter is waiting for that id.
+    bound_sinks: Rc<RefCell<Vec<(Owner, u32)>>>,
+    /// Levels the graph reported on our own sinks, waiting to be taken in.
+    ///
+    /// A sink's volume is the system's volume: the user can move it from
+    /// pavucontrol or a media key, and the mixer has to agree rather than
+    /// hold a number of its own. The listener only queues, because it fires
+    /// while the graph is borrowed.
+    incoming: Rc<RefCell<Vec<(Owner, ChainState)>>>,
     /// Proxies of nodes we are about to destroy.
     ///
     /// Destroying a loopback module takes its nodes with it, and the server
@@ -202,6 +233,8 @@ impl Graph {
             mixes: HashMap::new(),
             sources: HashMap::new(),
             stage_index: HashMap::new(),
+            bound_sinks: Rc::new(RefCell::new(Vec::new())),
+            incoming: Rc::new(RefCell::new(Vec::new())),
             retired: Vec::new(),
             devices: HashMap::new(),
             devices_dirty: false,
@@ -242,6 +275,33 @@ impl Graph {
 
     // --- building blocks ----------------------------------------------------
 
+    /// Learn the global id the server gives one of our sinks, which is what
+    /// a meter needs to point at that exact node.
+    fn watch_sink_id(&self, sink: &Node, owner: Owner) -> ProxyListener {
+        let queue = self.bound_sinks.clone();
+        sink.upcast_ref()
+            .add_listener_local()
+            .bound(move |global_id| queue.borrow_mut().push((owner, global_id)))
+            .register()
+    }
+
+    /// Follow a sink's own level, so a change made anywhere lands here too.
+    fn watch_sink(&self, sink: &Node, owner: Owner) -> NodeListener {
+        sink.subscribe_params(&[ParamType::Props]);
+        let incoming = self.incoming.clone();
+        sink.add_listener_local()
+            .param(move |_, id, _, _, param| {
+                if id != ParamType::Props {
+                    return;
+                }
+                let Some(state) = param.and_then(props::parse_volume) else {
+                    return;
+                };
+                incoming.borrow_mut().push((owner, state));
+            })
+            .register()
+    }
+
     fn create_sink(&self, node_name: String, description: String) -> Result<Node, EngineError> {
         self.core
             .create_object::<Node>(
@@ -252,6 +312,11 @@ impl Graph {
                     "node.description" => description,
                     "media.class" => "Audio/Sink",
                     "audio.position" => AUDIO_POSITION,
+                    INSTANCE_KEY => instance(),
+                    // The mixer owns these levels. Without this the session
+                    // manager restores whatever it saved last time, over the
+                    // value the config just asked for.
+                    "state.restore-props" => "false",
                     // Apply the sink volume (what pavucontrol shows) to the
                     // monitor ports, so it acts as a pre-fader trim on every
                     // cell of the row instead of on none of them.
@@ -300,10 +365,39 @@ impl Graph {
         }
     }
 
+    /// Attach the meters whose sink has just been given a global id.
+    ///
+    /// Waiting for that id is what makes a meter measure *our* sink: node
+    /// names come from ids private to each mixer, so a second Pipedeck on the
+    /// same graph carries the same names, and a meter pointed by name could
+    /// land on its audio instead.
+    fn hook_up_meters(&mut self) {
+        let bound: Vec<(Owner, u32)> = self.bound_sinks.borrow_mut().drain(..).collect();
+        for (owner, global_id) in bound {
+            let (meter_name, target) = match owner {
+                Owner::Source(id) => (format!("pipedeck.meter.src.{id}"), id.sink_node_name()),
+                Owner::Mix(id) => (format!("pipedeck.meter.mix.{id}"), id.sink_node_name()),
+            };
+            let Some(meter) = self.watch_level(&meter_name, &target, Some(global_id), true) else {
+                continue;
+            };
+            match owner {
+                Owner::Source(id) => self.source_meters.insert(id, meter),
+                Owner::Mix(id) => self.mix_meters.insert(id, meter),
+            };
+        }
+    }
+
     /// Start measuring one node. A meter that cannot be created costs the
     /// user a moving bar, not their audio, so it is reported and dropped.
-    fn watch_level(&self, name: &str, target: &str, from_sink: bool) -> Option<Meter> {
-        match Meter::new(&self.core, name, target, from_sink) {
+    fn watch_level(
+        &self,
+        name: &str,
+        target: &str,
+        target_id: Option<u32>,
+        from_sink: bool,
+    ) -> Option<Meter> {
+        match Meter::new(&self.core, name, target, target_id, from_sink) {
             Ok(meter) => Some(meter),
             Err(e) => {
                 log::error!("cannot measure {target}: {e}");
@@ -344,14 +438,21 @@ impl Graph {
         }
         let sink = self.create_sink(cfg.id.sink_node_name(), format!("Pipedeck {}", cfg.name))?;
         apply_props(&sink, &cfg.id.sink_node_name(), &cfg.state());
-        self.watch_level(
-            &format!("pipedeck.meter.mix.{}", cfg.id),
-            &cfg.id.sink_node_name(),
-            true,
-        )
-        .map(|meter| self.mix_meters.insert(cfg.id, meter));
+        let listener = self.watch_sink(&sink, Owner::Mix(cfg.id));
+        // The sink has no global id yet: the meter is hooked up when the
+        // registry announces it, which is also how we tell our sink from the
+        // one another mixer gave the same name.
+        let bound = self.watch_sink_id(&sink, Owner::Mix(cfg.id));
         let outputs = self.load_outputs(cfg);
-        self.mixes.insert(cfg.id, Mix { outputs, sink });
+        self.mixes.insert(
+            cfg.id,
+            Mix {
+                outputs,
+                _sink_listener: listener,
+                _sink_bound: bound,
+                sink,
+            },
+        );
         log::info!("mix {} ({}) created", cfg.id, cfg.name);
         Ok(())
     }
@@ -361,6 +462,9 @@ impl Graph {
     pub fn remove_mix(&mut self, id: MixId) -> Result<(), EngineError> {
         let mut mix = self.mixes.remove(&id).ok_or(EngineError::UnknownMix(id))?;
         self.mix_meters.remove(&id);
+        self.bound_sinks
+            .borrow_mut()
+            .retain(|(owner, _)| *owner != Owner::Mix(id));
         for stage in &mut mix.outputs {
             self.retire(stage);
         }
@@ -468,28 +572,47 @@ impl Graph {
         if self.sources.contains_key(&cfg.id) {
             return Ok(());
         }
-        let sink = match cfg.device {
-            // An input row captures its device straight from every cell, so
-            // it owns no node of its own.
-            Some(_) => None,
+        // An input row captures its device straight from every cell, so it
+        // owns no node of its own, and has no level to follow either.
+        let (sink, listeners) = match cfg.device {
+            Some(_) => (None, None),
             None => {
-                Some(self.create_sink(cfg.id.sink_node_name(), format!("Pipedeck: {}", cfg.name))?)
+                let sink =
+                    self.create_sink(cfg.id.sink_node_name(), format!("Pipedeck: {}", cfg.name))?;
+                apply_props(&sink, &cfg.id.sink_node_name(), &cfg.state());
+                let listener = self.watch_sink(&sink, Owner::Source(cfg.id));
+                let bound = self.watch_sink_id(&sink, Owner::Source(cfg.id));
+                (Some(sink), Some((listener, bound)))
             }
         };
         // A virtual row is measured on its sink's monitor, an input row on
         // the device it captures, which is the same signal every cell gets.
-        let (target, from_sink) = match &cfg.device {
-            Some(device) => (device.clone(), false),
-            None => (cfg.id.sink_node_name(), true),
-        };
-        self.watch_level(
-            &format!("pipedeck.meter.src.{}", cfg.id),
-            &target,
-            from_sink,
-        )
-        .map(|meter| self.source_meters.insert(cfg.id, meter));
+        // A device is named once on the graph, so its meter needs no waiting.
+        // A sink of ours waits for the id the server gives it, in
+        // `hook_up_meters`.
+        if let Some(device) = &cfg.device {
+            if let Some(meter) = self.watch_level(
+                &format!("pipedeck.meter.src.{}", cfg.id),
+                device,
+                None,
+                false,
+            ) {
+                self.source_meters.insert(cfg.id, meter);
+            }
+        }
 
-        self.sources.insert(cfg.id, Source { sink });
+        let (sink_listener, sink_bound) = match listeners {
+            Some((listener, bound)) => (Some(listener), Some(bound)),
+            None => (None, None),
+        };
+        self.sources.insert(
+            cfg.id,
+            Source {
+                sink,
+                _sink_listener: sink_listener,
+                _sink_bound: sink_bound,
+            },
+        );
         log::info!("source {} ({}) created", cfg.id, cfg.name);
         Ok(())
     }
@@ -500,6 +623,9 @@ impl Graph {
             .remove(&id)
             .ok_or(EngineError::UnknownSource(id))?;
         self.source_meters.remove(&id);
+        self.bound_sinks
+            .borrow_mut()
+            .retain(|(owner, _)| *owner != Owner::Source(id));
         let cells: Vec<(SourceId, MixId)> = self
             .links
             .keys()
@@ -893,9 +1019,50 @@ impl Graph {
         self.emit(Event::Devices { outputs, inputs });
     }
 
+    /// Take in the levels the graph reported on our sinks.
+    ///
+    /// Only a real difference is kept: every level we write comes back
+    /// through the same listener, and taking those in again would be a loop
+    /// with the interface.
+    fn absorb_levels(&mut self) {
+        let incoming: Vec<(Owner, ChainState)> = self.incoming.borrow_mut().drain(..).collect();
+        for (owner, state) in incoming {
+            let known = match owner {
+                Owner::Source(id) => self.config.source(id).map(|s| s.state()),
+                Owner::Mix(id) => self.config.mix(id).map(|m| m.state()),
+            };
+            let Some(known) = known else {
+                continue;
+            };
+            if (known.linear_volume() - state.linear_volume()).abs() < 1e-3
+                && known.muted == state.muted
+            {
+                continue;
+            }
+            log::debug!("{owner:?} was set to {state:?} outside the mixer");
+            match owner {
+                Owner::Source(id) => {
+                    if let Some(cfg) = self.config.source_mut(id) {
+                        cfg.set_state(state);
+                    }
+                    self.emit(Event::SourceChanged { id, state });
+                }
+                Owner::Mix(id) => {
+                    if let Some(cfg) = self.config.mix_mut(id) {
+                        cfg.set_state(state);
+                    }
+                    self.emit(Event::MixChanged { id, state });
+                }
+            }
+            self.dirty = true;
+        }
+    }
+
     /// Periodic housekeeping from the engine timer: debounced config saves
     /// and device list updates.
     pub fn tick(&mut self) {
+        self.hook_up_meters();
+        self.absorb_levels();
         // The server has told us by now that these nodes are gone, so their
         // proxies leave without a word.
         self.retired.clear();

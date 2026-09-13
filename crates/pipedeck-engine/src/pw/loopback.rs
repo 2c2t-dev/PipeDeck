@@ -85,6 +85,7 @@ pub struct LoopbackSpec {
 fn common(name: String, latency: &str) -> Vec<(&'static str, Val)> {
     vec![
         ("node.name", Val::from(name)),
+        ("pipedeck.instance", Val::from(crate::pw::instance())),
         ("audio.position", Val::Raw(AUDIO_POSITION.into())),
         ("node.latency", Val::from(latency)),
         ("node.dont-reconnect", Val::from(true)),

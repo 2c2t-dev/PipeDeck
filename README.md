@@ -39,6 +39,10 @@ cargo build --release
 
 Logs go through `env_logger`: `RUST_LOG=pipedeck_engine=debug ./target/release/pipedeck`.
 
+The level of a channel and of a mix is the volume of its sink, which is the
+volume the system shows for it: move it from a volume applet or a media key
+and the mixer follows, and the other way around.
+
 State is persisted in `$XDG_CONFIG_HOME/pipedeck/config.toml`. A config from
 the earlier two-bus layout is converted on first start into two mixes named
 Stream Mix and Monitor, keeping every fader.

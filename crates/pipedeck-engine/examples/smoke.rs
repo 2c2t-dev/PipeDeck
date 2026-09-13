@@ -151,12 +151,45 @@ fn links(dump: &[serde_json::Value]) -> Vec<(i64, i64)> {
         .collect()
 }
 
-/// The id of a node by `node.name`, whoever owns it.
-fn node_id(dump: &[serde_json::Value], name: &str) -> Option<i64> {
+/// Is another Pipedeck holding the names this test measures?
+///
+/// Node names come from ids private to each mixer, so a second one answers
+/// to the same names, and the loopbacks that carry the audio pick their
+/// target by name. The routing checks still hold in that case, but what a
+/// meter hears stops being ours to predict.
+fn another_mixer_running(dump: &[serde_json::Value]) -> bool {
+    let ours: Vec<i64> = our_nodes(dump)
+        .iter()
+        .filter_map(|o| o["id"].as_i64())
+        .collect();
     dump.iter()
         .filter(|o| o["type"].as_str().is_some_and(|t| t.ends_with("Node")))
+        .filter(|o| {
+            props(o)["node.name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("pipedeck."))
+        })
+        .any(|o| o["id"].as_i64().is_some_and(|id| !ours.contains(&id)))
+}
+
+/// One of our own nodes, by `node.name`.
+///
+/// Another Pipedeck on the same graph answers to the same names, so a name
+/// is not enough to say which sink a player should feed or which node a
+/// volume change should land on.
+fn our_node<'d>(dump: &'d [serde_json::Value], name: &str) -> Option<&'d serde_json::Value> {
+    our_nodes(dump)
+        .into_iter()
         .find(|o| props(o)["node.name"].as_str() == Some(name))
-        .and_then(|o| o["id"].as_i64())
+}
+
+fn node_id(dump: &[serde_json::Value], name: &str) -> Option<i64> {
+    our_node(dump, name)?["id"].as_i64()
+}
+
+/// The serial a player uses to name a target, which is not the object id.
+fn node_serial(dump: &[serde_json::Value], name: &str) -> Option<i64> {
+    props(our_node(dump, name)?)["object.serial"].as_i64()
 }
 
 /// A quiet tone, loud enough to move a meter. Nothing is attached to the
@@ -385,6 +418,10 @@ fn main() -> ExitCode {
     // still does.
     let tone = dir.join("tone.wav");
     tone_wav(&tone);
+    let alone = !another_mixer_running(&pw_dump());
+    if !alone {
+        println!("[skip] another Pipedeck holds the same node names, so what the meters hear is not this test's to predict");
+    }
     engine
         .send(Command::SetLinkMute {
             source,
@@ -392,8 +429,10 @@ fn main() -> ExitCode {
             muted: false,
         })
         .unwrap();
+    let sink_serial =
+        node_serial(&pw_dump(), &format!("pipedeck.src.{source}")).expect("the channel sink");
     let mut player = Process::new("pw-play")
-        .arg(format!("--target=pipedeck.src.{source}"))
+        .arg(format!("--target={sink_serial}"))
         .arg(&tone)
         .spawn()
         .expect("pw-play must be installed");
@@ -403,18 +442,24 @@ fn main() -> ExitCode {
         &format!("the channel meter hears the tone: {:.3}", open.0),
         &mut failures,
     );
+
     // The cell sits at 0.5, a linear 0.125, so the mix has to hear the tone
     // roughly that much quieter. This is the fader itself under test, not
     // the property it writes.
     let expected = open.0 * 0.125;
-    check(
-        open.1 > expected * 0.4 && open.1 < expected * 2.5,
-        &format!(
-            "the mix hears the tone through the cell fader: {:.3}, around {expected:.3}",
-            open.1
-        ),
-        &mut failures,
+    let what = format!(
+        "the mix hears the tone through the cell fader: {:.3}, around {expected:.3}",
+        open.1
     );
+    if alone {
+        check(
+            open.1 > expected * 0.4 && open.1 < expected * 2.5,
+            &what,
+            &mut failures,
+        );
+    } else {
+        println!("[skip] {what}");
+    }
 
     engine
         .send(Command::SetLinkMute {
@@ -433,23 +478,51 @@ fn main() -> ExitCode {
         ),
         &mut failures,
     );
-    check(
-        muted.1 < open.1 * 0.2,
-        &format!(
-            "muting the cell stops the mix hearing it: {:.3} against {:.3} open",
-            muted.1, open.1
-        ),
-        &mut failures,
+    let what = format!(
+        "muting the cell stops the mix hearing it: {:.3} against {:.3} open",
+        muted.1, open.1
     );
+    if alone {
+        check(muted.1 < open.1 * 0.2, &what, &mut failures);
+    } else {
+        println!("[skip] {what}");
+    }
 
     let _ = player.kill();
     let _ = player.wait();
-    let quiet = wait_levels(&rx, source, mix, Duration::from_secs(3));
-    check(
-        quiet.0 < 0.01,
-        &format!("the meters fall back to silence: {:.3}", quiet.0),
-        &mut failures,
-    );
+    // The peaks are maxima over a window, so the tail of the tone would
+    // still show in one that starts the moment the player dies.
+    settle();
+    let quiet = wait_levels(&rx, source, mix, Duration::from_secs(2));
+    let what = format!("the meters fall back to silence: {:.3}", quiet.0);
+    if alone {
+        check(quiet.0 < 0.01, &what, &mut failures);
+    } else {
+        // Another mixer's loopbacks capture and feed nodes by the names we
+        // share with it, so silence here is not ours to promise either.
+        println!("[skip] {what}");
+    }
+
+    // A channel's trim is the volume of its sink, which is also the volume
+    // the system shows. Moving it from outside has to reach the mixer.
+    let sink_id = node_id(&pw_dump(), &format!("pipedeck.src.{source}")).expect("the channel sink");
+    let outside = Process::new("wpctl")
+        .args(["set-volume", &sink_id.to_string(), "0.4"])
+        .status();
+    if outside.is_ok_and(|status| status.success()) {
+        let told = wait_for(
+            &rx,
+            "the trim set from outside",
+            |e| matches!(e, Event::SourceChanged { id, state } if *id == source && (state.gain - 0.4).abs() < 0.05),
+        );
+        check(
+            matches!(told, Event::SourceChanged { .. }),
+            "a level set outside the mixer comes back to it",
+            &mut failures,
+        );
+    } else {
+        println!("[skip] wpctl is not installed, the outside-change check needs it");
+    }
 
     // A channel trim rides on its own sink, ahead of every cell.
     engine
@@ -501,11 +574,14 @@ fn main() -> ExitCode {
         (Some(player), Some(sink)) => links(&dump).contains(&(player, sink)),
         _ => false,
     };
-    check(
-        plugged,
-        &format!("the assigned application plays into the channel: {app:?}"),
-        &mut failures,
-    );
+    let what = format!("the assigned application plays into the channel: {app:?}");
+    if alone {
+        check(plugged, &what, &mut failures);
+    } else {
+        // The move names the target sink, and another mixer answers to that
+        // name too, so where the stream lands is not ours to promise.
+        println!("[skip] {what}");
+    }
 
     engine
         .send(Command::ReleaseApp {
