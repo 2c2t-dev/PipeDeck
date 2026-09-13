@@ -30,9 +30,34 @@ fn main() -> glib::ExitCode {
     // Before any thread exists, so every thread inherits the mask.
     signals::block_termination_signals();
 
+    ignore_prefer_dark_theme();
+
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_activate(activate);
     app.run()
+}
+
+/// Neutralize `GtkSettings:gtk-application-prefer-dark-theme` for this
+/// process.
+///
+/// Desktops that also configure GTK3 (KDE writes the same key into both
+/// `gtk-3.0/settings.ini` and `gtk-4.0/settings.ini`) leave that key set to
+/// true. libadwaita manages light/dark itself from the desktop's
+/// `color-scheme` and warns on every startup when it sees the key, so we
+/// clear it here rather than asking users to edit a file GTK3 still needs.
+/// This is process-local and changes nothing for other applications.
+///
+/// It has to happen before libadwaita builds its style manager, which the
+/// application does during `startup`; the `startup` class handler runs ahead
+/// of any handler we could connect, hence the explicit `gtk::init` here.
+fn ignore_prefer_dark_theme() {
+    if let Err(e) = adw::gtk::init() {
+        log::debug!("cannot initialize GTK early: {e}");
+        return;
+    }
+    if let Some(settings) = adw::gtk::Settings::default() {
+        settings.set_gtk_application_prefer_dark_theme(false);
+    }
 }
 
 fn activate(app: &adw::Application) {
