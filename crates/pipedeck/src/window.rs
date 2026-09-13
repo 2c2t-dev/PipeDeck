@@ -210,10 +210,12 @@ impl Window {
         button.set_child(Some(
             &adw::ButtonContent::builder()
                 .icon_name("list-add-symbolic")
-                .label("Source")
+                .label("Create channel")
                 .build(),
         ));
-        button.set_tooltip_text(Some("Add a source"));
+        button.set_tooltip_text(Some(
+            "Create a channel: a virtual output, or a capture device",
+        ));
         button.add_css_class("flat");
         button.add_css_class("card");
         button.set_width_request(SOURCE_COLUMN_WIDTH);
@@ -311,7 +313,7 @@ impl Window {
         let remove = gtk::Button::from_icon_name("user-trash-symbolic");
         remove.add_css_class("flat");
         remove.set_margin_end(6);
-        remove.set_tooltip_text(Some("Remove this source"));
+        remove.set_tooltip_text(Some("Remove this channel"));
         remove.connect_clicked({
             let this = self.clone();
             let id = source.id;

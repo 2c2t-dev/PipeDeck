@@ -6,7 +6,7 @@ The mixer is a **matrix**. Sources are rows, mixes are columns, and each cell
 is an independent fader and mute. What you hear is not what goes to the
 stream, because they are different columns.
 
-- A **source** is either a virtual output any application can select in its
+- A **source**, called a channel in the interface, is either a virtual output any application can select in its
   audio settings, or a capture device such as a microphone.
 - A **mix** collects the sources you send to it into a sink a capture client
   such as OBS can read, and plays to any number of output devices you attach

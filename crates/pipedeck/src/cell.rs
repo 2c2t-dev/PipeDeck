@@ -50,7 +50,7 @@ impl Cell {
         root.append(&scale);
 
         let unlink = gtk::Button::from_icon_name("list-remove-symbolic");
-        unlink.set_tooltip_text(Some("Unlink this source from this mix"));
+        unlink.set_tooltip_text(Some("Unlink this channel from this mix"));
         unlink.add_css_class("flat");
         root.append(&unlink);
 
@@ -115,7 +115,7 @@ impl Cell {
 /// The empty cell: a button that links the source to the mix.
 pub fn link_button(source: SourceId, mix: MixId, engine: &EngineLink) -> gtk::Button {
     let button = gtk::Button::from_icon_name("list-add-symbolic");
-    button.set_tooltip_text(Some("Send this source to this mix"));
+    button.set_tooltip_text(Some("Send this channel to this mix"));
     button.add_css_class("flat");
     button.set_halign(gtk::Align::Center);
     button.set_valign(gtk::Align::Center);

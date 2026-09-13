@@ -38,12 +38,13 @@ pub fn add_mix(parent: &impl IsA<gtk::Widget>, engine: &EngineLink) {
     dialog.present(Some(parent));
 }
 
-/// Ask for a name and a kind, then create a source.
+/// Ask for a name and a kind, then create a channel.
 ///
-/// A source is either an empty channel, which shows up as a virtual output
-/// device applications can select, or a capture device such as a microphone.
+/// A channel is either empty, which shows up as a virtual output device
+/// applications can select, or bound to a capture device such as a
+/// microphone. The engine calls it a source.
 pub fn add_source(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, inputs: &[Device]) {
-    let dialog = adw::AlertDialog::new(Some("New source"), None);
+    let dialog = adw::AlertDialog::new(Some("New channel"), None);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     let entry = gtk::Entry::new();
