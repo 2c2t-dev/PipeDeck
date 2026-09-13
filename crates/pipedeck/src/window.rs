@@ -1,7 +1,7 @@
 //! Main window: the mixer matrix, mixes across the top, sources down the
 //! left, one fader per cell.
 
-use std::cell::RefCell;
+use std::cell::{Cell as StdCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -17,9 +17,10 @@ use crate::cell::{link_button, Cell};
 use crate::dialogs;
 use crate::engine_link::EngineLink;
 
-const MIX_COLUMN_WIDTH: i32 = 260;
+const MIX_COLUMN_WIDTH: i32 = 240;
 const SOURCE_COLUMN_WIDTH: i32 = 180;
 const ROW_HEIGHT: i32 = 56;
+const ADD_BUTTON_WIDTH: i32 = 120;
 
 pub struct Window {
     pub window: adw::ApplicationWindow,
@@ -27,8 +28,8 @@ pub struct Window {
     grid: gtk::Grid,
     hint: gtk::Label,
     toasts: adw::ToastOverlay,
-    add_mix: gtk::Button,
-    add_source: gtk::Button,
+    /// Set once the engine is gone, so a rebuild keeps the add buttons off.
+    stopped: StdCell<bool>,
     state: RefCell<StateSnapshot>,
     outputs: RefCell<Vec<Device>>,
     inputs: RefCell<Vec<Device>>,
@@ -40,30 +41,11 @@ impl Window {
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Pipedeck")
-            .default_width(1000)
+            .default_width(1080)
             .default_height(520)
             .build();
 
         let header = adw::HeaderBar::new();
-        let add_source = gtk::Button::new();
-        add_source.set_child(Some(
-            &adw::ButtonContent::builder()
-                .icon_name("list-add-symbolic")
-                .label("Source")
-                .build(),
-        ));
-        add_source.set_tooltip_text(Some("Add a source"));
-        header.pack_start(&add_source);
-
-        let add_mix = gtk::Button::new();
-        add_mix.set_child(Some(
-            &adw::ButtonContent::builder()
-                .icon_name("list-add-symbolic")
-                .label("Mix")
-                .build(),
-        ));
-        add_mix.set_tooltip_text(Some("Add a mix"));
-        header.pack_end(&add_mix);
 
         let grid = gtk::Grid::new();
         grid.set_row_spacing(6);
@@ -99,8 +81,7 @@ impl Window {
             grid,
             hint,
             toasts,
-            add_mix,
-            add_source,
+            stopped: StdCell::new(false),
             state: RefCell::new(StateSnapshot {
                 mixes: Vec::new(),
                 sources: Vec::new(),
@@ -109,15 +90,6 @@ impl Window {
             outputs: RefCell::new(Vec::new()),
             inputs: RefCell::new(Vec::new()),
             cells: RefCell::new(HashMap::new()),
-        });
-
-        this.add_source.connect_clicked({
-            let this = this.clone();
-            move |_| dialogs::add_source(&this.window, &this.engine, &this.inputs.borrow())
-        });
-        this.add_mix.connect_clicked({
-            let this = this.clone();
-            move |_| dialogs::add_mix(&this.window, &this.engine)
         });
 
         this.rebuild();
@@ -145,8 +117,8 @@ impl Window {
             }
             Event::Error(message) => self.toast(&message),
             Event::Stopped => {
-                self.add_mix.set_sensitive(false);
-                self.add_source.set_sensitive(false);
+                self.stopped.set(true);
+                self.rebuild();
                 self.toast("Audio engine stopped");
             }
         }
@@ -166,13 +138,22 @@ impl Window {
         self.cells.borrow_mut().clear();
 
         let state = self.state.borrow();
-        self.add_mix.set_sensitive(state.mixes.len() < MAX_MIXES);
 
         self.grid.attach(&corner(), 0, 0, 1, 1);
         for (column, mix) in state.mixes.iter().enumerate() {
             let header = self.mix_header(mix);
             self.grid.attach(&header, column as i32 + 1, 0, 1, 1);
         }
+        // The two add buttons continue the grid: a new column on the right of
+        // the last mix, a new row under the last source.
+        if state.mixes.len() < MAX_MIXES {
+            let add = self.add_mix_button();
+            self.grid
+                .attach(&add, state.mixes.len() as i32 + 1, 0, 1, 1);
+        }
+        let add = self.add_source_button();
+        self.grid
+            .attach(&add, 0, state.sources.len() as i32 + 1, 1, 1);
 
         for (row, source) in state.sources.iter().enumerate() {
             let header = self.source_header(source);
@@ -205,6 +186,48 @@ impl Window {
         self.hint.set_visible(state.sources.is_empty());
         self.hint
             .set_label("Add a source to get a virtual output, then press + to send it to a mix.");
+    }
+
+    fn add_mix_button(self: &Rc<Self>) -> gtk::Widget {
+        let button = gtk::Button::new();
+        button.set_child(Some(
+            &adw::ButtonContent::builder()
+                .icon_name("list-add-symbolic")
+                .label("Mix")
+                .build(),
+        ));
+        button.set_tooltip_text(Some("Add a mix"));
+        button.add_css_class("flat");
+        button.add_css_class("card");
+        button.set_width_request(ADD_BUTTON_WIDTH);
+        button.set_margin_bottom(6);
+        button.set_sensitive(!self.stopped.get());
+        button.connect_clicked({
+            let this = self.clone();
+            move |_| dialogs::add_mix(&this.window, &this.engine)
+        });
+        button.upcast()
+    }
+
+    fn add_source_button(self: &Rc<Self>) -> gtk::Widget {
+        let button = gtk::Button::new();
+        button.set_child(Some(
+            &adw::ButtonContent::builder()
+                .icon_name("list-add-symbolic")
+                .label("Source")
+                .build(),
+        ));
+        button.set_tooltip_text(Some("Add a source"));
+        button.add_css_class("flat");
+        button.add_css_class("card");
+        button.set_width_request(SOURCE_COLUMN_WIDTH);
+        button.set_height_request(ROW_HEIGHT);
+        button.set_sensitive(!self.stopped.get());
+        button.connect_clicked({
+            let this = self.clone();
+            move |_| dialogs::add_source(&this.window, &this.engine, &this.inputs.borrow())
+        });
+        button.upcast()
     }
 
     fn mix_header(self: &Rc<Self>, mix: &MixConfig) -> gtk::Widget {
