@@ -1,12 +1,12 @@
 //! Argument string builder for `libpipewire-module-loopback`.
 //!
-//! The module takes its configuration as a SPA JSON dictionary. We only ever
-//! need a handful of keys, so this is a tiny serializer rather than a
-//! dependency on a JSON crate.
+//! The module takes its configuration as a SPA JSON dictionary. We only need
+//! a handful of keys, so this is a tiny serializer rather than a dependency
+//! on a JSON crate.
 
-use crate::types::{MixBus, SourceId};
+use crate::types::{MixConfig, MixId, SourceConfig, SourceId};
 
-/// Channel layout used by every Pipedeck node. Stereo for the MVP.
+/// Channel layout used by every Pipedeck node. Stereo for now.
 pub const AUDIO_POSITION: &str = "[ FL FR ]";
 pub const CHANNELS: usize = 2;
 
@@ -73,60 +73,93 @@ pub struct LoopbackSpec {
     pub playback: Vec<(&'static str, Val)>,
 }
 
+/// Properties every stream of ours carries.
+///
+/// WirePlumber's `state-stream.lua` tests these keys with a *string*
+/// comparison against "false". Module args go through SPA JSON and end up as
+/// the string "false", which is why `Val::from(false)` works here. If these
+/// props ever get set another way (create_object, set_property, a future
+/// WirePlumber parser change), make sure the value still reaches the node as
+/// the string "false", otherwise the volume and target restore silently come
+/// back and fight the user's faders.
+fn common(name: String, latency: &str) -> Vec<(&'static str, Val)> {
+    vec![
+        ("node.name", Val::from(name)),
+        ("audio.position", Val::Raw(AUDIO_POSITION.into())),
+        ("node.latency", Val::from(latency)),
+        ("node.dont-reconnect", Val::from(true)),
+        ("state.restore-props", Val::from(false)),
+        ("state.restore-target", Val::from(false)),
+    ]
+}
+
+/// The capture side is classed like WirePlumber's own loopbacks so that
+/// pipewire-pulse does not list it as a recording stream in pavucontrol.
+fn capture_props(
+    name: String,
+    latency: &str,
+    target: String,
+    from_sink: bool,
+) -> Vec<(&'static str, Val)> {
+    let mut props = common(name, latency);
+    props.push(("media.class", Val::from("Stream/Input/Audio/Internal")));
+    if from_sink {
+        props.push(("stream.capture.sink", Val::from(true)));
+    }
+    props.push(("target.object", Val::from(target)));
+    props
+}
+
 impl LoopbackSpec {
-    /// The loopback for one gain chain of one source.
+    /// One cell of the matrix: the source feeds the mix.
     ///
-    /// Both chains are strictly identical: they capture the monitor ports of
-    /// the source's null sink and play back to their bus target. The stream
-    /// chain targets the Stream Mix sink; the monitor chain leaves
-    /// `target.object` unset so it follows the default output device.
-    ///
-    /// The capture side is classed `Stream/Input/Audio/Internal`, the
-    /// convention WirePlumber uses for its own loopbacks, so pipewire-pulse
-    /// does not list it as a recording stream. `state.restore-props` keeps
-    /// WirePlumber from restoring a saved volume over ours, and
-    /// `state.restore-target` keeps it from re-routing the stream chain.
-    pub fn for_chain(id: SourceId, source_name: &str, bus: MixBus, stream_mix_node: &str) -> Self {
-        let sink = id.sink_node_name();
-        let playback_name = playback_node_name(id, bus);
-        let capture_name = format!("{playback_name}.in");
+    /// A virtual row is captured from the monitor ports of its sink, an input
+    /// row straight from its device. Both end on the mix sink, so every cell
+    /// is the same object with the same latency whatever the row is.
+    pub fn for_link(source: &SourceConfig, mix: &MixConfig, latency: &str) -> Self {
+        let node_name = link_node_name(source.id, mix.id);
+        let (target, from_sink) = match &source.device {
+            Some(device) => (device.clone(), false),
+            None => (source.id.sink_node_name(), true),
+        };
 
-        // WirePlumber's state-stream.lua checks these keys with
-        // `stream_props["state.restore-props"] ~= "false"`: a *string*
-        // comparison against "false". Module args go through SPA JSON and
-        // end up as the string "false", which is why `Val::from(false)` works
-        // here. If these props are ever set another way (create_object,
-        // set_property, a future WirePlumber parser change), make sure the
-        // value still reaches the node as the string "false", otherwise the
-        // volume/target restore silently comes back.
-        let capture = vec![
-            ("node.name", Val::from(capture_name)),
-            (
-                "node.description",
-                Val::from(format!("Pipedeck: {source_name} ({}) in", bus.label())),
-            ),
-            ("media.class", Val::from("Stream/Input/Audio/Internal")),
-            ("stream.capture.sink", Val::from(true)),
-            ("target.object", Val::from(sink)),
-            ("node.dont-reconnect", Val::from(true)),
-            ("state.restore-props", Val::from(false)),
-            ("audio.position", Val::Raw(AUDIO_POSITION.into())),
-        ];
+        let mut capture = capture_props(format!("{node_name}.in"), latency, target, from_sink);
+        capture.push((
+            "node.description",
+            Val::from(format!("Pipedeck: {} in", source.name)),
+        ));
 
-        let mut playback = vec![
-            ("node.name", Val::from(playback_name)),
-            (
-                "node.description",
-                Val::from(format!("Pipedeck: {source_name} → {}", bus.label())),
-            ),
-            ("audio.position", Val::Raw(AUDIO_POSITION.into())),
-            ("state.restore-props", Val::from(false)),
-        ];
-        if bus == MixBus::Stream {
-            playback.push(("target.object", Val::from(stream_mix_node)));
-            playback.push(("node.dont-reconnect", Val::from(true)));
-            playback.push(("state.restore-target", Val::from(false)));
-        }
+        let mut playback = common(node_name, latency);
+        playback.push((
+            "node.description",
+            Val::from(format!("Pipedeck: {} to {}", source.name, mix.name)),
+        ));
+        playback.push(("target.object", Val::from(mix.id.sink_node_name())));
+
+        Self { capture, playback }
+    }
+
+    /// One output of a mix: the mix sink feeds a device.
+    pub fn for_output(mix: &MixConfig, index: usize, device: &str, latency: &str) -> Self {
+        let node_name = output_node_name(mix.id, index);
+
+        let mut capture = capture_props(
+            format!("{node_name}.in"),
+            latency,
+            mix.id.sink_node_name(),
+            true,
+        );
+        capture.push((
+            "node.description",
+            Val::from(format!("Pipedeck: {} out", mix.name)),
+        ));
+
+        let mut playback = common(node_name, latency);
+        playback.push((
+            "node.description",
+            Val::from(format!("Pipedeck: {} output", mix.name)),
+        ));
+        playback.push(("target.object", Val::from(device)));
 
         Self { capture, playback }
     }
@@ -143,46 +176,57 @@ impl LoopbackSpec {
     }
 }
 
-/// `node.name` of the playback stream of one chain, the node carrying the
-/// fader volume (e.g. `pipedeck.3.stream`).
-pub fn playback_node_name(id: SourceId, bus: MixBus) -> String {
-    format!("{}.{}", id.sink_node_name(), bus.suffix())
+/// `node.name` of the playback node of a cell, the node carrying its fader.
+pub fn link_node_name(source: SourceId, mix: MixId) -> String {
+    format!("pipedeck.link.{source}.{mix}")
+}
+
+/// `node.name` of the playback node of one output of a mix.
+pub fn output_node_name(mix: MixId, index: usize) -> String {
+    format!("pipedeck.out.{mix}.{index}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn mix() -> MixConfig {
+        MixConfig::new(MixId(2), "Stream Mix")
+    }
+
     #[test]
-    fn args_are_valid_spa_json_dicts() {
-        let spec =
-            LoopbackSpec::for_chain(SourceId(3), "Ga\"me", MixBus::Stream, "pipedeck.stream_mix");
-        let args = spec.to_args();
+    fn a_virtual_row_is_captured_from_its_sink() {
+        let source = SourceConfig::virtual_sink(SourceId(3), "Ga\"me");
+        let args = LoopbackSpec::for_link(&source, &mix(), "512/48000").to_args();
         assert!(args.starts_with("{ capture.props = { "));
-        assert!(args.contains("node.name = \"pipedeck.3.stream.in\""));
+        assert!(args.contains("node.name = \"pipedeck.link.3.2.in\""));
         assert!(args.contains("stream.capture.sink = true"));
-        assert!(args.contains("target.object = \"pipedeck.3\""));
-        assert!(args.contains("node.description = \"Pipedeck: Ga\\\"me → Stream\""));
-        assert!(args.contains("audio.position = [ FL FR ]"));
-        assert!(args.contains("target.object = \"pipedeck.stream_mix\""));
+        assert!(args.contains("target.object = \"pipedeck.src.3\""));
+        assert!(args.contains("target.object = \"pipedeck.mix.2\""));
         assert!(args.contains("media.class = \"Stream/Input/Audio/Internal\""));
-        assert!(args.contains("state.restore-target = false"));
+        assert!(args.contains("node.latency = \"512/48000\""));
+        assert!(args.contains("node.description = \"Pipedeck: Ga\\\"me to Stream Mix\""));
         assert_eq!(args.matches("state.restore-props = false").count(), 2);
         assert!(args.ends_with("} }"));
     }
 
     #[test]
-    fn monitor_chain_follows_default_sink() {
-        let spec =
-            LoopbackSpec::for_chain(SourceId(1), "Mic", MixBus::Monitor, "pipedeck.stream_mix");
-        assert!(!spec.playback.iter().any(|(k, _)| *k == "target.object"));
-        assert!(!spec
-            .playback
-            .iter()
-            .any(|(k, _)| *k == "state.restore-target"));
-        assert_eq!(
-            playback_node_name(SourceId(1), MixBus::Monitor),
-            "pipedeck.1.monitor"
-        );
+    fn an_input_row_is_captured_from_its_device() {
+        let source = SourceConfig::input(SourceId(1), "Mic", "alsa_input.usb");
+        let spec = LoopbackSpec::for_link(&source, &mix(), "512/48000");
+        let args = spec.to_args();
+        assert!(args.contains("target.object = \"alsa_input.usb\""));
+        assert!(!args.contains("stream.capture.sink"));
+        assert_eq!(link_node_name(SourceId(1), MixId(2)), "pipedeck.link.1.2");
+    }
+
+    #[test]
+    fn an_output_goes_from_the_mix_sink_to_a_device() {
+        let args = LoopbackSpec::for_output(&mix(), 0, "alsa_output.usb", "512/48000").to_args();
+        assert!(args.contains("node.name = \"pipedeck.out.2.0.in\""));
+        assert!(args.contains("stream.capture.sink = true"));
+        assert!(args.contains("target.object = \"pipedeck.mix.2\""));
+        assert!(args.contains("target.object = \"alsa_output.usb\""));
+        assert_eq!(output_node_name(MixId(2), 1), "pipedeck.out.2.1");
     }
 }

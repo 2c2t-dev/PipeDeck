@@ -1,19 +1,17 @@
-//! The live PipeWire graph: one null sink per source, two loopbacks per
-//! source, one null sink for the Stream Mix.
+//! The live PipeWire graph behind the mixer matrix.
 //!
 //! ```text
-//! apps ──▶ [pipedeck.N] null sink
-//!             │
-//!             ├─ monitor ──▶ loopback ──▶ [pipedeck.N.stream]  ──▶ [pipedeck.stream_mix]
-//!             └─ monitor ──▶ loopback ──▶ [pipedeck.N.monitor] ──▶ default output device
+//!  apps ──▶ [pipedeck.src.N] ──monitor──┐
+//!                                       ├─ loopback (cell fader) ──▶ [pipedeck.mix.M] ──┬─ loopback ──▶ device
+//!  mic  ────────────────────────────────┘                            (captured by OBS)  └─ loopback ──▶ device
 //! ```
 //!
-//! Both chains are identical and capture the same monitor ports, so they see
-//! the same signal and behave the same way with respect to the sink volume
-//! (which is applied to the monitor ports via `monitor.channel-volumes`).
-//! The fader of each chain is the `Props` volume of its playback node.
+//! A cell of the matrix is one loopback. Creating it links a source to a mix,
+//! destroying it unlinks them, and its playback node carries the fader. Mix
+//! outputs work the same way, which keeps every object in the graph identical
+//! in nature and lets a mix feed any number of devices.
 //!
-//! Every object here belongs to this process' client connection(s): when the
+//! Everything here belongs to this process' client connection: when the
 //! process dies, the server drops all of it. Nothing lingers.
 
 pub mod loopback;
@@ -35,16 +33,14 @@ use pipewire::registry::{GlobalObject, RegistryRc};
 use pipewire::types::ObjectType;
 
 use crate::config::Config;
-use crate::engine::Event;
+use crate::engine::{Event, StateSnapshot};
 use crate::error::EngineError;
-use crate::types::{ChainState, MixBus, SourceConfig, SourceId};
+use crate::types::{ChainState, Device, LinkConfig, MixConfig, MixId, SourceConfig, SourceId};
 
 use loopback::{LoopbackSpec, AUDIO_POSITION, CHANNELS};
 use module::LoadedModule;
 
-/// `node.name` of the sink OBS captures.
-pub const STREAM_MIX_NODE: &str = "pipedeck.stream_mix";
-const STREAM_MIX_DESCRIPTION: &str = "Pipedeck Stream Mix";
+const NODE_PREFIX: &str = "pipedeck.";
 const ADAPTER_FACTORY: &str = "adapter";
 const NULL_SINK_FACTORY: &str = "support.null-audio-sink";
 const LOOPBACK_MODULE: &str = "libpipewire-module-loopback";
@@ -55,18 +51,17 @@ struct BoundNode {
     proxy: Node,
 }
 
-/// One gain chain: a loopback plus the fader state of its playback node.
-struct Chain {
-    /// `node.name` of the playback stream carrying the fader volume.
+/// One cell of the matrix.
+struct Link {
+    /// `node.name` of the playback node carrying the fader.
     node_name: String,
-    /// Kept alive as long as the chain exists. See [`LoadedModule`] invariants.
+    /// Kept alive as long as the cell exists. See [`LoadedModule`].
     _module: LoadedModule,
-    /// Bound once the registry announces the playback node.
     node: Option<BoundNode>,
     wanted: ChainState,
 }
 
-impl Chain {
+impl Link {
     fn apply(&self) {
         let Some(node) = &self.node else {
             return;
@@ -83,37 +78,40 @@ impl Chain {
     }
 }
 
-/// A source that exists in the graph.
-struct LiveSource {
-    // Field order matters: chains (modules) are destroyed before the sink
-    // proxy so the loopbacks never outlive the sink they capture.
-    stream: Chain,
-    monitor: Chain,
+/// A column: the sink a capture client reads, plus one loopback per device.
+struct Mix {
+    // Field order matters: the outputs are destroyed before the sink they
+    // capture from.
+    outputs: Vec<LoadedModule>,
     #[allow(dead_code)] // held only to keep the remote object alive
     sink: Node,
 }
 
-impl LiveSource {
-    fn chain_mut(&mut self, bus: MixBus) -> &mut Chain {
-        match bus {
-            MixBus::Stream => &mut self.stream,
-            MixBus::Monitor => &mut self.monitor,
-        }
-    }
+/// A row. Virtual rows own a sink; input rows capture a device directly and
+/// own nothing in the graph.
+struct Source {
+    #[allow(dead_code)] // held only to keep the remote object alive
+    sink: Option<Node>,
+}
 
-    fn chains_mut(&mut self) -> [&mut Chain; 2] {
-        [&mut self.stream, &mut self.monitor]
-    }
+/// A device the user can attach to a mix or turn into a row.
+struct DeviceEntry {
+    device: Device,
+    is_output: bool,
 }
 
 pub struct Graph {
-    // Drop order: sources (modules + proxies) and the stream mix go first,
-    // while `context`/`core`/`registry` below are still alive.
-    sources: HashMap<SourceId, LiveSource>,
-    stream_mix: Option<Node>,
-    /// Playback node name -> owning chain. Filled before the loopbacks are
-    /// loaded, so a registry announcement always finds its chain.
-    chain_index: HashMap<String, (SourceId, MixBus)>,
+    // Drop order: cells first (their modules capture the sinks below), then
+    // the mixes and sources, while context, core and registry are still
+    // alive further down.
+    links: HashMap<(SourceId, MixId), Link>,
+    mixes: HashMap<MixId, Mix>,
+    sources: HashMap<SourceId, Source>,
+    /// Playback node name -> owning cell. Filled before the module is loaded,
+    /// so a registry announcement always finds its cell.
+    link_index: HashMap<String, (SourceId, MixId)>,
+    devices: HashMap<u32, DeviceEntry>,
+    devices_dirty: bool,
     registry: RegistryRc,
     core: CoreRc,
     context: ContextRc,
@@ -133,15 +131,19 @@ impl Graph {
         events: Rc<dyn Fn(Event)>,
     ) -> Self {
         Self {
+            // A converted config is written back on the first tick.
+            dirty: config.migrated,
+            links: HashMap::new(),
+            mixes: HashMap::new(),
             sources: HashMap::new(),
-            stream_mix: None,
-            chain_index: HashMap::new(),
+            link_index: HashMap::new(),
+            devices: HashMap::new(),
+            devices_dirty: false,
             registry,
             core,
             context,
             config,
             config_path,
-            dirty: false,
             events,
         }
     }
@@ -154,143 +156,239 @@ impl Graph {
         (self.events)(event);
     }
 
-    /// Create the Stream Mix null sink. No loopback involved, so no extra
-    /// latency: OBS captures its monitor ports directly.
-    pub fn create_stream_mix(&mut self) -> Result<(), EngineError> {
-        let node = self
-            .core
-            .create_object::<Node>(
-                ADAPTER_FACTORY,
-                &properties! {
-                    "factory.name" => NULL_SINK_FACTORY,
-                    "node.name" => STREAM_MIX_NODE,
-                    "node.description" => STREAM_MIX_DESCRIPTION,
-                    "media.class" => "Audio/Sink",
-                    "audio.position" => AUDIO_POSITION,
-                },
-            )
-            .map_err(|source| EngineError::CreateObject {
-                what: "stream mix sink",
-                source,
-            })?;
-        self.stream_mix = Some(node);
-        Ok(())
+    /// The current matrix, as the clients see it.
+    pub fn snapshot(&self) -> StateSnapshot {
+        StateSnapshot {
+            mixes: self.config.mixes.clone(),
+            sources: self.config.sources.clone(),
+            links: self.config.links.clone(),
+        }
     }
 
-    /// Create the sink and both loopbacks of a source. Volumes are applied as
-    /// soon as the registry announces the playback nodes.
-    pub fn add_source(&mut self, cfg: &SourceConfig) -> Result<(), EngineError> {
-        if self.sources.contains_key(&cfg.id) {
-            return Ok(());
-        }
-        let sink = self
-            .core
+    pub fn emit_state(&self) {
+        self.emit(Event::State(self.snapshot()));
+    }
+
+    // --- building blocks ----------------------------------------------------
+
+    fn create_sink(&self, node_name: String, description: String) -> Result<Node, EngineError> {
+        self.core
             .create_object::<Node>(
                 ADAPTER_FACTORY,
                 &properties! {
                     "factory.name" => NULL_SINK_FACTORY,
-                    "node.name" => cfg.id.sink_node_name(),
-                    "node.description" => format!("Pipedeck: {}", cfg.name),
+                    "node.name" => node_name,
+                    "node.description" => description,
                     "media.class" => "Audio/Sink",
                     "audio.position" => AUDIO_POSITION,
                     // Apply the sink volume (what pavucontrol shows) to the
-                    // monitor ports, so it acts as a pre-fader trim on both
-                    // chains instead of on neither.
+                    // monitor ports, so it acts as a pre-fader trim on every
+                    // cell of the row instead of on none of them.
                     "monitor.channel-volumes" => "true",
                 },
             )
             .map_err(|source| EngineError::CreateObject {
-                what: "source sink",
+                what: "sink",
                 source,
-            })?;
-
-        // Index first: the registry announces the playback nodes only once the
-        // loop iterates again, but keeping the index ahead of the graph means
-        // `on_global` never has to cope with an unknown Pipedeck node.
-        for bus in MixBus::ALL {
-            self.chain_index
-                .insert(loopback::playback_node_name(cfg.id, bus), (cfg.id, bus));
-        }
-        let load = |bus: MixBus| -> Result<Chain, EngineError> {
-            let spec = LoopbackSpec::for_chain(cfg.id, &cfg.name, bus, STREAM_MIX_NODE);
-            let module = LoadedModule::load(&self.context, LOOPBACK_MODULE, &spec.to_args())?;
-            Ok(Chain {
-                node_name: loopback::playback_node_name(cfg.id, bus),
-                _module: module,
-                node: None,
-                wanted: *cfg.chain(bus),
             })
-        };
-        let chains = load(MixBus::Stream).and_then(|stream| Ok((stream, load(MixBus::Monitor)?)));
-        let (stream, monitor) = match chains {
-            Ok(chains) => chains,
-            Err(e) => {
-                for bus in MixBus::ALL {
-                    self.chain_index
-                        .remove(&loopback::playback_node_name(cfg.id, bus));
+    }
+
+    /// Load the loopbacks feeding a mix's devices. Any output that fails is
+    /// reported and skipped: one dead device must not take the mix down.
+    fn load_outputs(&self, cfg: &MixConfig) -> Vec<LoadedModule> {
+        let mut modules = Vec::with_capacity(cfg.outputs.len());
+        for (index, device) in cfg.outputs.iter().enumerate() {
+            let spec = LoopbackSpec::for_output(cfg, index, device, &self.config.latency);
+            match LoadedModule::load(&self.context, LOOPBACK_MODULE, &spec.to_args()) {
+                Ok(module) => modules.push(module),
+                Err(e) => {
+                    log::error!("{e}");
+                    self.emit(Event::Error(format!(
+                        "cannot send {} to {device}: {e}",
+                        cfg.name
+                    )));
                 }
-                return Err(e);
+            }
+        }
+        modules
+    }
+
+    // --- mixes --------------------------------------------------------------
+
+    pub fn create_mix(&mut self, cfg: &MixConfig) -> Result<(), EngineError> {
+        if self.mixes.contains_key(&cfg.id) {
+            return Ok(());
+        }
+        let sink = self.create_sink(cfg.id.sink_node_name(), format!("Pipedeck {}", cfg.name))?;
+        let outputs = self.load_outputs(cfg);
+        self.mixes.insert(cfg.id, Mix { outputs, sink });
+        log::info!("mix {} ({}) created", cfg.id, cfg.name);
+        Ok(())
+    }
+
+    /// Tear a mix down, cells first. Only ever called from the command
+    /// handler, never from a listener (see [`LoadedModule`]).
+    pub fn remove_mix(&mut self, id: MixId) -> Result<(), EngineError> {
+        let mix = self.mixes.remove(&id).ok_or(EngineError::UnknownMix(id))?;
+        let cells: Vec<(SourceId, MixId)> = self
+            .links
+            .keys()
+            .copied()
+            .filter(|(_, mix_id)| *mix_id == id)
+            .collect();
+        for cell in cells {
+            self.drop_link(cell);
+        }
+        drop(mix);
+        log::info!("mix {id} removed");
+        Ok(())
+    }
+
+    /// Replace the devices a mix plays to. The mix sink stays in place, so a
+    /// capture client such as OBS keeps its connection across the change.
+    pub fn set_mix_outputs(&mut self, id: MixId, devices: Vec<String>) -> Result<(), EngineError> {
+        let cfg = self.config.mix_mut(id).ok_or(EngineError::UnknownMix(id))?;
+        cfg.outputs = devices;
+        let cfg = cfg.clone();
+        let mix = self.mixes.get_mut(&id).ok_or(EngineError::UnknownMix(id))?;
+        // Drop the old loopbacks before loading the new ones, so a device
+        // that stays attached is not captured twice for an instant.
+        mix.outputs.clear();
+        let outputs = self.load_outputs(&cfg);
+        self.mixes
+            .get_mut(&id)
+            .ok_or(EngineError::UnknownMix(id))?
+            .outputs = outputs;
+        self.dirty = true;
+        log::info!("mix {id} now feeds {} device(s)", cfg.outputs.len());
+        Ok(())
+    }
+
+    // --- sources ------------------------------------------------------------
+
+    pub fn create_source(&mut self, cfg: &SourceConfig) -> Result<(), EngineError> {
+        if self.sources.contains_key(&cfg.id) {
+            return Ok(());
+        }
+        let sink = match cfg.device {
+            // An input row captures its device straight from every cell, so
+            // it owns no node of its own.
+            Some(_) => None,
+            None => {
+                Some(self.create_sink(cfg.id.sink_node_name(), format!("Pipedeck: {}", cfg.name))?)
             }
         };
-
-        self.sources.insert(
-            cfg.id,
-            LiveSource {
-                stream,
-                monitor,
-                sink,
-            },
-        );
+        self.sources.insert(cfg.id, Source { sink });
         log::info!("source {} ({}) created", cfg.id, cfg.name);
         Ok(())
     }
 
-    /// Tear down a source. Only ever called from the command handler, never
-    /// from a registry or proxy listener (see [`LoadedModule`]).
     pub fn remove_source(&mut self, id: SourceId) -> Result<(), EngineError> {
-        let live = self
+        let source = self
             .sources
             .remove(&id)
             .ok_or(EngineError::UnknownSource(id))?;
-        self.chain_index.remove(&live.stream.node_name);
-        self.chain_index.remove(&live.monitor.node_name);
-        drop(live);
+        let cells: Vec<(SourceId, MixId)> = self
+            .links
+            .keys()
+            .copied()
+            .filter(|(source_id, _)| *source_id == id)
+            .collect();
+        for cell in cells {
+            self.drop_link(cell);
+        }
+        drop(source);
         log::info!("source {id} removed");
         Ok(())
     }
 
-    pub fn update_chain(
-        &mut self,
-        id: SourceId,
-        bus: MixBus,
-        f: impl FnOnce(&mut ChainState),
-    ) -> Result<(), EngineError> {
-        let live = self
-            .sources
-            .get_mut(&id)
-            .ok_or(EngineError::UnknownSource(id))?;
-        let chain = live.chain_mut(bus);
-        f(&mut chain.wanted);
-        chain.apply();
-        let state = chain.wanted;
-        if let Some(cfg) = self.config.source_mut(id) {
-            *cfg.chain_mut(bus) = state;
+    // --- cells --------------------------------------------------------------
+
+    pub fn create_link(&mut self, link: &LinkConfig) -> Result<(), EngineError> {
+        let cell = (link.source, link.mix);
+        if self.links.contains_key(&cell) {
+            return Ok(());
         }
-        self.dirty = true;
-        self.emit(Event::ChainChanged { id, bus, state });
+        let source = self
+            .config
+            .source(link.source)
+            .ok_or(EngineError::UnknownSource(link.source))?
+            .clone();
+        let mix = self
+            .config
+            .mix(link.mix)
+            .ok_or(EngineError::UnknownMix(link.mix))?
+            .clone();
+
+        let node_name = loopback::link_node_name(link.source, link.mix);
+        // Index before loading: the registry announces the playback node only
+        // once the loop iterates again, and this way `on_global` never has to
+        // cope with an unknown Pipedeck node.
+        self.link_index.insert(node_name.clone(), cell);
+
+        let spec = LoopbackSpec::for_link(&source, &mix, &self.config.latency);
+        let module = match LoadedModule::load(&self.context, LOOPBACK_MODULE, &spec.to_args()) {
+            Ok(module) => module,
+            Err(e) => {
+                self.link_index.remove(&node_name);
+                return Err(e);
+            }
+        };
+
+        self.links.insert(
+            cell,
+            Link {
+                node_name,
+                _module: module,
+                node: None,
+                wanted: link.state(),
+            },
+        );
+        log::info!("{} feeds {}", source.name, mix.name);
         Ok(())
     }
 
-    // --- config -----------------------------------------------------------
-
-    pub fn config_add(&mut self, cfg: SourceConfig) {
-        self.config.sources.push(cfg);
-        self.dirty = true;
+    fn drop_link(&mut self, cell: (SourceId, MixId)) {
+        if let Some(link) = self.links.remove(&cell) {
+            self.link_index.remove(&link.node_name);
+        }
     }
 
-    pub fn config_remove(&mut self, id: SourceId) {
-        self.config.sources.retain(|s| s.id != id);
+    pub fn remove_link(&mut self, source: SourceId, mix: MixId) -> Result<(), EngineError> {
+        if !self.links.contains_key(&(source, mix)) {
+            return Err(EngineError::UnknownLink(source, mix));
+        }
+        self.drop_link((source, mix));
+        log::info!("source {source} no longer feeds mix {mix}");
+        Ok(())
+    }
+
+    pub fn update_link(
+        &mut self,
+        source: SourceId,
+        mix: MixId,
+        f: impl FnOnce(&mut ChainState),
+    ) -> Result<(), EngineError> {
+        let link = self
+            .links
+            .get_mut(&(source, mix))
+            .ok_or(EngineError::UnknownLink(source, mix))?;
+        f(&mut link.wanted);
+        link.apply();
+        let state = link.wanted;
+        if let Some(cfg) = self.config.link_mut(source, mix) {
+            cfg.set_state(state);
+        }
         self.dirty = true;
+        self.emit(Event::LinkChanged { source, mix, state });
+        Ok(())
+    }
+
+    // --- config -------------------------------------------------------------
+
+    pub fn config_mut(&mut self) -> &mut Config {
+        self.dirty = true;
+        &mut self.config
     }
 
     /// Write the config if anything changed since the last save.
@@ -314,33 +412,61 @@ impl Graph {
 
     // --- registry -----------------------------------------------------------
 
-    /// Registry `global` event: bind the playback node of a chain as soon as
-    /// it is announced and push the wanted volume. Must not destroy anything.
+    /// Registry `global` event: bind the playback node of a cell as soon as
+    /// it is announced, and keep the device list up to date. Must not destroy
+    /// anything.
     pub fn on_global(&mut self, global: &GlobalObject<&DictRef>) {
         if global.type_ != ObjectType::Node {
             return;
         }
-        let Some(name) = global.props.and_then(|p| p.get("node.name")) else {
+        let Some(props) = global.props else {
             return;
         };
-        let Some(&(id, bus)) = self.chain_index.get(name) else {
+        let Some(name) = props.get("node.name") else {
             return;
         };
-        let Some(live) = self.sources.get_mut(&id) else {
+
+        if let Some(&cell) = self.link_index.get(name) {
+            self.bind_link(cell, global);
+            return;
+        }
+        if name.starts_with(NODE_PREFIX) {
+            return;
+        }
+        let is_output = match props.get("media.class") {
+            Some("Audio/Sink") => true,
+            Some("Audio/Source") => false,
+            _ => return,
+        };
+        let description = props.get("node.description").unwrap_or(name).to_owned();
+        self.devices.insert(
+            global.id,
+            DeviceEntry {
+                device: Device {
+                    name: name.to_owned(),
+                    description,
+                },
+                is_output,
+            },
+        );
+        self.devices_dirty = true;
+    }
+
+    fn bind_link(&mut self, cell: (SourceId, MixId), global: &GlobalObject<&DictRef>) {
+        let Some(link) = self.links.get_mut(&cell) else {
             return;
         };
-        let chain = live.chain_mut(bus);
         let failure = match self.registry.bind::<Node, _>(global) {
             Ok(proxy) => {
-                chain.node = Some(BoundNode {
+                link.node = Some(BoundNode {
                     global_id: global.id,
                     proxy,
                 });
-                chain.apply();
-                log::debug!("{} bound to global {}", chain.node_name, global.id);
+                link.apply();
+                log::debug!("{} bound to global {}", link.node_name, global.id);
                 None
             }
-            Err(e) => Some(format!("cannot bind {}: {e}", chain.node_name)),
+            Err(e) => Some(format!("cannot bind {}: {e}", link.node_name)),
         };
         if let Some(message) = failure {
             log::error!("{message}");
@@ -348,25 +474,47 @@ impl Graph {
         }
     }
 
-    /// Registry `global_remove` event. Dropping a proxy here is fine (this is
-    /// what pw-dump does); dropping a module is not.
+    /// Registry `global_remove` event. Dropping a proxy here is fine, but a
+    /// module must never be destroyed from a listener.
     pub fn on_global_remove(&mut self, global_id: u32) {
-        for live in self.sources.values_mut() {
-            for chain in live.chains_mut() {
-                if chain
-                    .node
-                    .as_ref()
-                    .is_some_and(|n| n.global_id == global_id)
-                {
-                    log::debug!("{} gone from the graph", chain.node_name);
-                    chain.node = None;
-                }
+        if self.devices.remove(&global_id).is_some() {
+            self.devices_dirty = true;
+        }
+        for link in self.links.values_mut() {
+            if link.node.as_ref().is_some_and(|n| n.global_id == global_id) {
+                log::debug!("{} gone from the graph", link.node_name);
+                link.node = None;
             }
         }
     }
 
-    /// Periodic housekeeping from the engine timer: debounced config save.
+    fn device_lists(&self) -> (Vec<Device>, Vec<Device>) {
+        let mut outputs: Vec<Device> = Vec::new();
+        let mut inputs: Vec<Device> = Vec::new();
+        for entry in self.devices.values() {
+            if entry.is_output {
+                outputs.push(entry.device.clone());
+            } else {
+                inputs.push(entry.device.clone());
+            }
+        }
+        outputs.sort_by(|a, b| a.description.cmp(&b.description));
+        inputs.sort_by(|a, b| a.description.cmp(&b.description));
+        (outputs, inputs)
+    }
+
+    pub fn emit_devices(&mut self) {
+        self.devices_dirty = false;
+        let (outputs, inputs) = self.device_lists();
+        self.emit(Event::Devices { outputs, inputs });
+    }
+
+    /// Periodic housekeeping from the engine timer: debounced config saves
+    /// and device list updates.
     pub fn tick(&mut self) {
+        if self.devices_dirty {
+            self.emit_devices();
+        }
         self.flush_config();
     }
 }

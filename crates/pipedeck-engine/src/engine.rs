@@ -23,43 +23,74 @@ use pw::main_loop::MainLoopRc;
 use crate::config::Config;
 use crate::error::EngineError;
 use crate::pw::Graph;
-use crate::types::{ChainState, MixBus, SourceConfig, SourceId};
+use crate::types::{
+    ChainState, Device, LinkConfig, MixConfig, MixId, SourceConfig, SourceId, MAX_MIXES,
+};
 
 /// Requests from a client to the engine.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    AddSource {
+    /// Add a column. Refused past [`MAX_MIXES`](crate::types::MAX_MIXES).
+    AddMix {
         name: String,
     },
+    RemoveMix(MixId),
+    /// Replace the devices a mix plays to, in one go.
+    SetMixOutputs {
+        id: MixId,
+        devices: Vec<String>,
+    },
+    /// Add a row: a virtual sink, or a capture device when `device` is set.
+    AddSource {
+        name: String,
+        device: Option<String>,
+    },
     RemoveSource(SourceId),
-    SetGain {
-        id: SourceId,
-        bus: MixBus,
+    /// Create or destroy one cell of the matrix.
+    SetLink {
+        source: SourceId,
+        mix: MixId,
+        linked: bool,
+    },
+    SetLinkGain {
+        source: SourceId,
+        mix: MixId,
         gain: f32,
     },
-    SetMute {
-        id: SourceId,
-        bus: MixBus,
+    SetLinkMute {
+        source: SourceId,
+        mix: MixId,
         muted: bool,
     },
     /// Tear the graph down and stop the thread.
     Shutdown,
 }
 
-/// Notifications from the engine to its client.
+/// The matrix as the engine holds it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StateSnapshot {
+    pub mixes: Vec<MixConfig>,
+    pub sources: Vec<SourceConfig>,
+    pub links: Vec<LinkConfig>,
+}
+
+/// Notifications from the engine to its clients.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// Connected to PipeWire, initial graph built from the config.
-    Ready {
-        sources: Vec<SourceConfig>,
+    /// The whole matrix, sent once the graph is up and after every
+    /// structural change. Clients rebuild their grid from it.
+    State(StateSnapshot),
+    /// The audio devices currently on the system.
+    Devices {
+        outputs: Vec<Device>,
+        inputs: Vec<Device>,
     },
-    SourceAdded(SourceConfig),
-    SourceRemoved(SourceId),
-    /// A chain state as the engine sees it, emitted after every change so
-    /// every client (there will be several once this is a daemon) resyncs.
-    ChainChanged {
-        id: SourceId,
-        bus: MixBus,
+    /// One cell's fader moved. Sent on every change so that every client
+    /// (there will be several once this is a daemon) stays in sync without
+    /// rebuilding its grid.
+    LinkChanged {
+        source: SourceId,
+        mix: MixId,
         state: ChainState,
     },
     /// Non-fatal problem worth showing to the user.
@@ -210,18 +241,34 @@ fn run(
     // Build the initial graph from the config.
     {
         let mut g = graph.borrow_mut();
-        g.create_stream_mix()?;
-        let sources = g.config().sources.clone();
-        for src in &sources {
-            if let Err(e) = g.add_source(src) {
-                log::error!("cannot create source {}: {e}", src.name);
+        let snapshot = g.snapshot();
+        for mix in &snapshot.mixes {
+            if let Err(e) = g.create_mix(mix) {
+                log::error!("cannot create mix {}: {e}", mix.name);
+                events(Event::Error(format!("cannot create mix {}: {e}", mix.name)));
+            }
+        }
+        for source in &snapshot.sources {
+            if let Err(e) = g.create_source(source) {
+                log::error!("cannot create source {}: {e}", source.name);
                 events(Event::Error(format!(
                     "cannot create source {}: {e}",
-                    src.name
+                    source.name
                 )));
             }
         }
-        events(Event::Ready { sources });
+        for link in &snapshot.links {
+            if let Err(e) = g.create_link(link) {
+                log::error!(
+                    "cannot link source {} to mix {}: {e}",
+                    link.source,
+                    link.mix
+                );
+                events(Event::Error(e.to_string()));
+            }
+        }
+        g.emit_state();
+        g.emit_devices();
     }
 
     let _receiver = {
@@ -267,23 +314,36 @@ fn handle_command(
 ) {
     log::debug!("command {cmd:?}");
     let mut g = graph.borrow_mut();
+    let mut structural = true;
     let result = match cmd {
-        Command::AddSource { name } => {
-            let cfg = SourceConfig::new(g.config().next_id(), name.trim());
-            g.add_source(&cfg).map(|()| {
-                g.config_add(cfg.clone());
-                events(Event::SourceAdded(cfg));
-            })
-        }
-        Command::RemoveSource(id) => g.remove_source(id).map(|()| {
-            g.config_remove(id);
-            events(Event::SourceRemoved(id));
+        Command::AddMix { name } => add_mix(&mut g, name),
+        Command::RemoveMix(id) => g.remove_mix(id).map(|()| {
+            let cfg = g.config_mut();
+            cfg.mixes.retain(|m| m.id != id);
+            cfg.prune_links();
         }),
-        Command::SetGain { id, bus, gain } => {
-            g.update_chain(id, bus, |c| c.gain = gain.clamp(0.0, 1.0))
+        Command::SetMixOutputs { id, devices } => g.set_mix_outputs(id, devices),
+        Command::AddSource { name, device } => add_source(&mut g, name, device),
+        Command::RemoveSource(id) => g.remove_source(id).map(|()| {
+            let cfg = g.config_mut();
+            cfg.sources.retain(|s| s.id != id);
+            cfg.prune_links();
+        }),
+        Command::SetLink {
+            source,
+            mix,
+            linked,
+        } => set_link(&mut g, source, mix, linked),
+        Command::SetLinkGain { source, mix, gain } => {
+            structural = false;
+            g.update_link(source, mix, |c| c.gain = gain.clamp(0.0, 1.0))
         }
-        Command::SetMute { id, bus, muted } => g.update_chain(id, bus, |c| c.muted = muted),
+        Command::SetLinkMute { source, mix, muted } => {
+            structural = false;
+            g.update_link(source, mix, |c| c.muted = muted)
+        }
         Command::Shutdown => {
+            structural = false;
             mainloop.quit();
             Ok(())
         }
@@ -292,4 +352,49 @@ fn handle_command(
         log::error!("{e}");
         events(Event::Error(e.to_string()));
     }
+    if structural {
+        g.emit_state();
+    }
+}
+
+fn add_mix(g: &mut Graph, name: String) -> Result<(), EngineError> {
+    if g.config().mixes.len() >= MAX_MIXES {
+        return Err(EngineError::TooManyMixes(MAX_MIXES));
+    }
+    let cfg = MixConfig::new(g.config().next_mix_id(), name.trim());
+    g.create_mix(&cfg)?;
+    g.config_mut().mixes.push(cfg);
+    Ok(())
+}
+
+fn add_source(g: &mut Graph, name: String, device: Option<String>) -> Result<(), EngineError> {
+    let id = g.config().next_source_id();
+    let cfg = match device {
+        Some(device) => SourceConfig::input(id, name.trim(), device),
+        None => SourceConfig::virtual_sink(id, name.trim()),
+    };
+    g.create_source(&cfg)?;
+    g.config_mut().sources.push(cfg);
+    Ok(())
+}
+
+fn set_link(g: &mut Graph, source: SourceId, mix: MixId, linked: bool) -> Result<(), EngineError> {
+    if linked {
+        let cfg = g
+            .config()
+            .link(source, mix)
+            .copied()
+            .unwrap_or_else(|| LinkConfig::new(source, mix));
+        g.create_link(&cfg)?;
+        let config = g.config_mut();
+        if config.link(source, mix).is_none() {
+            config.links.push(cfg);
+        }
+    } else {
+        g.remove_link(source, mix)?;
+        g.config_mut()
+            .links
+            .retain(|l| !(l.source == source && l.mix == mix));
+    }
+    Ok(())
 }

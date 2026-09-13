@@ -2,24 +2,27 @@
 
 A PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link.
 
-Each **source** (Game, Music, Chat…) is a virtual sink you can pick in any
-application's audio settings. Every source feeds two mixes with fully
-independent gain and mute:
+The mixer is a **matrix**. Sources are rows, mixes are columns, and each cell
+is an independent fader and mute. What you hear is not what goes to the
+stream, because they are different columns.
 
-- **Pipedeck Stream Mix**: a sink meant to be captured by OBS.
-- **Monitor**: played on your default output device, what you hear.
-
-What you hear in your headphones is not what goes to the stream.
+- A **source** is either a virtual output any application can select in its
+  audio settings, or a capture device such as a microphone.
+- A **mix** collects the sources you send to it into a sink a capture client
+  such as OBS can read, and plays to any number of output devices you attach
+  to it. Up to five mixes.
+- A **cell** exists only when you press `+` on it. It is what links a source
+  to a mix, and it carries that pair's fader and mute.
 
 ## Status
 
-MVP bootstrap: routing plumbing and the mixer UI. No plugins, no VST, no
-per-application auto-routing.
+MVP: routing plumbing and the mixer UI. No plugins, no VST, no per-application
+auto-routing. Level meters are not implemented yet.
 
 ## Building
 
-Runtime and build dependencies: PipeWire ≥ 1.2 (headers), GTK ≥ 4.18,
-libadwaita ≥ 1.7, clang (for bindgen), pkg-config, a Rust toolchain ≥ 1.80.
+Runtime and build dependencies: PipeWire >= 1.2 (headers), GTK >= 4.18,
+libadwaita >= 1.7, clang (for bindgen), pkg-config, a Rust toolchain >= 1.80.
 
 ```sh
 cargo build --release
@@ -28,29 +31,37 @@ cargo build --release
 
 Logs go through `env_logger`: `RUST_LOG=pipedeck_engine=debug ./target/release/pipedeck`.
 
-The state is persisted in `$XDG_CONFIG_HOME/pipedeck/config.toml`.
+State is persisted in `$XDG_CONFIG_HOME/pipedeck/config.toml`. A config from
+the earlier two-bus layout is converted on first start into two mixes named
+Stream Mix and Monitor, keeping every fader.
+
+Set `PIPEDECK_APP_ID` to run a development build next to an installed one,
+instead of handing over to the running instance.
 
 ## Using it with OBS
 
-Add an audio input capture in OBS and pick **Pipedeck Stream Mix** (or its
-monitor, depending on the capture plugin). Route each application to the
-Pipedeck source of your choice from the application or from pavucontrol.
+A mix is capturable whether or not it has an output device: add an audio
+input capture in OBS and pick the mix by name. Attach your headphones to a
+different mix to hear a different balance.
 
 ## How the graph looks
 
 ```
-apps ──▶ [pipedeck.N] null sink
-            │
-            ├─ monitor ──▶ loopback ──▶ [pipedeck.N.stream]  ──▶ [pipedeck.stream_mix]
-            └─ monitor ──▶ loopback ──▶ [pipedeck.N.monitor] ──▶ default output device
+ apps ──▶ [pipedeck.src.N] ──monitor──┐
+                                      ├─ loopback (cell fader) ──▶ [pipedeck.mix.M] ──┬─ loopback ──▶ device
+ mic  ────────────────────────────────┘                            (captured by OBS)  └─ loopback ──▶ device
 ```
 
-One loopback per gain path, so one quantum of extra latency per path. The
-faders are the `Props` volume of each loopback's playback node; the capture
-sides are internal streams (`Stream/Input/Audio/Internal`) so they stay out
-of pavucontrol's recording tab. Every node
-belongs to the app's client connection: if the app dies, PipeWire drops
-them all, nothing lingers.
+Audio crosses two of our nodes on its way to a device, one for the cell and
+one for the mix output. Both request the quantum set by `latency` in the
+config, 512 frames by default, so the round trip stays in the same ballpark
+as a single hop at PipeWire's usual 1024. Raise it if the machine reports
+xruns.
+
+The faders are the `Props` volume of each loopback's playback node. Capture
+sides are internal streams (`Stream/Input/Audio/Internal`) so they stay out of
+pavucontrol's recording tab, and every node belongs to the app's client
+connection: if the app dies, PipeWire drops them all, nothing lingers.
 
 ## Workspace
 
@@ -59,5 +70,6 @@ them all, nothing lingers.
 - `crates/pipedeck`: the GTK4 + libadwaita application.
 
 `cargo run -p pipedeck-engine --example smoke` exercises the engine against
-the live PipeWire daemon (creates a source, checks volumes, removes it, and
-verifies no node is left behind).
+the live PipeWire daemon: it builds a matrix, checks the nodes and volumes it
+creates, attaches a real output device, then tears everything down and
+verifies that nothing is left behind.

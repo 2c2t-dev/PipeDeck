@@ -1,0 +1,133 @@
+//! One cell of the matrix: the fader a source has on a given mix.
+
+use std::cell::Cell as StdCell;
+use std::rc::Rc;
+
+use adw::gtk;
+use adw::prelude::*;
+use libadwaita as adw;
+
+use pipedeck_engine::{ChainState, Command, MixId, SourceId};
+
+use crate::engine_link::EngineLink;
+
+/// Fader travel in UI units; the gain is `value / FADER_MAX`.
+const FADER_MAX: f64 = 100.0;
+
+pub struct Cell {
+    pub root: gtk::Box,
+    scale: gtk::Scale,
+    mute: gtk::ToggleButton,
+    /// Set while we push engine state into the widgets, so the handlers do
+    /// not echo it back to the engine as a command.
+    syncing: Rc<StdCell<bool>>,
+}
+
+impl Cell {
+    pub fn new(source: SourceId, mix: MixId, state: ChainState, engine: &EngineLink) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        root.set_margin_start(8);
+        root.set_margin_end(8);
+        root.set_valign(gtk::Align::Center);
+
+        let mute = gtk::ToggleButton::new();
+        mute.set_icon_name("audio-volume-muted-symbolic");
+        mute.set_tooltip_text(Some("Mute"));
+        mute.add_css_class("flat");
+        mute.add_css_class("circular");
+        mute.set_active(state.muted);
+        root.append(&mute);
+
+        let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, FADER_MAX, 1.0);
+        scale.set_hexpand(true);
+        scale.set_draw_value(true);
+        scale.set_value_pos(gtk::PositionType::Right);
+        scale.set_digits(0);
+        scale.set_value(f64::from(state.gain) * FADER_MAX);
+        // The value is drawn at the right edge of the scale, so keep it off
+        // the unlink button.
+        scale.set_margin_end(6);
+        root.append(&scale);
+
+        let unlink = gtk::Button::from_icon_name("list-remove-symbolic");
+        unlink.set_tooltip_text(Some("Unlink this source from this mix"));
+        unlink.add_css_class("flat");
+        root.append(&unlink);
+
+        let syncing = Rc::new(StdCell::new(false));
+
+        scale.connect_value_changed({
+            let engine = engine.clone();
+            let syncing = syncing.clone();
+            move |scale| {
+                if syncing.get() {
+                    return;
+                }
+                engine.send(Command::SetLinkGain {
+                    source,
+                    mix,
+                    gain: (scale.value() / FADER_MAX) as f32,
+                });
+            }
+        });
+        mute.connect_toggled({
+            let engine = engine.clone();
+            let syncing = syncing.clone();
+            move |button| {
+                if syncing.get() {
+                    return;
+                }
+                engine.send(Command::SetLinkMute {
+                    source,
+                    mix,
+                    muted: button.is_active(),
+                });
+            }
+        });
+        unlink.connect_clicked({
+            let engine = engine.clone();
+            move |_| {
+                engine.send(Command::SetLink {
+                    source,
+                    mix,
+                    linked: false,
+                })
+            }
+        });
+
+        Self {
+            root,
+            scale,
+            mute,
+            syncing,
+        }
+    }
+
+    /// Push engine state into the widgets without sending it back.
+    pub fn set_state(&self, state: ChainState) {
+        self.syncing.set(true);
+        self.scale.set_value(f64::from(state.gain) * FADER_MAX);
+        self.mute.set_active(state.muted);
+        self.syncing.set(false);
+    }
+}
+
+/// The empty cell: a button that links the source to the mix.
+pub fn link_button(source: SourceId, mix: MixId, engine: &EngineLink) -> gtk::Button {
+    let button = gtk::Button::from_icon_name("list-add-symbolic");
+    button.set_tooltip_text(Some("Send this source to this mix"));
+    button.add_css_class("flat");
+    button.set_halign(gtk::Align::Center);
+    button.set_valign(gtk::Align::Center);
+    button.connect_clicked({
+        let engine = engine.clone();
+        move |_| {
+            engine.send(Command::SetLink {
+                source,
+                mix,
+                linked: true,
+            })
+        }
+    });
+    button
+}

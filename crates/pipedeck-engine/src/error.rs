@@ -1,5 +1,5 @@
 use crate::config::ConfigError;
-use crate::types::SourceId;
+use crate::types::{MixId, SourceId};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -21,6 +21,12 @@ pub enum EngineError {
     Config(#[from] ConfigError),
     #[error("unknown source {0}")]
     UnknownSource(SourceId),
+    #[error("unknown mix {0}")]
+    UnknownMix(MixId),
+    #[error("source {0} does not feed mix {1}")]
+    UnknownLink(SourceId, MixId),
+    #[error("a mixer holds at most {0} mixes")]
+    TooManyMixes(usize),
     #[error("the engine thread is no longer running")]
     Stopped,
 }

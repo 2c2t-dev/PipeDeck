@@ -1,8 +1,9 @@
 //! Pipedeck: a PipeWire mixer with a Stream mix and a Monitor mix per source.
 
+mod cell;
+mod dialogs;
 mod engine_link;
 mod signals;
-mod source_column;
 mod window;
 
 use adw::gtk::glib;
@@ -32,7 +33,11 @@ fn main() -> glib::ExitCode {
 
     ignore_prefer_dark_theme();
 
-    let app = adw::Application::builder().application_id(APP_ID).build();
+    // A second instance normally hands over to the first one. Overriding the
+    // id starts a separate application, which is how you run a development
+    // build next to an installed one.
+    let app_id = std::env::var("PIPEDECK_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
+    let app = adw::Application::builder().application_id(app_id).build();
     app.connect_activate(activate);
     app.run()
 }

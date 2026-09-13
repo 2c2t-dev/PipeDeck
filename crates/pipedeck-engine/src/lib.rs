@@ -1,5 +1,9 @@
 //! Pipedeck engine: PipeWire graph management for a streamer-oriented mixer.
 //!
+//! The mixer is a matrix. Sources are rows, mixes are columns, and each cell
+//! is an independent gain and mute stage. A mix collects into a sink a
+//! capture client such as OBS can read, and plays to any number of devices.
+//!
 //! This crate has no UI dependency. It exposes a thread-backed engine driven
 //! by [`Command`]s and reporting [`Event`]s, plus the plain data types and
 //! the TOML config. It is meant to become a standalone daemon later.
@@ -11,7 +15,8 @@ mod pw;
 pub mod types;
 
 pub use config::Config;
-pub use engine::{spawn, Command, EngineHandle, Event};
+pub use engine::{spawn, Command, EngineHandle, Event, StateSnapshot};
 pub use error::EngineError;
-pub use pw::STREAM_MIX_NODE;
-pub use types::{ChainState, MixBus, SourceConfig, SourceId};
+pub use types::{
+    ChainState, Device, LinkConfig, MixConfig, MixId, SourceConfig, SourceId, MAX_MIXES,
+};

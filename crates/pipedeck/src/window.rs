@@ -1,5 +1,5 @@
-//! Main window: a header bar with an "Add source" button and one column per
-//! source.
+//! Main window: the mixer matrix, mixes across the top, sources down the
+//! left, one fader per cell.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -9,22 +9,30 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
-use pipedeck_engine::{Command, Event, SourceConfig, SourceId};
+use pipedeck_engine::{
+    Command, Device, Event, MixConfig, MixId, SourceConfig, SourceId, StateSnapshot, MAX_MIXES,
+};
 
+use crate::cell::{link_button, Cell};
+use crate::dialogs;
 use crate::engine_link::EngineLink;
-use crate::source_column::SourceColumn;
 
-const PAGE_EMPTY: &str = "empty";
-const PAGE_MIXER: &str = "mixer";
+const MIX_COLUMN_WIDTH: i32 = 260;
+const SOURCE_COLUMN_WIDTH: i32 = 180;
+const ROW_HEIGHT: i32 = 56;
 
 pub struct Window {
     pub window: adw::ApplicationWindow,
     engine: EngineLink,
-    add_button: gtk::Button,
-    stack: gtk::Stack,
-    columns_box: gtk::Box,
+    grid: gtk::Grid,
+    hint: gtk::Label,
     toasts: adw::ToastOverlay,
-    columns: RefCell<HashMap<SourceId, SourceColumn>>,
+    add_mix: gtk::Button,
+    add_source: gtk::Button,
+    state: RefCell<StateSnapshot>,
+    outputs: RefCell<Vec<Device>>,
+    inputs: RefCell<Vec<Device>>,
+    cells: RefCell<HashMap<(SourceId, MixId), Cell>>,
 }
 
 impl Window {
@@ -32,44 +40,53 @@ impl Window {
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Pipedeck")
-            .default_width(720)
-            .default_height(480)
+            .default_width(1000)
+            .default_height(520)
             .build();
 
         let header = adw::HeaderBar::new();
-        let add_button = gtk::Button::new();
-        add_button.set_child(Some(
+        let add_source = gtk::Button::new();
+        add_source.set_child(Some(
             &adw::ButtonContent::builder()
                 .icon_name("list-add-symbolic")
-                .label("Add source")
+                .label("Source")
                 .build(),
         ));
-        add_button.set_tooltip_text(Some("Create a new virtual source"));
-        header.pack_start(&add_button);
+        add_source.set_tooltip_text(Some("Add a source"));
+        header.pack_start(&add_source);
 
-        let empty = adw::StatusPage::new();
-        empty.set_icon_name(Some("audio-speakers-symbolic"));
-        empty.set_title("No source yet");
-        empty.set_description(Some(
-            "Add a source to get a virtual output you can pick in any application.",
+        let add_mix = gtk::Button::new();
+        add_mix.set_child(Some(
+            &adw::ButtonContent::builder()
+                .icon_name("list-add-symbolic")
+                .label("Mix")
+                .build(),
         ));
+        add_mix.set_tooltip_text(Some("Add a mix"));
+        header.pack_end(&add_mix);
 
-        let columns_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        columns_box.set_margin_top(12);
-        columns_box.set_margin_bottom(12);
-        columns_box.set_margin_start(12);
-        columns_box.set_margin_end(12);
-        columns_box.set_valign(gtk::Align::Fill);
+        let grid = gtk::Grid::new();
+        grid.set_row_spacing(6);
+        grid.set_column_spacing(6);
+        grid.set_margin_top(12);
+        grid.set_margin_bottom(12);
+        grid.set_margin_start(12);
+        grid.set_margin_end(12);
+
+        let hint = gtk::Label::new(None);
+        hint.add_css_class("dim-label");
+        hint.set_margin_bottom(24);
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content.append(&grid);
+        content.append(&hint);
+
         let scroller = gtk::ScrolledWindow::new();
-        scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
-        scroller.set_child(Some(&columns_box));
-
-        let stack = gtk::Stack::new();
-        stack.add_named(&empty, Some(PAGE_EMPTY));
-        stack.add_named(&scroller, Some(PAGE_MIXER));
+        scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+        scroller.set_child(Some(&content));
 
         let toasts = adw::ToastOverlay::new();
-        toasts.set_child(Some(&stack));
+        toasts.set_child(Some(&scroller));
 
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
@@ -79,18 +96,31 @@ impl Window {
         let this = Rc::new(Self {
             window,
             engine,
-            add_button,
-            stack,
-            columns_box,
+            grid,
+            hint,
             toasts,
-            columns: RefCell::new(HashMap::new()),
+            add_mix,
+            add_source,
+            state: RefCell::new(StateSnapshot {
+                mixes: Vec::new(),
+                sources: Vec::new(),
+                links: Vec::new(),
+            }),
+            outputs: RefCell::new(Vec::new()),
+            inputs: RefCell::new(Vec::new()),
+            cells: RefCell::new(HashMap::new()),
         });
 
-        this.add_button.connect_clicked({
+        this.add_source.connect_clicked({
             let this = this.clone();
-            move |_| this.prompt_add_source()
+            move |_| dialogs::add_source(&this.window, &this.engine, &this.inputs.borrow())
         });
-        this.update_stack();
+        this.add_mix.connect_clicked({
+            let this = this.clone();
+            move |_| dialogs::add_mix(&this.window, &this.engine)
+        });
+
+        this.rebuild();
         this
     }
 
@@ -98,25 +128,25 @@ impl Window {
         self.window.present();
     }
 
-    pub fn handle_event(&self, event: Event) {
+    pub fn handle_event(self: &Rc<Self>, event: Event) {
         match event {
-            Event::Ready { sources } => {
-                self.clear_columns();
-                for cfg in &sources {
-                    self.add_column(cfg);
-                }
-                self.add_button.set_sensitive(true);
+            Event::State(state) => {
+                *self.state.borrow_mut() = state;
+                self.rebuild();
             }
-            Event::SourceAdded(cfg) => self.add_column(&cfg),
-            Event::SourceRemoved(id) => self.remove_column(id),
-            Event::ChainChanged { id, bus, state } => {
-                if let Some(column) = self.columns.borrow().get(&id) {
-                    column.set_state(bus, &state);
+            Event::Devices { outputs, inputs } => {
+                *self.outputs.borrow_mut() = outputs;
+                *self.inputs.borrow_mut() = inputs;
+            }
+            Event::LinkChanged { source, mix, state } => {
+                if let Some(cell) = self.cells.borrow().get(&(source, mix)) {
+                    cell.set_state(state);
                 }
             }
             Event::Error(message) => self.toast(&message),
             Event::Stopped => {
-                self.add_button.set_sensitive(false);
+                self.add_mix.set_sensitive(false);
+                self.add_source.set_sensitive(false);
                 self.toast("Audio engine stopped");
             }
         }
@@ -127,63 +157,172 @@ impl Window {
         self.toasts.add_toast(adw::Toast::new(message));
     }
 
-    fn add_column(&self, cfg: &SourceConfig) {
-        let column = SourceColumn::new(cfg, &self.engine);
-        self.columns_box.append(&column.root);
-        if let Some(old) = self.columns.borrow_mut().insert(cfg.id, column) {
-            self.columns_box.remove(&old.root);
+    /// Rebuild the whole matrix. Structural changes are rare and the grid is
+    /// small, so this is simpler and safer than patching it in place.
+    fn rebuild(self: &Rc<Self>) {
+        while let Some(child) = self.grid.first_child() {
+            self.grid.remove(&child);
         }
-        self.update_stack();
-    }
+        self.cells.borrow_mut().clear();
 
-    fn remove_column(&self, id: SourceId) {
-        if let Some(column) = self.columns.borrow_mut().remove(&id) {
-            self.columns_box.remove(&column.root);
+        let state = self.state.borrow();
+        self.add_mix.set_sensitive(state.mixes.len() < MAX_MIXES);
+
+        self.grid.attach(&corner(), 0, 0, 1, 1);
+        for (column, mix) in state.mixes.iter().enumerate() {
+            let header = self.mix_header(mix);
+            self.grid.attach(&header, column as i32 + 1, 0, 1, 1);
         }
-        self.update_stack();
-    }
 
-    fn clear_columns(&self) {
-        for (_, column) in self.columns.borrow_mut().drain() {
-            self.columns_box.remove(&column.root);
+        for (row, source) in state.sources.iter().enumerate() {
+            let header = self.source_header(source);
+            self.grid.attach(&header, 0, row as i32 + 1, 1, 1);
+
+            for (column, mix) in state.mixes.iter().enumerate() {
+                let linked = state
+                    .links
+                    .iter()
+                    .find(|l| l.source == source.id && l.mix == mix.id);
+                let widget: gtk::Widget = match linked {
+                    Some(link) => {
+                        let cell = Cell::new(source.id, mix.id, link.state(), &self.engine);
+                        let root = cell.root.clone().upcast();
+                        self.cells.borrow_mut().insert((source.id, mix.id), cell);
+                        root
+                    }
+                    None => link_button(source.id, mix.id, &self.engine).upcast(),
+                };
+                let holder = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                holder.add_css_class("card");
+                holder.set_height_request(ROW_HEIGHT);
+                holder.append(&widget);
+                widget.set_hexpand(true);
+                self.grid
+                    .attach(&holder, column as i32 + 1, row as i32 + 1, 1, 1);
+            }
         }
+
+        self.hint.set_visible(state.sources.is_empty());
+        self.hint
+            .set_label("Add a source to get a virtual output, then press + to send it to a mix.");
     }
 
-    fn update_stack(&self) {
-        let page = if self.columns.borrow().is_empty() {
-            PAGE_EMPTY
-        } else {
-            PAGE_MIXER
-        };
-        self.stack.set_visible_child_name(page);
-    }
+    fn mix_header(self: &Rc<Self>, mix: &MixConfig) -> gtk::Widget {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        root.add_css_class("card");
+        root.set_width_request(MIX_COLUMN_WIDTH);
+        root.set_margin_bottom(6);
 
-    fn prompt_add_source(&self) {
-        let dialog = adw::AlertDialog::new(Some("Add a source"), None);
-        let entry = gtk::Entry::new();
-        entry.set_placeholder_text(Some("Game, Music, Chat…"));
-        entry.set_activates_default(true);
-        dialog.set_extra_child(Some(&entry));
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("add", "Add");
-        dialog.set_response_appearance("add", adw::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some("add"));
-        dialog.set_close_response("cancel");
-        dialog.set_response_enabled("add", false);
+        let inner = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        inner.set_margin_top(10);
+        inner.set_margin_bottom(10);
+        inner.set_margin_start(10);
+        inner.set_margin_end(10);
+        root.append(&inner);
 
-        entry.connect_changed({
-            let dialog = dialog.clone();
-            move |entry| dialog.set_response_enabled("add", !entry.text().trim().is_empty())
-        });
-        dialog.connect_response(Some("add"), {
-            let engine = self.engine.clone();
-            move |_, _| {
-                let name = entry.text().trim().to_owned();
-                if !name.is_empty() {
-                    engine.send(Command::AddSource { name });
-                }
+        let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let title = gtk::Label::new(Some(&mix.name));
+        title.add_css_class("heading");
+        title.set_hexpand(true);
+        title.set_xalign(0.0);
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        top.append(&title);
+
+        let remove = gtk::Button::from_icon_name("user-trash-symbolic");
+        remove.add_css_class("flat");
+        remove.set_tooltip_text(Some("Remove this mix"));
+        remove.connect_clicked({
+            let this = self.clone();
+            let id = mix.id;
+            let name = mix.name.clone();
+            move |_| {
+                dialogs::confirm_remove(
+                    &this.window,
+                    &this.engine,
+                    &format!("Remove {name}?"),
+                    "Its outputs and every fader on this mix are removed.",
+                    Command::RemoveMix(id),
+                )
             }
         });
-        dialog.present(Some(&self.window));
+        top.append(&remove);
+        inner.append(&top);
+
+        let devices = gtk::Button::new();
+        devices.add_css_class("flat");
+        devices.set_child(Some(
+            &adw::ButtonContent::builder()
+                .icon_name("audio-speakers-symbolic")
+                .label(output_label(mix.outputs.len()))
+                .build(),
+        ));
+        devices.set_tooltip_text(Some("Choose the devices this mix plays to"));
+        devices.connect_clicked({
+            let this = self.clone();
+            let mix = mix.clone();
+            move |_| dialogs::mix_outputs(&this.window, &this.engine, &mix, &this.outputs.borrow())
+        });
+        inner.append(&devices);
+
+        root.upcast()
+    }
+
+    fn source_header(self: &Rc<Self>, source: &SourceConfig) -> gtk::Widget {
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        root.add_css_class("card");
+        root.set_width_request(SOURCE_COLUMN_WIDTH);
+        root.set_height_request(ROW_HEIGHT);
+
+        let icon = gtk::Image::from_icon_name(if source.is_input() {
+            "audio-input-microphone-symbolic"
+        } else {
+            "audio-speakers-symbolic"
+        });
+        icon.set_margin_start(10);
+        root.append(&icon);
+
+        let title = gtk::Label::new(Some(&source.name));
+        title.add_css_class("heading");
+        title.set_hexpand(true);
+        title.set_xalign(0.0);
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        title.set_tooltip_text(Some(&source.name));
+        root.append(&title);
+
+        let remove = gtk::Button::from_icon_name("user-trash-symbolic");
+        remove.add_css_class("flat");
+        remove.set_margin_end(6);
+        remove.set_tooltip_text(Some("Remove this source"));
+        remove.connect_clicked({
+            let this = self.clone();
+            let id = source.id;
+            let name = source.name.clone();
+            move |_| {
+                dialogs::confirm_remove(
+                    &this.window,
+                    &this.engine,
+                    &format!("Remove {name}?"),
+                    "Applications sending audio to it lose their output.",
+                    Command::RemoveSource(id),
+                )
+            }
+        });
+        root.append(&remove);
+
+        root.upcast()
+    }
+}
+
+fn corner() -> gtk::Widget {
+    let corner = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    corner.set_width_request(SOURCE_COLUMN_WIDTH);
+    corner.upcast()
+}
+
+fn output_label(count: usize) -> String {
+    match count {
+        0 => "No output".to_owned(),
+        1 => "1 output".to_owned(),
+        n => format!("{n} outputs"),
     }
 }

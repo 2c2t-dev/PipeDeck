@@ -1,15 +1,15 @@
 //! End-to-end smoke test against the live PipeWire daemon.
 //!
-//! Creates a source, sets its faders, checks the nodes and their volumes with
-//! `pw-dump`, removes the source, shuts the engine down and checks that no
-//! Pipedeck node is left behind. Run with `cargo run -p pipedeck-engine
-//! --example smoke` (needs a running PipeWire).
+//! Builds a matrix, checks every node it should create, moves a fader, sends
+//! the mix to a real device, then tears everything down and checks that no
+//! Pipedeck node is left behind. Run with
+//! `cargo run -p pipedeck-engine --example smoke` (needs a running PipeWire).
 
 use std::process::{Command as Process, ExitCode};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use pipedeck_engine::{spawn, Command, Event, MixBus, SourceId};
+use pipedeck_engine::{spawn, Command, Device, Event, MixId, SourceId, StateSnapshot};
 
 fn pw_dump() -> String {
     let out = Process::new("pw-dump")
@@ -18,7 +18,7 @@ fn pw_dump() -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Names of nodes whose node.name starts with `pipedeck.`.
+/// Names of the nodes we own.
 fn pipedeck_nodes(dump: &str) -> Vec<String> {
     let mut names: Vec<String> = dump
         .lines()
@@ -35,11 +35,9 @@ fn pipedeck_nodes(dump: &str) -> Vec<String> {
     names
 }
 
-/// Very small extractor: the `channelVolumes` and `mute` lines of the
-/// `Props` param of the object whose node.name is `name`.
+/// The `channelVolumes` and `mute` of the node named `name`.
 fn node_volume(dump: &str, name: &str) -> Option<(Vec<f32>, bool)> {
     let needle = format!("\"node.name\": \"{name}\"");
-    // pw-dump prints one top-level object per `  {` ... `  }` block.
     for block in dump.split("\n  },\n  {") {
         if !block.contains(&needle) {
             continue;
@@ -52,8 +50,7 @@ fn node_volume(dump: &str, name: &str) -> Option<(Vec<f32>, bool)> {
             .split(',')
             .filter_map(|v| v.trim().parse::<f32>().ok())
             .collect();
-        let muted = mute_line.contains("true");
-        return Some((vols, muted));
+        return Some((vols, mute_line.contains("true")));
     }
     None
 }
@@ -64,7 +61,6 @@ fn wait_for<F: Fn(&Event) -> bool>(rx: &mpsc::Receiver<Event>, what: &str, pred:
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
             Ok(ev) => {
-                println!("event: {ev:?}");
                 if pred(&ev) {
                     return ev;
                 }
@@ -77,11 +73,29 @@ fn wait_for<F: Fn(&Event) -> bool>(rx: &mpsc::Receiver<Event>, what: &str, pred:
     }
 }
 
+fn wait_state<F: Fn(&StateSnapshot) -> bool>(
+    rx: &mpsc::Receiver<Event>,
+    what: &str,
+    pred: F,
+) -> StateSnapshot {
+    match wait_for(rx, what, |e| match e {
+        Event::State(s) => pred(s),
+        _ => false,
+    }) {
+        Event::State(s) => s,
+        _ => unreachable!(),
+    }
+}
+
 fn check(ok: bool, what: &str, failures: &mut u32) {
     println!("[{}] {what}", if ok { " ok " } else { "FAIL" });
     if !ok {
         *failures += 1;
     }
+}
+
+fn settle() {
+    std::thread::sleep(Duration::from_millis(900));
 }
 
 fn main() -> ExitCode {
@@ -96,96 +110,151 @@ fn main() -> ExitCode {
         let _ = tx.send(ev);
     });
 
-    wait_for(&rx, "Ready", |e| matches!(e, Event::Ready { .. }));
-    std::thread::sleep(Duration::from_millis(500));
+    // A fresh config starts with one mix and no source.
+    let state = wait_state(&rx, "initial state", |_| true);
+    let mix: MixId = state.mixes.first().expect("one mix by default").id;
+    // The first Devices event is empty: the registry has not replied yet, and
+    // the real list follows on the next housekeeping tick.
+    let devices = match wait_for(
+        &rx,
+        "devices",
+        |e| matches!(e, Event::Devices { outputs, .. } if !outputs.is_empty()),
+    ) {
+        Event::Devices { outputs, .. } => outputs,
+        _ => unreachable!(),
+    };
+    settle();
     let nodes = pipedeck_nodes(&pw_dump());
     check(
-        nodes == ["pipedeck.stream_mix"],
-        &format!("only the stream mix exists at start: {nodes:?}"),
+        nodes == [format!("pipedeck.mix.{mix}")],
+        &format!("a fresh config yields one mix sink and nothing else: {nodes:?}"),
+        &mut failures,
+    );
+    check(
+        !devices.is_empty(),
+        &format!("output devices were discovered: {}", devices.len()),
         &mut failures,
     );
 
+    // A source on its own creates a sink but no cell.
     engine
         .send(Command::AddSource {
             name: "Smoke".into(),
+            device: None,
         })
         .unwrap();
-    let id = match wait_for(&rx, "SourceAdded", |e| matches!(e, Event::SourceAdded(_))) {
-        Event::SourceAdded(cfg) => cfg.id,
-        _ => unreachable!(),
-    };
+    let state = wait_state(&rx, "source added", |s| !s.sources.is_empty());
+    let source: SourceId = state.sources[0].id;
+    settle();
+    let nodes = pipedeck_nodes(&pw_dump());
+    check(
+        nodes
+            == [
+                format!("pipedeck.mix.{mix}"),
+                format!("pipedeck.src.{source}"),
+            ],
+        &format!("the source sink appears, unlinked: {nodes:?}"),
+        &mut failures,
+    );
+
+    // Linking creates the cell and its fader.
     engine
-        .send(Command::SetGain {
-            id,
-            bus: MixBus::Stream,
+        .send(Command::SetLink {
+            source,
+            mix,
+            linked: true,
+        })
+        .unwrap();
+    wait_state(&rx, "link created", |s| !s.links.is_empty());
+    engine
+        .send(Command::SetLinkGain {
+            source,
+            mix,
             gain: 0.5,
         })
         .unwrap();
     engine
-        .send(Command::SetMute {
-            id,
-            bus: MixBus::Monitor,
+        .send(Command::SetLinkMute {
+            source,
+            mix,
             muted: true,
         })
         .unwrap();
-    std::thread::sleep(Duration::from_millis(1500));
-
+    settle();
     let dump = pw_dump();
-    let nodes = pipedeck_nodes(&dump);
-    let expected: Vec<String> = [
-        format!("pipedeck.{id}"),
-        format!("pipedeck.{id}.monitor"),
-        format!("pipedeck.{id}.monitor.in"),
-        format!("pipedeck.{id}.stream"),
-        format!("pipedeck.{id}.stream.in"),
-        "pipedeck.stream_mix".to_string(),
-    ]
-    .into();
+    let link_node = format!("pipedeck.link.{source}.{mix}");
     check(
-        nodes == expected,
-        &format!("source nodes exist: {nodes:?}"),
+        pipedeck_nodes(&dump).contains(&link_node),
+        &format!("the cell node exists: {link_node}"),
+        &mut failures,
+    );
+    let volume = node_volume(&dump, &link_node);
+    check(
+        volume
+            .as_ref()
+            .is_some_and(|(v, m)| v.len() == 2 && v.iter().all(|x| (x - 0.125).abs() < 1e-3) && *m),
+        &format!("the cell carries gain 0.125 (0.5 cubic) and mute: {volume:?}"),
         &mut failures,
     );
 
-    let stream = node_volume(&dump, &format!("pipedeck.{id}.stream"));
+    // Sending the mix to a real device adds one output loopback.
+    let device: Device = devices[0].clone();
+    engine
+        .send(Command::SetMixOutputs {
+            id: mix,
+            devices: vec![device.name.clone()],
+        })
+        .unwrap();
+    wait_state(&rx, "outputs set", |s| {
+        s.mixes.first().is_some_and(|m| m.outputs.len() == 1)
+    });
+    settle();
+    let nodes = pipedeck_nodes(&pw_dump());
     check(
-        stream
-            .as_ref()
-            .is_some_and(|(v, m)| v.len() == 2 && v.iter().all(|x| (x - 0.125).abs() < 1e-3) && !m),
-        &format!("stream chain volume is 0.125 (0.5 cubic), unmuted: {stream:?}"),
-        &mut failures,
-    );
-    let monitor = node_volume(&dump, &format!("pipedeck.{id}.monitor"));
-    check(
-        monitor
-            .as_ref()
-            .is_some_and(|(v, m)| v.iter().all(|x| (x - 1.0).abs() < 1e-3) && *m),
-        &format!("monitor chain volume is 1.0, muted: {monitor:?}"),
+        nodes.contains(&format!("pipedeck.out.{mix}.0")),
+        &format!("the mix output node exists: {nodes:?}"),
         &mut failures,
     );
 
     let cfg = std::fs::read_to_string(&config_path).unwrap_or_default();
     check(
-        cfg.contains("name = \"Smoke\"") && cfg.contains("gain = 0.5"),
-        "config was saved",
+        cfg.contains("[[link]]") && cfg.contains("gain = 0.5") && cfg.contains(&device.name),
+        "the matrix was saved to the config",
         &mut failures,
     );
 
-    engine.send(Command::RemoveSource(id)).unwrap();
-    wait_for(&rx, "SourceRemoved", |e| {
-        matches!(e, Event::SourceRemoved(_))
-    });
-    std::thread::sleep(Duration::from_millis(700));
+    // Unlinking removes the cell and nothing else.
+    engine
+        .send(Command::SetLink {
+            source,
+            mix,
+            linked: false,
+        })
+        .unwrap();
+    wait_state(&rx, "link removed", |s| s.links.is_empty());
+    settle();
     let nodes = pipedeck_nodes(&pw_dump());
     check(
-        nodes == ["pipedeck.stream_mix"],
-        &format!("source nodes gone after removal: {nodes:?}"),
+        !nodes.iter().any(|n| n.starts_with("pipedeck.link.")),
+        &format!("the cell is gone, the rest stays: {nodes:?}"),
+        &mut failures,
+    );
+
+    engine.send(Command::RemoveSource(source)).unwrap();
+    wait_state(&rx, "source removed", |s| s.sources.is_empty());
+    engine.send(Command::RemoveMix(mix)).unwrap();
+    wait_state(&rx, "mix removed", |s| s.mixes.is_empty());
+    settle();
+    let nodes = pipedeck_nodes(&pw_dump());
+    check(
+        nodes.is_empty(),
+        &format!("removing the mix takes its output with it: {nodes:?}"),
         &mut failures,
     );
 
     engine.shutdown();
     wait_for(&rx, "Stopped", |e| matches!(e, Event::Stopped));
-    std::thread::sleep(Duration::from_millis(700));
+    settle();
     let nodes = pipedeck_nodes(&pw_dump());
     check(
         nodes.is_empty(),
@@ -194,7 +263,6 @@ fn main() -> ExitCode {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
-    let _ = SourceId(0);
     if failures == 0 {
         println!("SMOKE PASS");
         ExitCode::SUCCESS
