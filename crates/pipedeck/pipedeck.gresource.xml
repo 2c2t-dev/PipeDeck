@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/dev/_2c2t/Pipedeck/icons/scalable/actions">
+    <file preprocess="xml-stripblanks">pd-aux-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-browser-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-fun-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-game-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-headset-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-mic-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-music-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-people-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-record-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-sfx-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-speaker-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-star-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-stream-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-system-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-video-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-voice-symbolic.svg</file>
+  </gresource>
+</gresources>

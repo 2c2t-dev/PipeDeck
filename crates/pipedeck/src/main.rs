@@ -11,7 +11,7 @@ mod signals;
 mod widgets;
 mod window;
 
-use adw::gtk::glib;
+use adw::gtk::{self, glib};
 use adw::prelude::*;
 use libadwaita as adw;
 
@@ -37,11 +37,27 @@ fn main() -> glib::ExitCode {
     signals::block_termination_signals();
 
     ignore_prefer_dark_theme();
+    load_icons();
 
     let app_id = std::env::var("PIPEDECK_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
     let app = adw::Application::builder().application_id(app_id).build();
     app.connect_activate(activate);
     app.run()
+}
+
+/// Make the bundled icons available under their own names.
+///
+/// Asking the desktop's icon theme instead means taking whatever set it
+/// happens to ship: names missing from it are drawn as broken images, and
+/// the ones that exist come from different families and do not look like one
+/// another, which shows when a row of them sits in a small grid.
+fn load_icons() {
+    gtk::gio::resources_register_include!("pipedeck.gresource")
+        .expect("the icons are compiled into the binary");
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    gtk::IconTheme::for_display(&display).add_resource_path("/dev/_2c2t/Pipedeck/icons");
 }
 
 /// Neutralize `GtkSettings:gtk-application-prefer-dark-theme` for this

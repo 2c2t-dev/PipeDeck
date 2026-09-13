@@ -91,7 +91,7 @@ pub fn known_icon<'a>(name: &'a str, fallback: &'a str) -> &'a str {
 
 /// An icon in a rounded badge, coloured by the preset it belongs to.
 pub fn badge(icon_name: &str, preset: Option<&str>, size: i32) -> gtk::Image {
-    let icon = gtk::Image::from_icon_name(known_icon(icon_name, "audio-speakers-symbolic"));
+    let icon = gtk::Image::from_icon_name(known_icon(icon_name, "pd-speaker-symbolic"));
     icon.set_pixel_size(size);
     icon.add_css_class("pd-badge");
     if let Some(class) = crate::presets::badge_class(preset) {
@@ -106,7 +106,7 @@ pub fn badge(icon_name: &str, preset: Option<&str>, size: i32) -> gtk::Image {
 
 /// The large icon that stands for the object a window is about.
 pub fn big_badge(icon_name: &str, preset: Option<&str>) -> gtk::Image {
-    let icon = gtk::Image::from_icon_name(known_icon(icon_name, "audio-speakers-symbolic"));
+    let icon = gtk::Image::from_icon_name(known_icon(icon_name, "pd-speaker-symbolic"));
     icon.set_pixel_size(72);
     icon.add_css_class("pd-badge-large");
     if let Some(class) = crate::presets::badge_class(preset) {

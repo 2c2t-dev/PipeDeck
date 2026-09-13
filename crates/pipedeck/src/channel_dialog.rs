@@ -310,9 +310,9 @@ impl ChannelDialog {
             crate::presets::icon_for(source.icon.as_deref(), source.is_input()),
             source.icon.as_deref(),
             if source.is_input() {
-                "audio-input-microphone-symbolic"
+                "pd-mic-symbolic"
             } else {
-                "audio-speakers-symbolic"
+                "pd-speaker-symbolic"
             },
         );
         if let Some(device) = &source.device {

@@ -83,7 +83,10 @@ impl MixDialog {
             id: mix.id,
             engine: engine.clone(),
             name,
-            badge: widgets::big_badge("audio-speakers-symbolic", mix.icon.as_deref()),
+            badge: widgets::big_badge(
+                crate::presets::icon_for(mix.icon.as_deref(), false),
+                mix.icon.as_deref(),
+            ),
             look: gtk::Box::new(gtk::Orientation::Vertical, 6),
             volume,
             mute,
@@ -290,7 +293,7 @@ impl MixDialog {
             &self.badge,
             crate::presets::icon_for(mix.icon.as_deref(), false),
             mix.icon.as_deref(),
-            "audio-speakers-symbolic",
+            "pd-speaker-symbolic",
         );
 
         *self.attached.borrow_mut() = mix.outputs.iter().map(|o| o.device.clone()).collect();

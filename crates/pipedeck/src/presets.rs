@@ -4,9 +4,9 @@
 //! colour. The engine stores its key on the channel and knows nothing else
 //! about it, which keeps the look of the mixer out of the audio graph.
 
-/// Icon names are picked to exist in the two icon themes a Linux desktop is
-/// most likely to be running, since a missing one shows as a broken image.
-/// [`crate::widgets::badge`] falls back at runtime for the rest.
+/// Icons are bundled with the application rather than taken from the
+/// desktop's icon theme, so a row of them looks like one set wherever it
+/// runs. See `crates/pipedeck/icons`.
 ///
 /// A ready-made channel identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,98 +27,98 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         key: "music",
         label: "Music",
-        icon: "multimedia-player-symbolic",
+        icon: "pd-music-symbolic",
         color: "#e35db5",
     },
     Preset {
         key: "browser",
         label: "Browser",
-        icon: "internet-web-browser-symbolic",
+        icon: "pd-browser-symbolic",
         color: "#9b6ef3",
     },
     Preset {
         key: "system",
         label: "System",
-        icon: "computer-symbolic",
+        icon: "pd-system-symbolic",
         color: "#3a8ee6",
     },
     Preset {
         key: "game",
         label: "Game",
-        icon: "applications-games-symbolic",
+        icon: "pd-game-symbolic",
         color: "#e6584f",
     },
     Preset {
         key: "sfx",
         label: "SFX",
-        icon: "media-playback-start-symbolic",
+        icon: "pd-sfx-symbolic",
         color: "#f08a24",
     },
     Preset {
         key: "voice",
         label: "Voice chat",
-        icon: "call-start-symbolic",
+        icon: "pd-voice-symbolic",
         color: "#e8c33a",
     },
     Preset {
         key: "aux1",
         label: "Aux 1",
-        icon: "audio-card-symbolic",
+        icon: "pd-aux-symbolic",
         color: "#2fb9ad",
     },
     Preset {
         key: "aux2",
         label: "Aux 2",
-        icon: "audio-speakers-symbolic",
+        icon: "pd-speaker-symbolic",
         color: "#4cc26a",
     },
     // Past this point the looks are only offered by the icon picker.
     Preset {
         key: "headset",
         label: "Headset",
-        icon: "audio-headphones-symbolic",
+        icon: "pd-headset-symbolic",
         color: "#3ba7c9",
     },
     Preset {
         key: "mic",
         label: "Microphone",
-        icon: "audio-input-microphone-symbolic",
+        icon: "pd-mic-symbolic",
         color: "#d8594f",
     },
     Preset {
         key: "star",
         label: "Star",
-        icon: "starred-symbolic",
+        icon: "pd-star-symbolic",
         color: "#e0b13a",
     },
     Preset {
         key: "people",
         label: "People",
-        icon: "system-users-symbolic",
+        icon: "pd-people-symbolic",
         color: "#5b8cf5",
     },
     Preset {
         key: "video",
         label: "Video",
-        icon: "camera-video-symbolic",
+        icon: "pd-video-symbolic",
         color: "#a563e8",
     },
     Preset {
         key: "stream",
         label: "Stream",
-        icon: "network-wireless-symbolic",
+        icon: "pd-stream-symbolic",
         color: "#e35db5",
     },
     Preset {
         key: "record",
         label: "Record",
-        icon: "media-record-symbolic",
+        icon: "pd-record-symbolic",
         color: "#e0514b",
     },
     Preset {
         key: "fun",
         label: "Fun",
-        icon: "face-smile-symbolic",
+        icon: "pd-fun-symbolic",
         color: "#7ec44f",
     },
 ];
@@ -138,8 +138,8 @@ pub fn find(key: Option<&str>) -> Option<&'static Preset> {
 pub fn icon_for(key: Option<&str>, is_input: bool) -> &'static str {
     match find(key) {
         Some(preset) => preset.icon,
-        None if is_input => "audio-input-microphone-symbolic",
-        None => "audio-speakers-symbolic",
+        None if is_input => "pd-mic-symbolic",
+        None => "pd-speaker-symbolic",
     }
 }
 
@@ -194,9 +194,9 @@ mod tests {
 
     #[test]
     fn a_channel_without_a_preset_keeps_a_neutral_icon() {
-        assert_eq!(icon_for(Some("game"), false), "applications-games-symbolic");
-        assert_eq!(icon_for(None, true), "audio-input-microphone-symbolic");
-        assert_eq!(icon_for(Some("gone"), false), "audio-speakers-symbolic");
+        assert_eq!(icon_for(Some("game"), false), "pd-game-symbolic");
+        assert_eq!(icon_for(None, true), "pd-mic-symbolic");
+        assert_eq!(icon_for(Some("gone"), false), "pd-speaker-symbolic");
         assert!(badge_class(Some("music")).is_some());
         assert!(badge_class(None).is_none());
     }

@@ -50,7 +50,8 @@ Stream Mix and Monitor, keeping every fader.
 Set `PIPEDECK_APP_ID` to run a development build next to an installed one,
 instead of handing over to the running instance.
 
-Each card carries an icon, chosen from a small set of looks: a channel picks
+Each card carries an icon from the bundled set, chosen from a small set of
+looks: a channel picks
 one when it is created, and both a channel and a mix can change it later from
 the menu above their icon.
 
@@ -85,6 +86,14 @@ The faders are the `Props` volume of each loopback's playback node. Capture
 sides are internal streams (`Stream/Input/Audio/Internal`) so they stay out of
 pavucontrol's recording tab, and every node belongs to the app's client
 connection: if the app dies, PipeWire drops them all, nothing lingers.
+
+## Icons
+
+The icons are Material Symbols, bundled under `crates/pipedeck/icons` and
+compiled into the binary, rather than taken from the desktop's icon theme:
+a name a theme lacks is drawn as a broken image, and the names that do exist
+come from different families, which shows when a row of them sits in a grid.
+Apache License 2.0, see that directory.
 
 ## Workspace
 

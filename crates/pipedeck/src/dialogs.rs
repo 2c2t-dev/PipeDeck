@@ -65,7 +65,7 @@ pub fn add_source(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, inputs: &
         for device in inputs {
             let button = choice(
                 &device.description,
-                "audio-input-microphone-symbolic",
+                "pd-mic-symbolic",
                 None,
                 &dialog,
                 engine,
