@@ -12,7 +12,7 @@
 //! Every call here is unsafe by nature — it is the library's own code that
 //! runs — and the symbols are exactly those the API exposes.
 
-use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -448,11 +448,12 @@ impl Drop for Handle {
     }
 }
 
-/// The handful of X11 calls it takes to hold out a window.
+/// The X11 calls it takes to give Stereo Tool a window the window manager
+/// can close.
 struct X11 {
     init_threads: unsafe extern "C" fn() -> c_int,
     open_display: unsafe extern "C" fn(*const c_char) -> *mut c_void,
-    close_display: unsafe extern "C" fn(*mut c_void),
+    close_display: unsafe extern "C" fn(*mut c_void) -> c_int,
     default_root: unsafe extern "C" fn(*mut c_void) -> c_ulong,
     create_window: unsafe extern "C" fn(
         *mut c_void,
@@ -465,9 +466,108 @@ struct X11 {
         c_ulong,
         c_ulong,
     ) -> c_ulong,
-    destroy_window: unsafe extern "C" fn(*mut c_void, c_ulong),
-    flush: unsafe extern "C" fn(*mut c_void),
+    destroy_window: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
+    map_window: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
+    raise_window: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
+    reparent_window: unsafe extern "C" fn(*mut c_void, c_ulong, c_ulong, c_int, c_int) -> c_int,
+    resize_window: unsafe extern "C" fn(*mut c_void, c_ulong, c_uint, c_uint) -> c_int,
+    store_name: unsafe extern "C" fn(*mut c_void, c_ulong, *const c_char) -> c_int,
+    intern_atom: unsafe extern "C" fn(*mut c_void, *const c_char, c_int) -> c_ulong,
+    set_wm_protocols: unsafe extern "C" fn(*mut c_void, c_ulong, *mut c_ulong, c_int) -> c_int,
+    set_wm_normal_hints: unsafe extern "C" fn(*mut c_void, c_ulong, *mut XSizeHints),
+    select_input: unsafe extern "C" fn(*mut c_void, c_ulong, c_long) -> c_int,
+    query_tree: unsafe extern "C" fn(
+        *mut c_void,
+        c_ulong,
+        *mut c_ulong,
+        *mut c_ulong,
+        *mut *mut c_ulong,
+        *mut c_uint,
+    ) -> c_int,
+    fetch_name: unsafe extern "C" fn(*mut c_void, c_ulong, *mut *mut c_char) -> c_int,
+    free: unsafe extern "C" fn(*mut c_void) -> c_int,
+    get_window_attributes:
+        unsafe extern "C" fn(*mut c_void, c_ulong, *mut XWindowAttributes) -> c_int,
+    pending: unsafe extern "C" fn(*mut c_void) -> c_int,
+    next_event: unsafe extern "C" fn(*mut c_void, *mut XEvent) -> c_int,
+    flush: unsafe extern "C" fn(*mut c_void) -> c_int,
 }
+
+/// Xlib's `XSizeHints`, as far as the window manager reads it.
+#[repr(C)]
+struct XSizeHints {
+    flags: c_long,
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+    min_width: c_int,
+    min_height: c_int,
+    max_width: c_int,
+    max_height: c_int,
+    width_inc: c_int,
+    height_inc: c_int,
+    min_aspect_x: c_int,
+    min_aspect_y: c_int,
+    max_aspect_x: c_int,
+    max_aspect_y: c_int,
+    base_width: c_int,
+    base_height: c_int,
+    win_gravity: c_int,
+}
+
+const P_MIN_SIZE: c_long = 1 << 4;
+const P_MAX_SIZE: c_long = 1 << 5;
+
+/// Xlib's `XWindowAttributes`, whole, since Xlib writes all of it.
+#[repr(C)]
+struct XWindowAttributes {
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+    border_width: c_int,
+    depth: c_int,
+    visual: *mut c_void,
+    root: c_ulong,
+    class: c_int,
+    bit_gravity: c_int,
+    win_gravity: c_int,
+    backing_store: c_int,
+    backing_planes: c_ulong,
+    backing_pixel: c_ulong,
+    save_under: c_int,
+    colormap: c_ulong,
+    map_installed: c_int,
+    map_state: c_int,
+    all_event_masks: c_long,
+    your_event_mask: c_long,
+    do_not_propagate_mask: c_long,
+    override_redirect: c_int,
+    screen: *mut c_void,
+}
+
+/// Xlib's event union, big enough for any of them. Only the type is read,
+/// and the one message the window manager sends.
+#[repr(C)]
+struct XEvent {
+    words: [c_long; 24],
+}
+
+#[repr(C)]
+struct XClientMessageEvent {
+    type_: c_int,
+    serial: c_ulong,
+    send_event: c_int,
+    display: *mut c_void,
+    window: c_ulong,
+    message_type: c_ulong,
+    format: c_int,
+    data: [c_long; 5],
+}
+
+const CLIENT_MESSAGE: c_int = 33;
+const STRUCTURE_NOTIFY_MASK: c_long = 1 << 17;
 
 /// X11, if this machine has it. Loaded once, for the same reasons as the
 /// library itself.
@@ -476,49 +576,38 @@ static X11: OnceLock<Option<&'static X11>> = OnceLock::new();
 fn x11() -> Option<&'static X11> {
     *X11.get_or_init(|| {
         // SAFETY: the library is the system's own, kept for the life of the
-        // process, and each signature is the one Xlib publishes.
+        // process, and each field's type is the signature Xlib publishes,
+        // which is what the symbol is read as.
         let loaded = unsafe {
             let library = libloading::Library::new("libX11.so.6").ok()?;
-            let symbol = |name: &[u8]| -> Option<*mut c_void> {
-                library.get::<*mut c_void>(name).ok().map(|s| *s)
-            };
+            macro_rules! symbol {
+                ($name:literal) => {
+                    *library.get($name).ok()?
+                };
+            }
             let x11 = X11 {
-                init_threads: std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> c_int>(
-                    symbol(b"XInitThreads\0")?,
-                ),
-                open_display: std::mem::transmute::<
-                    *mut c_void,
-                    unsafe extern "C" fn(*const c_char) -> *mut c_void,
-                >(symbol(b"XOpenDisplay\0")?),
-                close_display: std::mem::transmute::<
-                    *mut c_void,
-                    unsafe extern "C" fn(*mut c_void),
-                >(symbol(b"XCloseDisplay\0")?),
-                default_root: std::mem::transmute::<
-                    *mut c_void,
-                    unsafe extern "C" fn(*mut c_void) -> c_ulong,
-                >(symbol(b"XDefaultRootWindow\0")?),
-                create_window: std::mem::transmute::<
-                    *mut c_void,
-                    unsafe extern "C" fn(
-                        *mut c_void,
-                        c_ulong,
-                        c_int,
-                        c_int,
-                        c_uint,
-                        c_uint,
-                        c_uint,
-                        c_ulong,
-                        c_ulong,
-                    ) -> c_ulong,
-                >(symbol(b"XCreateSimpleWindow\0")?),
-                destroy_window: std::mem::transmute::<
-                    *mut c_void,
-                    unsafe extern "C" fn(*mut c_void, c_ulong),
-                >(symbol(b"XDestroyWindow\0")?),
-                flush: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut c_void)>(
-                    symbol(b"XFlush\0")?,
-                ),
+                init_threads: symbol!(b"XInitThreads\0"),
+                open_display: symbol!(b"XOpenDisplay\0"),
+                close_display: symbol!(b"XCloseDisplay\0"),
+                default_root: symbol!(b"XDefaultRootWindow\0"),
+                create_window: symbol!(b"XCreateSimpleWindow\0"),
+                destroy_window: symbol!(b"XDestroyWindow\0"),
+                map_window: symbol!(b"XMapWindow\0"),
+                raise_window: symbol!(b"XRaiseWindow\0"),
+                reparent_window: symbol!(b"XReparentWindow\0"),
+                resize_window: symbol!(b"XResizeWindow\0"),
+                store_name: symbol!(b"XStoreName\0"),
+                intern_atom: symbol!(b"XInternAtom\0"),
+                set_wm_protocols: symbol!(b"XSetWMProtocols\0"),
+                set_wm_normal_hints: symbol!(b"XSetWMNormalHints\0"),
+                select_input: symbol!(b"XSelectInput\0"),
+                query_tree: symbol!(b"XQueryTree\0"),
+                fetch_name: symbol!(b"XFetchName\0"),
+                free: symbol!(b"XFree\0"),
+                get_window_attributes: symbol!(b"XGetWindowAttributes\0"),
+                pending: symbol!(b"XPending\0"),
+                next_event: symbol!(b"XNextEvent\0"),
+                flush: symbol!(b"XFlush\0"),
             };
             // Stereo Tool draws from threads of its own. Xlib wants to be
             // told before that happens.
@@ -530,24 +619,36 @@ fn x11() -> Option<&'static X11> {
     })
 }
 
-/// A window of ours, made only to be named.
+/// What the library calls its window, which is how it is told apart.
+const WINDOW_TITLE: &str = "Thimeo Stereo Tool";
+
+/// A window of ours for Stereo Tool's to live in.
 ///
 /// Stereo Tool's Linux interface does not open on its own: `GUI_Show` wants
 /// the X11 id of a host window — the way a plug-in is handed the window its
 /// host drew for it — and does nothing whatever when given none. Told about
-/// one, it opens a window of its own beside it, so ours is never mapped and
-/// nothing of it is ever on the screen. It exists to be pointed at.
+/// one, it opens a toplevel of its own beside it, which declares the usual
+/// close request and then ignores it, the way a plug-in leaves its editor
+/// to whoever opened it: a window with a close button that does nothing.
+///
+/// So its window is adopted into ours. Reparented under it, the window
+/// manager decorates ours instead, and the close button lands with a client
+/// that listens. The window is the library's to draw and ours to close.
 struct Host {
     x11: &'static X11,
     display: *mut c_void,
     window: c_ulong,
+    /// Stereo Tool's own, once adopted.
+    child: Option<c_ulong>,
+    wm_delete: c_ulong,
 }
 
 impl Host {
     fn new() -> Result<Self, String> {
         let x11 = x11().ok_or("no X11 on this machine, and its window needs it")?;
         // SAFETY: the display is ours until `close_display`, and the window
-        // is made on its own root with sizes the API accepts.
+        // is made on its own root with sizes the API accepts; the protocol
+        // list outlives the call that copies it.
         unsafe {
             let display = (x11.open_display)(std::ptr::null());
             if display.is_null() {
@@ -555,19 +656,184 @@ impl Host {
             }
             let root = (x11.default_root)(display);
             let window = (x11.create_window)(display, root, 0, 0, 1, 1, 0, 0, 0);
+            let mut wm_delete = (x11.intern_atom)(display, c"WM_DELETE_WINDOW".as_ptr(), 0);
+            (x11.set_wm_protocols)(display, window, &mut wm_delete, 1);
+            (x11.select_input)(display, window, STRUCTURE_NOTIFY_MASK);
             (x11.flush)(display);
             Ok(Self {
                 x11,
                 display,
                 window,
+                child: None,
+                wm_delete,
             })
         }
+    }
+
+    /// Every toplevel there is right now.
+    fn toplevels(&self) -> Vec<c_ulong> {
+        let mut root = 0;
+        let mut parent = 0;
+        let mut children: *mut c_ulong = std::ptr::null_mut();
+        let mut count: c_uint = 0;
+        // SAFETY: the out-pointers are ours, and what Xlib hands back is
+        // freed with its own `free` once copied.
+        unsafe {
+            let screen_root = (self.x11.default_root)(self.display);
+            if (self.x11.query_tree)(
+                self.display,
+                screen_root,
+                &mut root,
+                &mut parent,
+                &mut children,
+                &mut count,
+            ) == 0
+                || children.is_null()
+            {
+                return Vec::new();
+            }
+            let found = std::slice::from_raw_parts(children, count as usize).to_vec();
+            (self.x11.free)(children.cast());
+            found
+        }
+    }
+
+    /// What a window calls itself, if it says.
+    fn name(&self, window: c_ulong) -> Option<String> {
+        let mut name: *mut c_char = std::ptr::null_mut();
+        // SAFETY: the out-pointer is ours; a non-null name is Xlib's, read
+        // and then freed with its own `free`.
+        unsafe {
+            if (self.x11.fetch_name)(self.display, window, &mut name) == 0 || name.is_null() {
+                return None;
+            }
+            let text = CStr::from_ptr(name).to_string_lossy().into_owned();
+            (self.x11.free)(name.cast());
+            Some(text)
+        }
+    }
+
+    /// Take in the window Stereo Tool has just opened.
+    ///
+    /// `before` is what was on the screen before it was asked to: another
+    /// instance's window carries the same title, and must be left alone.
+    /// The library opens its window a moment after `GUI_Show` returns, so
+    /// this looks for it a little while.
+    fn adopt(&mut self, before: &[c_ulong]) -> Result<(), String> {
+        let mut found = None;
+        for _ in 0..100 {
+            found = self
+                .toplevels()
+                .into_iter()
+                .filter(|window| *window != self.window && !before.contains(window))
+                .find(|window| {
+                    self.name(*window)
+                        .is_some_and(|name| name.contains(WINDOW_TITLE))
+                });
+            if found.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let child = found.ok_or("Stereo Tool opened no window to take in")?;
+
+        // The window keeps the size the library gave it, and so does ours:
+        // whether the library lays itself out again at another size is not
+        // something to find out on the user.
+        let mut attributes = std::mem::MaybeUninit::<XWindowAttributes>::uninit();
+        // SAFETY: the out-pointer is ours and the call fills the whole
+        // struct on success, which is the only case it is read in.
+        let (width, height) = unsafe {
+            if (self.x11.get_window_attributes)(self.display, child, attributes.as_mut_ptr()) == 0 {
+                return Err("Stereo Tool's window would not say its size".into());
+            }
+            let attributes = attributes.assume_init();
+            (attributes.width, attributes.height)
+        };
+        let title = self
+            .name(child)
+            .and_then(|name| CString::new(name).ok())
+            .unwrap_or_else(|| c"Stereo Tool".to_owned());
+        let mut hints = XSizeHints {
+            flags: P_MIN_SIZE | P_MAX_SIZE,
+            x: 0,
+            y: 0,
+            width,
+            height,
+            min_width: width,
+            min_height: height,
+            max_width: width,
+            max_height: height,
+            width_inc: 0,
+            height_inc: 0,
+            min_aspect_x: 0,
+            min_aspect_y: 0,
+            max_aspect_x: 0,
+            max_aspect_y: 0,
+            base_width: 0,
+            base_height: 0,
+            win_gravity: 0,
+        };
+        // SAFETY: both windows exist, ours until dropped and theirs until
+        // the library deletes it, which happens before we do; the title and
+        // the hints outlive the calls that copy them.
+        unsafe {
+            (self.x11.resize_window)(self.display, self.window, width as c_uint, height as c_uint);
+            (self.x11.set_wm_normal_hints)(self.display, self.window, &mut hints);
+            (self.x11.store_name)(self.display, self.window, title.as_ptr());
+            (self.x11.reparent_window)(self.display, child, self.window, 0, 0);
+            (self.x11.map_window)(self.display, self.window);
+            (self.x11.map_window)(self.display, child);
+            (self.x11.flush)(self.display);
+        }
+        self.child = Some(child);
+        Ok(())
+    }
+
+    /// Bring it to the front, having been buried or hidden.
+    fn raise(&self) {
+        // SAFETY: the window is ours and alive.
+        unsafe {
+            (self.x11.map_window)(self.display, self.window);
+            (self.x11.raise_window)(self.display, self.window);
+            (self.x11.flush)(self.display);
+        }
+    }
+
+    /// Has the window manager asked for it to close since last time?
+    ///
+    /// The events wait on our own connection until someone reads them, so
+    /// this is called from time to time rather than from a thread of its
+    /// own; a close button that answers within a tick is answered.
+    fn close_requested(&self) -> bool {
+        let mut asked = false;
+        // SAFETY: the display is ours; `pending` says whether `next_event`
+        // would block, and the event buffer is as large as Xlib's union.
+        unsafe {
+            while (self.x11.pending)(self.display) > 0 {
+                let mut event = XEvent { words: [0; 24] };
+                (self.x11.next_event)(self.display, &mut event);
+                let type_ = *(&event as *const XEvent).cast::<c_int>();
+                if type_ != CLIENT_MESSAGE {
+                    continue;
+                }
+                let message = &*(&event as *const XEvent).cast::<XClientMessageEvent>();
+                if message.window == self.window
+                    && message.format == 32
+                    && message.data[0] as c_ulong == self.wm_delete
+                {
+                    asked = true;
+                }
+            }
+        }
+        asked
     }
 }
 
 impl Drop for Host {
     fn drop(&mut self) {
-        // SAFETY: both came from the calls above and are released once.
+        // SAFETY: both came from the calls above and are released once. The
+        // child, if any, is the library's and already gone by now.
         unsafe {
             (self.x11.destroy_window)(self.display, self.window);
             (self.x11.close_display)(self.display);
@@ -583,8 +849,7 @@ impl Drop for Host {
 ///
 /// Dropping it takes the window away; the processor keeps running.
 pub struct Window {
-    // Field order matters: the interface goes before the window it was
-    // given to point at.
+    // Field order matters: the interface goes before the window it lives in.
     ptr: *mut c_void,
     host: Host,
     /// Held so the processor outlives the window that draws it.
@@ -599,7 +864,8 @@ impl Window {
             .gui
             .as_ref()
             .ok_or("this build of Stereo Tool has no window; install the X11 one")?;
-        let host = Host::new()?;
+        let mut host = Host::new()?;
+        let before = host.toplevels();
         let _quiet = Hushed::new();
         // SAFETY: the processor is alive, this handle holds it.
         let ptr = unsafe { (gui.create)(handle.ptr) };
@@ -607,30 +873,23 @@ impl Window {
             return Err("Stereo Tool would not make its window".into());
         }
         // SAFETY: the interface is ours, and the host window outlives it.
-        //
-        // Its size is left alone: `GUI_SetSize` reaches XResizeWindow with
-        // nothing to resize and takes the process down with it, before or
-        // after showing alike, on this build. The window opens at the size
-        // Stereo Tool remembers, and the user can drag it like any other.
         unsafe { (gui.show)(ptr, host.window as *mut c_void) };
+        if let Err(e) = host.adopt(&before) {
+            // It is up, on its own, with a close button that does nothing;
+            // the button in the mixer still closes it.
+            log::warn!("{e}; the window is on its own");
+        }
         Ok(Self { ptr, host, handle })
     }
 
-    /// Put it back on the screen, having been hidden.
-    pub fn show(&self) {
-        if let Some(gui) = self.handle.api.gui.as_ref() {
-            let _quiet = Hushed::new();
-            // SAFETY: the interface is ours and the host window is alive.
-            unsafe { (gui.show)(self.ptr, self.host.window as *mut c_void) };
-        }
+    /// Bring it to the front, having been buried.
+    pub fn raise(&self) {
+        self.host.raise();
     }
 
-    pub fn hide(&self) {
-        if let Some(gui) = self.handle.api.gui.as_ref() {
-            let _quiet = Hushed::new();
-            // SAFETY: the window is ours and alive.
-            unsafe { (gui.hide)(self.ptr) };
-        }
+    /// Has the user asked the window manager to close it?
+    pub fn close_requested(&self) -> bool {
+        self.host.close_requested()
     }
 }
 
@@ -639,7 +898,8 @@ impl Drop for Window {
         if let Some(gui) = self.handle.api.gui.as_ref() {
             let _quiet = Hushed::new();
             // SAFETY: the window came from `create` and is deleted once,
-            // before the processor it belongs to, which this holds.
+            // before the processor it belongs to, which this holds, and
+            // before the host window it lives in, which drops after.
             unsafe {
                 (gui.hide)(self.ptr);
                 (gui.delete)(self.ptr);

@@ -132,16 +132,21 @@ loaded on the effect instead, which is what a machine with no display has.
 
 Its interface has to be asked for the way a plug-in's is. `GUI_Show` takes the
 X11 id of a host window, as a plug-in is handed the window its host drew for
-it, and given none it does nothing at all — no error, no window. So Pipedeck
-makes one X11 window, never maps it, and holds it out to be pointed at;
-Stereo Tool then opens its real window beside it. Nothing of ours is on the
-screen.
+it, and given none it does nothing at all — no error, no window. Told about
+one, it opens a toplevel of its own beside it, which declares the usual close
+request and then ignores it, the way a plug-in leaves its editor to whoever
+opened it: a window whose close button does nothing.
 
-Closing it is the host's job too. The window carries the usual close request
-and the library does nothing with it, the way a plug-in leaves its editor to
-whoever opened it, so **Window** is a toggle: the button that put it up is the
-one that takes it down. Removing the effect or changing the chain closes it as
-well, since the processor it draws goes with them.
+So Pipedeck adopts it. It makes an X11 window of its own, hands its id to the
+library, finds the window the library opens a moment later and reparents it
+under its own. The window manager then decorates Pipedeck's window, and the
+close button reaches a client that listens: the engine reads the request on
+its next tick and takes the interface down. The window keeps the size the
+library gave it — whether the library lays itself out again at another size
+is not something to find out on the user — and **Window** on the effect
+opens it, or brings it to the front if it is already up. Removing the effect
+or changing the chain closes it as well, since the processor it draws goes
+with them.
 
 The licence key is a field on the settings page, passed to the library and to
 nothing else. Without one Stereo Tool still runs and puts speech and beeps in

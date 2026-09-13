@@ -230,14 +230,27 @@ impl PluginChain {
         };
         let mut windows = self.open.borrow_mut();
         match windows.get_mut(index).and_then(|slot| slot.as_ref()) {
-            // Already up: bring it back rather than making a second one.
-            Some(window) => window.show(),
+            // Already up: bring it to the front rather than making a second.
+            Some(window) => window.raise(),
             None => {
                 let window = stereotool::Window::open(handle)?;
                 windows[index] = Some(window);
             }
         }
         Ok(())
+    }
+
+    /// Close the windows whose close button has been pressed.
+    ///
+    /// The request waits on the window's own connection until someone reads
+    /// it, so this is asked on the engine's tick rather than from a thread
+    /// of its own.
+    pub fn poll_windows(&self) {
+        for slot in self.open.borrow_mut().iter_mut() {
+            if slot.as_ref().is_some_and(|window| window.close_requested()) {
+                *slot = None;
+            }
+        }
     }
 }
 

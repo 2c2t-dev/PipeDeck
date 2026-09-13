@@ -1215,6 +1215,18 @@ impl Graph {
         Ok(())
     }
 
+    /// Close the plug-in windows whose close button has been pressed.
+    fn poll_windows(&self) {
+        let chains = self
+            .sources
+            .values()
+            .filter_map(|source| source.plugins.as_ref())
+            .chain(self.mixes.values().filter_map(|mix| mix.plugins.as_ref()));
+        for chain in chains {
+            chain.poll_windows();
+        }
+    }
+
     /// Take the Stereo Tool licence key, and open again whatever runs on it:
     /// a processor is told its key when it is created and not after.
     pub fn set_stereotool_license(&mut self, key: Option<String>) -> Result<(), EngineError> {
@@ -1775,6 +1787,7 @@ impl Graph {
         self.hook_up_plugins();
         self.hook_up_meters();
         self.absorb_levels();
+        self.poll_windows();
         // The server has told us by now that these nodes are gone, so their
         // proxies leave without a word.
         self.retired.clear();
