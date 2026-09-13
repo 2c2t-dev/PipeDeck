@@ -14,6 +14,8 @@
 //! Everything here belongs to this process' client connection: when the
 //! process dies, the server drops all of it. Nothing lingers.
 
+pub mod args;
+pub mod filter_chain;
 pub mod loopback;
 pub mod meter;
 pub mod module;
@@ -40,7 +42,8 @@ use crate::config::Config;
 use crate::engine::{Event, StateSnapshot};
 use crate::error::EngineError;
 use crate::types::{
-    App, ChainState, Device, LinkConfig, MixConfig, MixId, MixOutput, SourceConfig, SourceId,
+    App, ChainState, Device, Effect, LinkConfig, MixConfig, MixId, MixOutput, SourceConfig,
+    SourceId,
 };
 
 use loopback::{LoopbackSpec, AUDIO_POSITION, CHANNELS};
@@ -55,6 +58,7 @@ const INSTANCE_KEY: &str = "pipedeck.instance";
 const ADAPTER_FACTORY: &str = "adapter";
 const NULL_SINK_FACTORY: &str = "support.null-audio-sink";
 const LOOPBACK_MODULE: &str = "libpipewire-module-loopback";
+const FILTER_CHAIN_MODULE: &str = "libpipewire-module-filter-chain";
 
 /// Where a level read back from the graph belongs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +135,19 @@ struct Mix {
 
 /// A row. Virtual rows own a sink; input rows capture a device directly and
 /// own nothing in the graph.
+/// A row's effects: the chain that runs them, and the sink it plays into.
+struct Effects {
+    // Field order matters: the chain goes before the sink it feeds.
+    module: Option<LoadedModule>,
+    _bound: ProxyListener,
+    #[allow(dead_code)] // held only to keep the remote object alive
+    sink: Node,
+}
+
 struct Source {
+    /// The effects chain, when the row has one. It is dropped before the
+    /// sink it captures.
+    effects: Option<Effects>,
     /// The row's sink, which also carries its trim. An input row has none.
     sink: Option<Node>,
     _sink_listener: Option<NodeListener>,
@@ -178,8 +194,16 @@ pub struct Graph {
     /// Playback node name -> what it belongs to. Filled before the module is
     /// loaded, so a registry announcement always finds its owner.
     stage_index: HashMap<String, StageRef>,
-    /// Sinks the server has just named, whose meter is waiting for that id.
-    bound_sinks: Rc<RefCell<Vec<(Owner, u32)>>>,
+    /// Sinks the server has just named: their `node.name` and the id it gave
+    /// them, which is how a meter points at our node rather than at a name
+    /// another mixer answers to.
+    bound_sinks: Rc<RefCell<Vec<(String, u32)>>>,
+    sink_ids: HashMap<String, u32>,
+    /// What each row's meter is currently listening to: the node's name, and
+    /// the id the server gave it. The id matters because reloading a chain
+    /// puts a new node behind the same name, and a meter left on the old one
+    /// hears nothing while looking right.
+    meter_targets: HashMap<SourceId, (String, Option<u32>)>,
     /// Levels the graph reported on our own sinks, waiting to be taken in.
     ///
     /// A sink's volume is the system's volume: the user can move it from
@@ -234,6 +258,8 @@ impl Graph {
             sources: HashMap::new(),
             stage_index: HashMap::new(),
             bound_sinks: Rc::new(RefCell::new(Vec::new())),
+            sink_ids: HashMap::new(),
+            meter_targets: HashMap::new(),
             incoming: Rc::new(RefCell::new(Vec::new())),
             retired: Vec::new(),
             devices: HashMap::new(),
@@ -278,11 +304,11 @@ impl Graph {
 
     /// Learn the global id the server gives one of our sinks, which is what
     /// a meter needs to point at that exact node.
-    fn watch_sink_id(&self, sink: &Node, owner: Owner) -> ProxyListener {
+    fn watch_sink_id(&self, sink: &Node, node_name: String) -> ProxyListener {
         let queue = self.bound_sinks.clone();
         sink.upcast_ref()
             .add_listener_local()
-            .bound(move |global_id| queue.borrow_mut().push((owner, global_id)))
+            .bound(move |global_id| queue.borrow_mut().push((node_name.clone(), global_id)))
             .register()
     }
 
@@ -366,26 +392,74 @@ impl Graph {
         }
     }
 
-    /// Attach the meters whose sink has just been given a global id.
+    /// What a row's meter should be listening to.
     ///
-    /// Waiting for that id is what makes a meter measure *our* sink: node
-    /// names come from ids private to each mixer, so a second Pipedeck on the
-    /// same graph carries the same names, and a meter pointed by name could
-    /// land on its audio instead.
+    /// A row with effects is measured at the end of its chain, so what the
+    /// meter shows is what every mix hears, effects and all. An input row is
+    /// measured at its device, which is the only thing it has.
+    fn meter_target(&self, cfg: &SourceConfig) -> (String, bool) {
+        match &cfg.device {
+            Some(device) => (device.clone(), false),
+            None if !cfg.effects.is_empty() => (cfg.id.effects_node_name(), true),
+            None => (cfg.id.sink_node_name(), true),
+        }
+    }
+
+    /// Point every meter at what it should be listening to.
+    ///
+    /// Sinks are named by the server only once the loop runs again, so this
+    /// is a convergence rather than a one-off: a meter appears as soon as
+    /// its target has an id, and moves when the row changes under it.
     fn hook_up_meters(&mut self) {
-        let bound: Vec<(Owner, u32)> = self.bound_sinks.borrow_mut().drain(..).collect();
-        for (owner, global_id) in bound {
-            let (meter_name, target) = match owner {
-                Owner::Source(id) => (format!("pipedeck.meter.src.{id}"), id.sink_node_name()),
-                Owner::Mix(id) => (format!("pipedeck.meter.mix.{id}"), id.sink_node_name()),
-            };
-            let Some(meter) = self.watch_level(&meter_name, &target, Some(global_id), true) else {
+        for (name, global_id) in self.bound_sinks.borrow_mut().drain(..) {
+            self.sink_ids.insert(name, global_id);
+        }
+
+        let mixes: Vec<MixId> = self.config.mixes.iter().map(|mix| mix.id).collect();
+        for id in mixes {
+            if self.mix_meters.contains_key(&id) {
+                continue;
+            }
+            let name = id.sink_node_name();
+            let Some(global_id) = self.sink_ids.get(&name).copied() else {
                 continue;
             };
-            match owner {
-                Owner::Source(id) => self.source_meters.insert(id, meter),
-                Owner::Mix(id) => self.mix_meters.insert(id, meter),
+            if let Some(meter) = self.watch_level(
+                &format!("pipedeck.meter.mix.{id}"),
+                &name,
+                Some(global_id),
+                true,
+            ) {
+                self.mix_meters.insert(id, meter);
+            }
+        }
+
+        let sources: Vec<SourceConfig> = self.config.sources.clone();
+        for cfg in sources {
+            let (target, from_sink) = self.meter_target(&cfg);
+            // A device has one name on the graph, so it needs no id; one of
+            // our sinks does, and it may not have been named yet.
+            let global_id = if from_sink {
+                match self.sink_ids.get(&target).copied() {
+                    Some(id) => Some(id),
+                    None => continue,
+                }
+            } else {
+                None
             };
+            if self.meter_targets.get(&cfg.id) == Some(&(target.clone(), global_id)) {
+                continue;
+            }
+            self.source_meters.remove(&cfg.id);
+            if let Some(meter) = self.watch_level(
+                &format!("pipedeck.meter.src.{}", cfg.id),
+                &target,
+                global_id,
+                from_sink,
+            ) {
+                self.source_meters.insert(cfg.id, meter);
+                self.meter_targets.insert(cfg.id, (target, global_id));
+            }
         }
     }
 
@@ -443,7 +517,7 @@ impl Graph {
         // The sink has no global id yet: the meter is hooked up when the
         // registry announces it, which is also how we tell our sink from the
         // one another mixer gave the same name.
-        let bound = self.watch_sink_id(&sink, Owner::Mix(cfg.id));
+        let bound = self.watch_sink_id(&sink, cfg.id.sink_node_name());
         let outputs = self.load_outputs(cfg);
         self.mixes.insert(
             cfg.id,
@@ -463,9 +537,7 @@ impl Graph {
     pub fn remove_mix(&mut self, id: MixId) -> Result<(), EngineError> {
         let mut mix = self.mixes.remove(&id).ok_or(EngineError::UnknownMix(id))?;
         self.mix_meters.remove(&id);
-        self.bound_sinks
-            .borrow_mut()
-            .retain(|(owner, _)| *owner != Owner::Mix(id));
+        self.sink_ids.remove(&id.sink_node_name());
         for stage in &mut mix.outputs {
             self.retire(stage);
         }
@@ -582,26 +654,16 @@ impl Graph {
                     self.create_sink(cfg.id.sink_node_name(), format!("Pipedeck: {}", cfg.name))?;
                 apply_props(&sink, &cfg.id.sink_node_name(), &cfg.state());
                 let listener = self.watch_sink(&sink, Owner::Source(cfg.id));
-                let bound = self.watch_sink_id(&sink, Owner::Source(cfg.id));
+                let bound = self.watch_sink_id(&sink, cfg.id.sink_node_name());
                 (Some(sink), Some((listener, bound)))
             }
         };
+        // The effects chain reads the row's sink and offers a sink of its
+        // own, which is what the cells capture from then on.
+        let effects = self.load_effects(cfg);
+
         // A virtual row is measured on its sink's monitor, an input row on
         // the device it captures, which is the same signal every cell gets.
-        // A device is named once on the graph, so its meter needs no waiting.
-        // A sink of ours waits for the id the server gives it, in
-        // `hook_up_meters`.
-        if let Some(device) = &cfg.device {
-            if let Some(meter) = self.watch_level(
-                &format!("pipedeck.meter.src.{}", cfg.id),
-                device,
-                None,
-                false,
-            ) {
-                self.source_meters.insert(cfg.id, meter);
-            }
-        }
-
         let (sink_listener, sink_bound) = match listeners {
             Some((listener, bound)) => (Some(listener), Some(bound)),
             None => (None, None),
@@ -609,6 +671,7 @@ impl Graph {
         self.sources.insert(
             cfg.id,
             Source {
+                effects,
                 sink,
                 _sink_listener: sink_listener,
                 _sink_bound: sink_bound,
@@ -624,9 +687,9 @@ impl Graph {
             .remove(&id)
             .ok_or(EngineError::UnknownSource(id))?;
         self.source_meters.remove(&id);
-        self.bound_sinks
-            .borrow_mut()
-            .retain(|(owner, _)| *owner != Owner::Source(id));
+        self.meter_targets.remove(&id);
+        self.sink_ids.remove(&id.sink_node_name());
+        self.sink_ids.remove(&id.effects_node_name());
         let cells: Vec<(SourceId, MixId)> = self
             .links
             .keys()
@@ -638,6 +701,128 @@ impl Graph {
         }
         drop(source);
         log::info!("source {id} removed");
+        Ok(())
+    }
+
+    /// Load a row's effects, if it has any.
+    ///
+    /// The chain plays into a sink of ours rather than being one itself:
+    /// asking a filter chain to be a sink crashes PipeWire 1.6, and the
+    /// cells want a monitor to capture in any case.
+    fn load_effects(&self, cfg: &SourceConfig) -> Option<Effects> {
+        if cfg.effects.is_empty() {
+            return None;
+        }
+        let sink = match self.create_sink(
+            cfg.id.effects_node_name(),
+            format!("Pipedeck: {} effects", cfg.name),
+        ) {
+            Ok(sink) => sink,
+            Err(e) => {
+                log::error!("{e}");
+                self.emit(Event::Error(format!(
+                    "cannot run the effects of {}: {e}",
+                    cfg.name
+                )));
+                return None;
+            }
+        };
+        let bound = self.watch_sink_id(&sink, cfg.id.effects_node_name());
+        Some(Effects {
+            module: self.load_chain(cfg),
+            _bound: bound,
+            sink,
+        })
+    }
+
+    /// Load the chain itself, against a sink that already exists.
+    fn load_chain(&self, cfg: &SourceConfig) -> Option<LoadedModule> {
+        let args = filter_chain::args(cfg, &self.config.latency)?;
+        match LoadedModule::load(&self.context, FILTER_CHAIN_MODULE, &args) {
+            Ok(module) => {
+                log::info!("{} runs {} effect(s)", cfg.name, cfg.effects.len());
+                Some(module)
+            }
+            Err(e) => {
+                log::error!("{e}");
+                self.emit(Event::Error(format!(
+                    "cannot run the effects of {}: {e}",
+                    cfg.name
+                )));
+                None
+            }
+        }
+    }
+
+    /// Replace a row's effects, and point its cells at whatever now ends its
+    /// chain.
+    ///
+    /// The chain is a module, fixed when it is loaded, so a change reloads
+    /// it and the cells that read it. The audio stops for as long as that
+    /// takes, which is why the interface waits for a slider to settle before
+    /// asking.
+    pub fn set_effects(&mut self, id: SourceId, effects: Vec<Effect>) -> Result<(), EngineError> {
+        let cfg = self
+            .config
+            .source_mut(id)
+            .ok_or(EngineError::UnknownSource(id))?;
+        cfg.effects = effects;
+        let cfg = cfg.clone();
+        self.dirty = true;
+
+        let had_chain = self
+            .sources
+            .get(&id)
+            .is_some_and(|source| source.effects.is_some());
+        let has_chain = !cfg.effects.is_empty();
+
+        // Changing what a chain runs keeps its sink: recreating that sink
+        // would put a second node behind the same name for a moment, and the
+        // new chain would as likely feed the old one as the new.
+        if had_chain && has_chain {
+            if let Some(fx) = self
+                .sources
+                .get_mut(&id)
+                .and_then(|source| source.effects.as_mut())
+            {
+                fx.module = None;
+            }
+            let module = self.load_chain(&cfg);
+            if let Some(fx) = self
+                .sources
+                .get_mut(&id)
+                .and_then(|source| source.effects.as_mut())
+            {
+                fx.module = module;
+            }
+            return Ok(());
+        }
+
+        // The chain appears or goes, so the cells change what they read.
+        let cells: Vec<LinkConfig> = self
+            .config
+            .links
+            .iter()
+            .filter(|link| link.source == id)
+            .copied()
+            .collect();
+        for link in &cells {
+            self.drop_link((link.source, link.mix));
+        }
+        if let Some(source) = self.sources.get_mut(&id) {
+            source.effects = None;
+        }
+        self.sink_ids.remove(&id.effects_node_name());
+        let loaded = self.load_effects(&cfg);
+        if let Some(source) = self.sources.get_mut(&id) {
+            source.effects = loaded;
+        }
+        for link in &cells {
+            if let Err(e) = self.create_link(link) {
+                log::error!("{e}");
+                self.emit(Event::Error(e.to_string()));
+            }
+        }
         Ok(())
     }
 

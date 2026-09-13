@@ -24,7 +24,8 @@ use crate::config::Config;
 use crate::error::EngineError;
 use crate::pw::Graph;
 use crate::types::{
-    self, App, ChainState, Device, LinkConfig, MixConfig, MixId, SourceConfig, SourceId, MAX_MIXES,
+    self, App, ChainState, Device, Effect, LinkConfig, MixConfig, MixId, SourceConfig, SourceId,
+    MAX_MIXES,
 };
 
 /// Requests from a client to the engine.
@@ -100,6 +101,12 @@ pub enum Command {
     SetSourceMute {
         id: SourceId,
         muted: bool,
+    },
+    /// Replace the effects a row runs, in order. Reloads its chain and the
+    /// cells reading it.
+    SetEffects {
+        id: SourceId,
+        effects: Vec<Effect>,
     },
     /// Send an application's audio to a row, taking it from whichever row
     /// held it. Its running streams move at once, and so do the ones it
@@ -469,6 +476,7 @@ fn handle_command(
             structural = false;
             g.update_source(id, |c| c.muted = muted)
         }
+        Command::SetEffects { id, effects } => g.set_effects(id, effects),
         Command::AssignApp { id, app } => g.assign_app(id, app),
         Command::ReleaseApp { id, app } => g.release_app(id, &app),
         Command::SetLink {

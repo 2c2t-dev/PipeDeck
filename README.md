@@ -27,9 +27,7 @@ stream, because they are different columns.
 
 ## Status
 
-MVP: routing plumbing and the mixer UI. A channel window has a tab for the
-effects on it, and it says what it is: empty until plug-ins are
-implemented.
+MVP: routing plumbing, the mixer UI, and effects on a channel.
 
 ## Building
 
@@ -65,6 +63,18 @@ its own. A channel window holds its name, its trim and the applications it carri
 A channel bound to a capture device shows that device instead, since
 applications play into virtual outputs, not into a microphone. Both are where you rename or
 remove the object.
+
+## Effects
+
+A channel can run effects, which every mix then hears: a low cut, shelves,
+a band and a gain, each with its own controls. They are filters PipeWire
+ships, so nothing has to be installed, and they run in one filter chain
+between the channel and the cells that read it.
+
+The shape carries plug-ins as well, since an LV2 or LADSPA plug-in is a kind,
+a plugin and a label like these are, and only the catalogue would grow.
+Hosting VST3 is a different matter: it is a C++ ABI with its own windowing,
+and nothing in Rust hosts it out of the box, so it is not in here.
 
 ## Settings
 

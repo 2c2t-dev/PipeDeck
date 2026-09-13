@@ -53,6 +53,12 @@ impl SourceId {
     pub fn sink_node_name(self) -> String {
         format!("pipedeck.src.{}", self.0)
     }
+
+    /// `node.name` of the sink carrying this source once its effects have
+    /// been applied. Cells capture this one instead when there are any.
+    pub fn effects_node_name(self) -> String {
+        format!("pipedeck.fx.{}", self.0)
+    }
 }
 
 impl MixId {
@@ -97,6 +103,9 @@ pub struct SourceConfig {
     /// Which look the interface gives this row. The engine only carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Effects applied to this row, in order, before any mix hears it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<Effect>,
     /// Applications whose audio belongs to this row. An application is
     /// matched by [`App::key`], and its streams are moved onto the row's sink
     /// as they appear. An input row has none.
@@ -113,6 +122,7 @@ impl SourceConfig {
             muted: false,
             device: None,
             icon: None,
+            effects: Vec::new(),
             apps: Vec::new(),
         }
     }
@@ -125,6 +135,7 @@ impl SourceConfig {
             muted: false,
             device: Some(device.into()),
             icon: None,
+            effects: Vec::new(),
             apps: Vec::new(),
         }
     }
@@ -325,6 +336,51 @@ impl LinkConfig {
         self.gain = state.gain;
         self.muted = state.muted;
     }
+}
+
+/// One control of an effect, by the name the plugin gives it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Control {
+    pub name: String,
+    pub value: f32,
+}
+
+/// Where an effect comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EffectKind {
+    /// Shipped with PipeWire, nothing to install.
+    Builtin,
+    Lv2,
+    Ladspa,
+}
+
+impl EffectKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EffectKind::Builtin => "builtin",
+            EffectKind::Lv2 => "lv2",
+            EffectKind::Ladspa => "ladspa",
+        }
+    }
+}
+
+/// One effect in a channel's chain.
+///
+/// This is what PipeWire's filter chain needs to load it, not what the
+/// interface calls it: the engine passes `name` through for display and uses
+/// the rest to build the graph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Effect {
+    pub name: String,
+    pub kind: EffectKind,
+    /// The LV2 URI or the LADSPA library; unused by a builtin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+    /// Which filter inside that plugin.
+    pub label: String,
+    #[serde(default)]
+    pub controls: Vec<Control>,
 }
 
 /// An application playing audio, as offered to the user.

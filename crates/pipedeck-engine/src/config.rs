@@ -339,6 +339,29 @@ muted = true
     }
 
     #[test]
+    fn a_channel_reads_back_its_effects() {
+        let text = r#"
+[[source]]
+id = 1
+name = "Voice"
+
+[[source.effects]]
+name = "Low cut"
+kind = "builtin"
+label = "bq_highpass"
+
+[[source.effects.controls]]
+name = "Freq"
+value = 90.0
+"#;
+        let cfg: Config = toml::from_str(text).expect("the file parses");
+        let effects = &cfg.sources[0].effects;
+        assert_eq!(effects.len(), 1, "{cfg:?}");
+        assert_eq!(effects[0].label, "bq_highpass");
+        assert_eq!(effects[0].controls[0].value, 90.0);
+    }
+
+    #[test]
     fn the_first_mix_is_named_like_any_first_mix() {
         let cfg = Config::fresh();
         assert_eq!(cfg.mixes[0].name, crate::types::NEW_MIXES[0].0);

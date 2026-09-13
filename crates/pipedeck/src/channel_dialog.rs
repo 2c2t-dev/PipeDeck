@@ -8,9 +8,10 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
-use pipedeck_engine::{App, ChainState, Command, Device, SourceConfig, SourceId};
+use pipedeck_engine::{App, ChainState, Command, Control, Device, Effect, SourceConfig, SourceId};
 
 use crate::desktop::{self, DesktopApp};
+use crate::effects;
 use crate::engine_link::EngineLink;
 use crate::widgets;
 
@@ -31,6 +32,16 @@ pub struct ChannelDialog {
     device: gtk::Label,
     meter: gtk::LevelBar,
     apps: gtk::Box,
+    /// The effects chain as the window shows it, and the button that adds to
+    /// it.
+    effects: gtk::Box,
+    add_effect: gtk::MenuButton,
+    /// What the chain looked like when it was last drawn, so an echo of our
+    /// own change does not redraw it under the pointer.
+    shown_effects: RefCell<Vec<Effect>>,
+    /// A control being dragged sends one command when it settles rather than
+    /// one per pixel: each change reloads the chain.
+    pending: Rc<RefCell<Option<gtk::glib::SourceId>>>,
     add_app: gtk::MenuButton,
     /// Installed applications, read once when the window opens.
     installed: Vec<DesktopApp>,
@@ -89,6 +100,10 @@ impl ChannelDialog {
             mute,
             meter: widgets::meter(),
             apps: gtk::Box::new(gtk::Orientation::Vertical, 8),
+            effects: gtk::Box::new(gtk::Orientation::Vertical, 8),
+            add_effect: gtk::MenuButton::new(),
+            shown_effects: RefCell::new(Vec::new()),
+            pending: Rc::new(RefCell::new(None)),
             add_app,
             installed: if source.is_input() {
                 Vec::new()
@@ -187,7 +202,7 @@ impl ChannelDialog {
             let stack = gtk::Stack::new();
             stack.set_vexpand(true);
             stack.add_titled(&self.apps_page(), Some("apps"), "Apps");
-            stack.add_titled(&effects_page(), Some("effects"), "Audio effects");
+            stack.add_titled(&self.effects_page(), Some("effects"), "Audio effects");
 
             let tabs = gtk::StackSwitcher::new();
             tabs.set_stack(Some(&stack));
@@ -226,6 +241,205 @@ impl ChannelDialog {
         self.add_app.set_halign(gtk::Align::Center);
         page.append(&self.add_app);
         page.upcast()
+    }
+
+    /// The effects this channel runs, in order, and the way to add one.
+    fn effects_page(self: &Rc<Self>) -> gtk::Widget {
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        page.set_margin_top(12);
+
+        let hint = gtk::Label::new(Some(
+            "Every mix hears this channel through these, in order. Changing one reloads the chain, \
+             so the audio stops for a moment.",
+        ));
+        hint.add_css_class("caption");
+        hint.add_css_class("dim-label");
+        hint.set_xalign(0.0);
+        hint.set_wrap(true);
+        page.append(&hint);
+
+        let scroller = gtk::ScrolledWindow::new();
+        scroller.set_vexpand(true);
+        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroller.set_child(Some(&self.effects));
+        page.append(&scroller);
+
+        self.add_effect.set_child(Some(
+            &adw::ButtonContent::builder()
+                .icon_name("list-add-symbolic")
+                .label("Add effect")
+                .build(),
+        ));
+        self.add_effect
+            .set_tooltip_text(Some("Add an effect to this channel"));
+        self.add_effect.set_halign(gtk::Align::Center);
+        self.add_effect.set_popover(Some(&self.effect_popover()));
+        page.append(&self.add_effect);
+        page.upcast()
+    }
+
+    /// Redraw the chain, unless it is already what is on screen.
+    fn show_effects(self: &Rc<Self>, effects: &[Effect]) {
+        if self.shown_effects.borrow().as_slice() == effects {
+            return;
+        }
+        *self.shown_effects.borrow_mut() = effects.to_vec();
+
+        while let Some(child) = self.effects.first_child() {
+            self.effects.remove(&child);
+        }
+        if effects.is_empty() {
+            let empty = gtk::Label::new(Some("No effect on this channel."));
+            empty.add_css_class("dim-label");
+            empty.set_margin_top(24);
+            self.effects.append(&empty);
+            return;
+        }
+        for (position, effect) in effects.iter().enumerate() {
+            let row = self.effect_row(position, effect);
+            self.effects.append(&row);
+        }
+    }
+
+    fn effect_row(self: &Rc<Self>, position: usize, effect: &Effect) -> gtk::Widget {
+        let (card, inner) = widgets::list_card();
+        let (top, title) = widgets::card_title(&effect.name);
+        if let Some(spec) = effects::spec(effect) {
+            title.set_tooltip_text(Some(spec.description));
+        }
+
+        let remove = gtk::Button::from_icon_name("list-remove-symbolic");
+        remove.add_css_class("flat");
+        remove.set_tooltip_text(Some("Take this effect off the channel"));
+        remove.connect_clicked({
+            let this = self.clone();
+            move |_| {
+                let mut chain = this.shown_effects.borrow().clone();
+                if position < chain.len() {
+                    chain.remove(position);
+                }
+                this.send_effects(chain, false);
+            }
+        });
+        top.append(&remove);
+        inner.append(&top);
+
+        let spec = effects::spec(effect);
+        for (index, control) in effect.controls.iter().enumerate() {
+            let known = spec.and_then(|spec| spec.controls.get(index));
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+
+            let name = gtk::Label::new(Some(known.map_or(control.name.as_str(), |c| c.label)));
+            name.add_css_class("caption");
+            name.set_xalign(0.0);
+            name.set_width_chars(9);
+            row.append(&name);
+
+            let (min, max) = known.map_or((0.0, 1.0), |c| (c.min, c.max));
+            let scale =
+                gtk::Scale::with_range(gtk::Orientation::Horizontal, min, max, (max - min) / 100.0);
+            scale.set_hexpand(true);
+            scale.set_draw_value(true);
+            scale.set_value_pos(gtk::PositionType::Right);
+            scale.set_digits(if max <= 10.0 { 1 } else { 0 });
+            scale.set_value(f64::from(control.value));
+            if let Some(known) = known {
+                scale.set_tooltip_text(Some(&format!("{}{}", control.value, known.unit)));
+            }
+            scale.connect_value_changed({
+                let this = self.clone();
+                let name = control.name.clone();
+                move |scale| {
+                    if this.syncing.get() {
+                        return;
+                    }
+                    let mut chain = this.shown_effects.borrow().clone();
+                    let Some(effect) = chain.get_mut(position) else {
+                        return;
+                    };
+                    if let Some(control) = effect
+                        .controls
+                        .iter_mut()
+                        .find(|control| control.name == name)
+                    {
+                        control.value = scale.value() as f32;
+                    } else {
+                        effect.controls.push(Control {
+                            name: name.clone(),
+                            value: scale.value() as f32,
+                        });
+                    }
+                    this.send_effects(chain, true);
+                }
+            });
+            row.append(&scale);
+            inner.append(&row);
+        }
+
+        card.upcast()
+    }
+
+    /// Send a chain to the engine, waiting for a dragged control to settle.
+    fn send_effects(self: &Rc<Self>, chain: Vec<Effect>, debounce: bool) {
+        // What is on screen is the truth while the engine catches up, so a
+        // second change reads the first one rather than the state before it.
+        *self.shown_effects.borrow_mut() = chain.clone();
+        if let Some(pending) = self.pending.borrow_mut().take() {
+            pending.remove();
+        }
+        if !debounce {
+            self.engine.send(Command::SetEffects {
+                id: self.id,
+                effects: chain,
+            });
+            return;
+        }
+        let this = self.clone();
+        let source =
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                this.pending.borrow_mut().take();
+                this.engine.send(Command::SetEffects {
+                    id: this.id,
+                    effects: chain,
+                });
+            });
+        *self.pending.borrow_mut() = Some(source);
+    }
+
+    /// The effects this channel could run.
+    fn effect_popover(self: &Rc<Self>) -> gtk::Popover {
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let popover = gtk::Popover::new();
+
+        for spec in effects::EFFECTS {
+            let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            let name = gtk::Label::new(Some(spec.name));
+            name.set_xalign(0.0);
+            labels.append(&name);
+            let description = gtk::Label::new(Some(spec.description));
+            description.add_css_class("caption");
+            description.add_css_class("dim-label");
+            description.set_xalign(0.0);
+            labels.append(&description);
+
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.set_child(Some(&labels));
+            button.connect_clicked({
+                let this = self.clone();
+                let popover = popover.clone();
+                move |_| {
+                    let mut chain = this.shown_effects.borrow().clone();
+                    chain.push(effects::build(spec));
+                    this.send_effects(chain, false);
+                    popover.popdown();
+                }
+            });
+            list.append(&button);
+        }
+
+        popover.set_child(Some(&list));
+        popover
     }
 
     fn connect(self: &Rc<Self>, source: &SourceConfig) {
@@ -359,6 +573,7 @@ impl ChannelDialog {
 
         let popover = self.app_popover(source, running);
         self.add_app.set_popover(Some(&popover));
+        self.show_effects(&source.effects);
         self.syncing.set(false);
     }
 
@@ -528,37 +743,6 @@ impl ChannelDialog {
         });
         button.upcast()
     }
-}
-
-/// Where the effects on a channel will go.
-///
-/// Nothing is plugged in yet, and a tab that says so is worth more than one
-/// that pretends: this is the place VST support will land, and it has to be
-/// a place before it can be filled.
-fn effects_page() -> gtk::Widget {
-    let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    page.set_valign(gtk::Align::Center);
-    page.set_vexpand(true);
-
-    let icon = gtk::Image::from_icon_name("pd-sfx-symbolic");
-    icon.set_pixel_size(48);
-    icon.add_css_class("dim-label");
-    page.append(&icon);
-
-    let title = gtk::Label::new(Some("No effects yet"));
-    title.add_css_class("heading");
-    page.append(&title);
-
-    let body = gtk::Label::new(Some(
-        "Plug-ins on a channel are not implemented. This is where they will go.",
-    ));
-    body.add_css_class("dim-label");
-    body.set_wrap(true);
-    body.set_justify(gtk::Justification::Center);
-    body.set_max_width_chars(34);
-    page.append(&body);
-
-    page.upcast()
 }
 
 /// A heading between two groups of the picker.

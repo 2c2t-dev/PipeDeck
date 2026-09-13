@@ -610,6 +610,124 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
+    // An effect on a channel is a filter chain between its sink and its
+    // cells, so the cell has to start reading the chain instead.
+    engine
+        .send(Command::SetEffects {
+            id: source,
+            effects: vec![pipedeck_engine::Effect {
+                name: "Low cut".into(),
+                kind: pipedeck_engine::EffectKind::Builtin,
+                plugin: None,
+                label: "bq_highpass".into(),
+                controls: vec![pipedeck_engine::Control {
+                    name: "Freq".into(),
+                    value: 90.0,
+                }],
+            }],
+        })
+        .unwrap();
+    wait_state(&rx, "the effect", |s| {
+        s.sources.iter().any(|row| !row.effects.is_empty())
+    });
+    settle();
+    let dump = pw_dump();
+    let names = node_names(&dump);
+    check(
+        names.contains(&format!("pipedeck.fx.{source}")),
+        &format!("the effects chain offers a sink of its own: {names:?}"),
+        &mut failures,
+    );
+    let reading = our_node(&dump, &format!("pipedeck.link.{source}.{mix}.in")).map(|node| {
+        props(node)["target.object"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    });
+    check(
+        reading.as_deref() == Some(format!("pipedeck.fx.{source}").as_str()),
+        &format!("the cell reads the chain rather than the raw channel: {reading:?}"),
+        &mut failures,
+    );
+
+    // And the effect has to be audible, not merely present: a low cut well
+    // above the tone takes it out, and the channel meter sits at the end of
+    // the chain, so it is the meter that says so.
+    let mut player = Process::new("pw-play")
+        .arg(format!("--target={sink_serial}"))
+        .arg(&tone)
+        .spawn()
+        .expect("pw-play must be installed");
+    let through = wait_levels(&rx, source, mix, Duration::from_secs(5));
+    check(
+        through.0 > 0.05,
+        &format!("the tone comes through the chain: {:.3}", through.0),
+        &mut failures,
+    );
+
+    engine
+        .send(Command::SetEffects {
+            id: source,
+            effects: vec![pipedeck_engine::Effect {
+                name: "Low cut".into(),
+                kind: pipedeck_engine::EffectKind::Builtin,
+                plugin: None,
+                label: "bq_highpass".into(),
+                controls: vec![pipedeck_engine::Control {
+                    name: "Freq".into(),
+                    value: 8_000.0,
+                }],
+            }],
+        })
+        .unwrap();
+    // The chain is reloaded and the meter follows it, so the window has to
+    // start after all of that rather than across it.
+    // The chain is reloaded under the tone, which throws a transient or two,
+    // so what counts is the quietest of several windows once it has settled
+    // rather than the loudest moment of one.
+    std::thread::sleep(Duration::from_secs(2));
+    let cut = (0..4)
+        .map(|_| wait_levels(&rx, source, mix, Duration::from_millis(500)).0)
+        .fold(f32::INFINITY, f32::min);
+    check(
+        cut < through.0 * 0.3,
+        &format!(
+            "a low cut above the tone takes it out: {cut:.3} against {:.3}",
+            through.0
+        ),
+        &mut failures,
+    );
+    let _ = player.kill();
+    let _ = player.wait();
+
+    engine
+        .send(Command::SetEffects {
+            id: source,
+            effects: Vec::new(),
+        })
+        .unwrap();
+    wait_state(&rx, "the effect removed", |s| {
+        s.sources.iter().all(|row| row.effects.is_empty())
+    });
+    settle();
+    let dump = pw_dump();
+    check(
+        !node_names(&dump).contains(&format!("pipedeck.fx.{source}")),
+        "removing the last effect takes the chain with it",
+        &mut failures,
+    );
+    let reading = our_node(&dump, &format!("pipedeck.link.{source}.{mix}.in")).map(|node| {
+        props(node)["target.object"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    });
+    check(
+        reading.as_deref() == Some(format!("pipedeck.src.{source}").as_str()),
+        &format!("the cell reads the channel again: {reading:?}"),
+        &mut failures,
+    );
+
     // The quantum is a setting, not a fader: changing it reloads every
     // loopback, and the new value has to show on the nodes that come back.
     engine
