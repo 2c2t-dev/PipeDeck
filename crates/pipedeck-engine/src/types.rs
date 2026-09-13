@@ -67,6 +67,9 @@ pub struct SourceConfig {
     /// `node.name` of the capture device, for an input row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+    /// Which look the interface gives this row. The engine only carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     /// Applications whose audio belongs to this row. An application is
     /// matched by [`App::key`], and its streams are moved onto the row's sink
     /// as they appear. An input row has none.
@@ -82,6 +85,7 @@ impl SourceConfig {
             gain: 1.0,
             muted: false,
             device: None,
+            icon: None,
             apps: Vec::new(),
         }
     }
@@ -93,6 +97,7 @@ impl SourceConfig {
             gain: 1.0,
             muted: false,
             device: Some(device.into()),
+            icon: None,
             apps: Vec::new(),
         }
     }
@@ -110,6 +115,12 @@ impl SourceConfig {
     }
 
     /// True when this row captures a device instead of exposing a sink.
+    /// Give this row a look, by preset key.
+    pub fn with_icon(mut self, icon: Option<String>) -> Self {
+        self.icon = icon;
+        self
+    }
+
     pub fn is_input(&self) -> bool {
         self.device.is_some()
     }

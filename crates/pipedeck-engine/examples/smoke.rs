@@ -202,6 +202,7 @@ fn main() -> ExitCode {
         .send(Command::AddSource {
             name: "Smoke".into(),
             device: None,
+            icon: None,
         })
         .unwrap();
     let state = wait_state(&rx, "source added", |s| !s.sources.is_empty());

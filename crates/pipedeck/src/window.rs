@@ -18,6 +18,8 @@ use crate::channel_dialog::ChannelDialog;
 use crate::dialogs;
 use crate::engine_link::EngineLink;
 use crate::mix_dialog::MixDialog;
+use crate::presets;
+use crate::widgets;
 
 const MIX_COLUMN_WIDTH: i32 = 240;
 const SOURCE_COLUMN_WIDTH: i32 = 180;
@@ -317,7 +319,11 @@ impl Window {
     fn mix_header(self: &Rc<Self>, mix: &MixConfig) -> gtk::Widget {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
 
-        content.append(&icon_badge("audio-speakers-symbolic"));
+        content.append(&widgets::badge(
+            "audio-speakers-symbolic",
+            None,
+            BADGE_ICON_SIZE,
+        ));
 
         let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
         labels.set_hexpand(true);
@@ -349,11 +355,11 @@ impl Window {
     fn source_header(self: &Rc<Self>, source: &SourceConfig) -> gtk::Widget {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
 
-        content.append(&icon_badge(if source.is_input() {
-            "audio-input-microphone-symbolic"
-        } else {
-            "audio-speakers-symbolic"
-        }));
+        content.append(&widgets::badge(
+            presets::icon_for(source.icon.as_deref(), source.is_input()),
+            source.icon.as_deref(),
+            BADGE_ICON_SIZE,
+        ));
 
         let title = gtk::Label::new(Some(&source.name));
         title.add_css_class("heading");
@@ -399,21 +405,6 @@ fn clickable_card(content: &gtk::Box, width: i32, height: i32) -> gtk::Button {
     card
 }
 
-/// An icon in a rounded badge, so a card reads as an object at a glance.
-///
-/// The badge inverts the window colours, which keeps it readable in both
-/// themes without hardcoding a palette.
-fn icon_badge(icon_name: &str) -> gtk::Image {
-    let icon = gtk::Image::from_icon_name(icon_name);
-    icon.set_pixel_size(BADGE_ICON_SIZE);
-    icon.add_css_class("pd-badge");
-    // Without this the image stretches to the height of the card and the
-    // badge stops being a square.
-    icon.set_valign(gtk::Align::Center);
-    icon.set_halign(gtk::Align::Center);
-    icon
-}
-
 /// Install the stylesheet. Call once, after GTK is initialised.
 pub fn load_css() {
     const CSS: &str = "
@@ -436,7 +427,7 @@ pub fn load_css() {
         }
     ";
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(CSS);
+    provider.load_from_string(&format!("{CSS}{}", presets::css()));
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,

@@ -106,11 +106,10 @@ impl ChannelDialog {
         left.set_width_request(LEFT_PANE_WIDTH);
         left.append(&self.name);
 
-        let badge = widgets::big_badge(if source.is_input() {
-            "audio-input-microphone-symbolic"
-        } else {
-            "audio-speakers-symbolic"
-        });
+        let badge = widgets::big_badge(
+            crate::presets::icon_for(source.icon.as_deref(), source.is_input()),
+            source.icon.as_deref(),
+        );
         badge.set_margin_top(12);
         left.append(&badge);
 

@@ -8,7 +8,9 @@ stream, because they are different columns.
 
 - A **source**, called a channel in the interface, is either a virtual output
   any application can select in its audio settings, or a capture device such
-  as a microphone. A channel can also hold applications: their audio is moved
+  as a microphone. Creating one offers ready-made kinds, Music, Browser,
+  System, Game, SFX, Voice chat and two Aux, each with its own icon and
+  colour. A channel can also hold applications: their audio is moved
   onto it as they start playing, so you pick them once instead of every time.
   The picker offers what is playing right now and what the system knows how
   to launch, read from the desktop entries.

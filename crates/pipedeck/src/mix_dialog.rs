@@ -106,11 +106,7 @@ impl MixDialog {
         left.set_width_request(LEFT_PANE_WIDTH);
         left.append(&self.name);
 
-        let icon = gtk::Image::from_icon_name("audio-speakers-symbolic");
-        icon.set_pixel_size(72);
-        icon.add_css_class("pd-badge-large");
-        icon.set_halign(gtk::Align::Center);
-        icon.set_valign(gtk::Align::Center);
+        let icon = widgets::big_badge("audio-speakers-symbolic", None);
         icon.set_margin_top(12);
         left.append(&icon);
 

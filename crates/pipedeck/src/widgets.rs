@@ -42,18 +42,54 @@ pub fn app_icon(icon: Option<&str>, size: i32) -> gtk::Image {
         Some(icon) if icon.starts_with('/') && std::path::Path::new(icon).exists() => {
             gtk::Image::from_file(icon)
         }
-        Some(icon) if !icon.is_empty() => gtk::Image::from_icon_name(icon),
+        Some(icon) if !icon.is_empty() => {
+            gtk::Image::from_icon_name(known_icon(icon, "application-x-executable-symbolic"))
+        }
         _ => gtk::Image::from_icon_name("application-x-executable-symbolic"),
     };
     image.set_pixel_size(size);
     image
 }
 
+/// An icon name the running theme can actually draw.
+///
+/// Icon sets disagree on what they carry: Breeze has no `web-browser`, and
+/// a name it lacks is drawn as a broken image rather than ignored.
+pub fn known_icon<'a>(name: &'a str, fallback: &'a str) -> &'a str {
+    let Some(display) = gtk::gdk::Display::default() else {
+        return name;
+    };
+    if gtk::IconTheme::for_display(&display).has_icon(name) {
+        name
+    } else {
+        log::debug!("the icon theme has no {name}, falling back to {fallback}");
+        fallback
+    }
+}
+
+/// An icon in a rounded badge, coloured by the preset it belongs to.
+pub fn badge(icon_name: &str, preset: Option<&str>, size: i32) -> gtk::Image {
+    let icon = gtk::Image::from_icon_name(known_icon(icon_name, "audio-speakers-symbolic"));
+    icon.set_pixel_size(size);
+    icon.add_css_class("pd-badge");
+    if let Some(class) = crate::presets::badge_class(preset) {
+        icon.add_css_class(&class);
+    }
+    // Without this the image stretches to the height of its row and the
+    // badge stops being a square.
+    icon.set_valign(gtk::Align::Center);
+    icon.set_halign(gtk::Align::Center);
+    icon
+}
+
 /// The large icon that stands for the object a window is about.
-pub fn big_badge(icon_name: &str) -> gtk::Image {
-    let icon = gtk::Image::from_icon_name(icon_name);
+pub fn big_badge(icon_name: &str, preset: Option<&str>) -> gtk::Image {
+    let icon = gtk::Image::from_icon_name(known_icon(icon_name, "audio-speakers-symbolic"));
     icon.set_pixel_size(72);
     icon.add_css_class("pd-badge-large");
+    if let Some(class) = crate::presets::badge_class(preset) {
+        icon.add_css_class(&class);
+    }
     icon.set_halign(gtk::Align::Center);
     icon.set_valign(gtk::Align::Center);
     icon

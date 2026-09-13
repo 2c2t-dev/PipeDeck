@@ -6,6 +6,7 @@ mod desktop;
 mod dialogs;
 mod engine_link;
 mod mix_dialog;
+mod presets;
 mod signals;
 mod widgets;
 mod window;

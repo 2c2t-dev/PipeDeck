@@ -71,9 +71,11 @@ pub enum Command {
         muted: bool,
     },
     /// Add a row: a virtual sink, or a capture device when `device` is set.
+    /// `icon` is carried through to the clients as the row's look.
     AddSource {
         name: String,
         device: Option<String>,
+        icon: Option<String>,
     },
     RemoveSource(SourceId),
     /// Rename a row. Same trade-off as [`Command::RenameMix`].
@@ -409,7 +411,7 @@ fn handle_command(
             structural = false;
             g.update_output(id, index, |c| c.muted = muted)
         }
-        Command::AddSource { name, device } => add_source(&mut g, name, device),
+        Command::AddSource { name, device, icon } => add_source(&mut g, name, device, icon),
         Command::RemoveSource(id) => g.remove_source(id).map(|()| {
             let cfg = g.config_mut();
             cfg.sources.retain(|s| s.id != id);
@@ -464,12 +466,18 @@ fn add_mix(g: &mut Graph, name: String) -> Result<(), EngineError> {
     Ok(())
 }
 
-fn add_source(g: &mut Graph, name: String, device: Option<String>) -> Result<(), EngineError> {
+fn add_source(
+    g: &mut Graph,
+    name: String,
+    device: Option<String>,
+    icon: Option<String>,
+) -> Result<(), EngineError> {
     let id = g.config().next_source_id();
     let cfg = match device {
         Some(device) => SourceConfig::input(id, name.trim(), device),
         None => SourceConfig::virtual_sink(id, name.trim()),
-    };
+    }
+    .with_icon(icon);
     g.create_source(&cfg)?;
     g.config_mut().sources.push(cfg);
     Ok(())
