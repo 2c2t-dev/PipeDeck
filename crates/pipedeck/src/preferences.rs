@@ -13,14 +13,40 @@ use pipedeck_engine::Command;
 use crate::engine_link::EngineLink;
 use crate::settings::{self, Settings, Theme};
 
-/// The quanta offered, as `frames/rate`, from the shortest that most
-/// machines survive to PipeWire's own default.
-const LATENCIES: [(&str, &str); 4] = [
-    ("256/48000", "5 ms, for a machine that can take it"),
-    ("512/48000", "11 ms, the default"),
-    ("1024/48000", "21 ms, PipeWire's own"),
-    ("2048/48000", "43 ms, when nothing else holds"),
+/// The quanta offered, as `frames/rate`, with what to call them and what
+/// they mean.
+///
+/// The label is short because a dropdown is as wide as the row that opens
+/// it and cuts off anything longer; the sentence goes under the row, where
+/// there is room for it.
+const LATENCIES: [Latency; 4] = [
+    Latency {
+        value: "256/48000",
+        label: "5 ms",
+        detail: "The shortest. Only for a machine with headroom to spare.",
+    },
+    Latency {
+        value: "512/48000",
+        label: "11 ms",
+        detail: "The default. A round trip close to one PipeWire hop.",
+    },
+    Latency {
+        value: "1024/48000",
+        label: "21 ms",
+        detail: "PipeWire's own quantum. Safe on most machines.",
+    },
+    Latency {
+        value: "2048/48000",
+        label: "43 ms",
+        detail: "The longest. For a machine that reports xruns at 21 ms.",
+    },
 ];
+
+struct Latency {
+    value: &'static str,
+    label: &'static str,
+    detail: &'static str,
+}
 
 /// Show the settings window.
 pub fn present(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, latency: &str) {
@@ -103,28 +129,29 @@ fn audio_page(engine: &EngineLink, latency: &str) -> adw::PreferencesPage {
     group.set_title("Latency");
     group.set_description(Some(
         "Audio crosses two Pipedeck nodes on its way to a device, and each one \
-         costs a quantum. A shorter quantum means less delay and more work for \
-         the machine; if it reports xruns, take the next one up.",
+         costs a quantum. A shorter one means less delay and more work for the \
+         machine.",
     ));
 
-    let labels: Vec<&str> = LATENCIES.iter().map(|(_, label)| *label).collect();
+    let labels: Vec<&str> = LATENCIES.iter().map(|entry| entry.label).collect();
     let row = adw::ComboRow::new();
     row.set_title("Quantum");
     row.set_model(Some(&gtk::StringList::new(&labels)));
-    row.set_selected(
-        LATENCIES
-            .iter()
-            .position(|(value, _)| *value == latency)
-            .unwrap_or(1) as u32,
-    );
+    let chosen = LATENCIES
+        .iter()
+        .position(|entry| entry.value == latency)
+        .unwrap_or(1);
+    row.set_selected(chosen as u32);
+    row.set_subtitle(LATENCIES[chosen].detail);
     row.connect_selected_notify({
         let engine = engine.clone();
         move |row| {
-            let Some((value, _)) = LATENCIES.get(row.selected() as usize) else {
+            let Some(entry) = LATENCIES.get(row.selected() as usize) else {
                 return;
             };
+            row.set_subtitle(entry.detail);
             engine.send(Command::SetLatency {
-                latency: (*value).to_owned(),
+                latency: entry.value.to_owned(),
             });
         }
     });
