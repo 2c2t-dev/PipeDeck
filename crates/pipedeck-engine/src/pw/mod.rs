@@ -71,9 +71,13 @@ fn apply_props(node: &Node, name: &str, state: &ChainState) {
 struct Stage {
     /// `node.name` of the playback node carrying the level.
     node_name: String,
+    // Field order matters: the proxy goes first. Destroying the module takes
+    // the node with it, and the server frees our binding along with it, so a
+    // proxy dropped afterwards would send a destroy for a resource that is
+    // already gone and earn an error back.
+    node: Option<BoundNode>,
     /// Kept alive as long as the stage exists. See [`LoadedModule`].
     _module: LoadedModule,
-    node: Option<BoundNode>,
     wanted: ChainState,
 }
 
@@ -150,6 +154,15 @@ pub struct Graph {
     /// Playback node name -> what it belongs to. Filled before the module is
     /// loaded, so a registry announcement always finds its owner.
     stage_index: HashMap<String, StageRef>,
+    /// Proxies of nodes we are about to destroy.
+    ///
+    /// Destroying a loopback module takes its nodes with it, and the server
+    /// frees the bindings we hold on them at the same moment. Dropping such a
+    /// proxy right away races the notification telling us it is gone, and the
+    /// server answers our destroy with an error. Holding them until the next
+    /// turn of the loop lets that notification land first, after which
+    /// dropping them says nothing on the wire.
+    retired: Vec<Node>,
     devices: HashMap<u32, DeviceEntry>,
     devices_dirty: bool,
     /// Application playback streams currently on the graph.
@@ -183,6 +196,7 @@ impl Graph {
             mixes: HashMap::new(),
             sources: HashMap::new(),
             stage_index: HashMap::new(),
+            retired: Vec::new(),
             devices: HashMap::new(),
             devices_dirty: false,
             streams: HashMap::new(),
@@ -254,8 +268,8 @@ impl Graph {
             match LoadedModule::load(&self.context, LOOPBACK_MODULE, &spec.to_args()) {
                 Ok(module) => stages.push(Stage {
                     node_name,
-                    _module: module,
                     node: None,
+                    _module: module,
                     wanted: output.state(),
                 }),
                 Err(e) => {
@@ -269,6 +283,13 @@ impl Graph {
             }
         }
         stages
+    }
+
+    /// Take a stage's proxy out before the stage, and its module, go.
+    fn retire(&mut self, stage: &mut Stage) {
+        if let Some(bound) = stage.node.take() {
+            self.retired.push(bound.proxy);
+        }
     }
 
     fn forget_outputs(&mut self, id: MixId) {
@@ -293,7 +314,10 @@ impl Graph {
     /// Tear a mix down, cells first. Only ever called from the command
     /// handler, never from a listener (see [`LoadedModule`]).
     pub fn remove_mix(&mut self, id: MixId) -> Result<(), EngineError> {
-        let mix = self.mixes.remove(&id).ok_or(EngineError::UnknownMix(id))?;
+        let mut mix = self.mixes.remove(&id).ok_or(EngineError::UnknownMix(id))?;
+        for stage in &mut mix.outputs {
+            self.retire(stage);
+        }
         self.forget_outputs(id);
         let cells: Vec<(SourceId, MixId)> = self
             .links
@@ -323,13 +347,19 @@ impl Graph {
             .collect();
         let cfg = cfg.clone();
 
-        self.mixes
-            .get_mut(&id)
-            .ok_or(EngineError::UnknownMix(id))?
-            // Drop the old loopbacks before loading the new ones, so a device
-            // that stays attached is not captured twice for an instant.
-            .outputs
-            .clear();
+        let mut previous = std::mem::take(
+            &mut self
+                .mixes
+                .get_mut(&id)
+                .ok_or(EngineError::UnknownMix(id))?
+                .outputs,
+        );
+        for stage in &mut previous {
+            self.retire(stage);
+        }
+        // Drop the old loopbacks before loading the new ones, so a device
+        // that stays attached is not captured twice for an instant.
+        drop(previous);
         self.forget_outputs(id);
         let outputs = self.load_outputs(&cfg);
         self.mixes
@@ -484,8 +514,8 @@ impl Graph {
             cell,
             Stage {
                 node_name,
-                _module: module,
                 node: None,
+                _module: module,
                 wanted: link.state(),
             },
         );
@@ -494,8 +524,9 @@ impl Graph {
     }
 
     fn drop_link(&mut self, cell: (SourceId, MixId)) {
-        if let Some(link) = self.links.remove(&cell) {
+        if let Some(mut link) = self.links.remove(&cell) {
             self.stage_index.remove(&link.node_name);
+            self.retire(&mut link);
         }
     }
 
@@ -805,6 +836,9 @@ impl Graph {
     /// Periodic housekeeping from the engine timer: debounced config saves
     /// and device list updates.
     pub fn tick(&mut self) {
+        // The server has told us by now that these nodes are gone, so their
+        // proxies leave without a word.
+        self.retired.clear();
         if self.devices_dirty {
             self.emit_devices();
         }
