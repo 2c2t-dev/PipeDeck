@@ -202,6 +202,38 @@ fn node_serial(dump: &[serde_json::Value], name: &str) -> Option<i64> {
     props(our_node(dump, name)?)["object.serial"].as_i64()
 }
 
+/// What a recorder hears on a node, over `seconds`.
+///
+/// This is a capture client doing what OBS does: naming the device and
+/// taking what comes out of it.
+fn record_peak(serial: i64, seconds: u32, into: &std::path::Path) -> f32 {
+    let _ = std::fs::remove_file(into);
+    let recorded = Process::new("pw-record")
+        .arg(format!("--target={serial}"))
+        .arg("--rate=48000")
+        .arg("--channels=2")
+        .arg("--format=s16")
+        .arg(into)
+        .spawn();
+    let Ok(mut recorder) = recorded else {
+        return 0.0;
+    };
+    std::thread::sleep(Duration::from_secs(seconds.into()));
+    let _ = recorder.kill();
+    let _ = recorder.wait();
+
+    let Ok(bytes) = std::fs::read(into) else {
+        return 0.0;
+    };
+    if bytes.len() <= 44 {
+        return 0.0;
+    }
+    bytes[44..]
+        .chunks_exact(2)
+        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]).unsigned_abs() as f32 / 32768.0)
+        .fold(0.0f32, f32::max)
+}
+
 /// A quiet tone, loud enough to move a meter. Nothing is attached to the
 /// mix in this test, so it reaches no device and makes no sound.
 fn tone_wav(path: &std::path::Path) {
@@ -306,8 +338,29 @@ fn main() -> ExitCode {
     settle();
     let nodes = node_names(&pw_dump());
     check(
-        nodes == [format!("pipedeck.mix.{mix}")],
-        &format!("a fresh config yields one mix sink and nothing else: {nodes:?}"),
+        nodes
+            == [
+                format!("pipedeck.in.{mix}"),
+                format!("pipedeck.in.{mix}.in"),
+                format!("pipedeck.mix.{mix}"),
+            ],
+        &format!("a fresh config yields one mix, and the input device it is: {nodes:?}"),
+        &mut failures,
+    );
+    let offered = our_node(&pw_dump(), &format!("pipedeck.in.{mix}")).map(|node| {
+        (
+            props(node)["media.class"].as_str().unwrap_or("").to_owned(),
+            props(node)["node.description"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned(),
+        )
+    });
+    check(
+        offered.as_ref().is_some_and(|(class, description)| {
+            class == "Audio/Source" && description.contains("Personal Mix")
+        }),
+        &format!("and it is offered as a microphone would be: {offered:?}"),
         &mut failures,
     );
     check(
@@ -331,6 +384,8 @@ fn main() -> ExitCode {
     check(
         nodes
             == [
+                format!("pipedeck.in.{mix}"),
+                format!("pipedeck.in.{mix}.in"),
                 format!("pipedeck.mix.{mix}"),
                 format!("pipedeck.src.{source}"),
             ],
@@ -481,6 +536,19 @@ fn main() -> ExitCode {
             &what,
             &mut failures,
         );
+    } else {
+        println!("[skip] {what}");
+    }
+
+    // What a capture client gets, taken the way one takes it: by naming the
+    // device and recording it. The mix is heard through the cell and the
+    // master alike, so this is the same signal its meter reads.
+    let recorded = node_serial(&pw_dump(), &format!("pipedeck.in.{mix}"))
+        .map(|serial| record_peak(serial, 3, &dir.join("recorded.wav")))
+        .unwrap_or(0.0);
+    let what = format!("a recorder hears the mix on its input device: {recorded:.3}");
+    if alone {
+        check(recorded > expected * 0.4, &what, &mut failures);
     } else {
         println!("[skip] {what}");
     }
@@ -1173,7 +1241,7 @@ fn main() -> ExitCode {
     let nodes = node_names(&pw_dump());
     check(
         nodes.is_empty(),
-        &format!("removing the mix takes its output with it: {nodes:?}"),
+        &format!("removing the mix takes its output and its input device with it: {nodes:?}"),
         &mut failures,
     );
 

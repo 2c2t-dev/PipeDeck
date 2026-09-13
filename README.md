@@ -174,17 +174,35 @@ so the audio stops for a moment.
 
 ## Using it with OBS
 
-A mix is capturable whether or not it has an output device: add an audio
-input capture in OBS and pick the mix by name. Attach your headphones to a
-different mix to hear a different balance.
+Every mix is an input device of its own, named after it, so OBS, Discord or a
+browser list it where they list microphones: add an audio input capture and
+pick the mix by name. It is there whether or not the mix plays to a device,
+and renaming the mix renames it — the one node this mixer rebuilds on a
+rename, since that name is the whole of what it is for. Attach your headphones
+to a different mix to hear a different balance.
+
+A channel is the opposite: a sink, which the system lists among the outputs
+like a pair of headphones, so an application can be pointed at it.
 
 ## How the graph looks
 
 ```
  apps ──▶ [pipedeck.src.N] ──monitor──┐
-                                      ├─ loopback (cell fader) ──▶ [pipedeck.mix.M] ──┬─ loopback ──▶ device
- mic  ────────────────────────────────┘                            (captured by OBS)  └─ loopback ──▶ device
+           an output device           ├─ loopback (cell fader) ──▶ [pipedeck.mix.M] ──┬─ loopback ──▶ device
+ mic  ────────────────────────────────┘                                              ├─ loopback ──▶ device
+                                                                                      └─ loopback ──▶ [pipedeck.in.M]
+                                                                                                      an input device
 ```
+
+A row is a sink and a column is a source, which is what each of them is to
+the rest of the system: applications play into a channel as they would into
+headphones, and a capture client records a mix as it would a microphone. The
+column is a sink underneath, because a session manager routes into sinks and
+not into sources; the loopback on the end of it is what carries the class the
+lists read. `Audio/Source/Virtual` is what the documentation calls a source
+made up rather than found, and it segfaults libspa's audioconvert on PipeWire
+1.6.8 when the other side of the loopback is a stream — `Audio/Source` is
+listed the same way and survives.
 
 With effects, a channel grows a stage or two before the cells read it. A row
 bound to a microphone starts on that microphone instead of on a sink:

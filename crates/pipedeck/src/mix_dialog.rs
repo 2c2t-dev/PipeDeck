@@ -180,7 +180,9 @@ impl MixDialog {
         let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
 
         let hint = gtk::Label::new(Some(
-            "A mix is capturable by OBS whether or not it plays to a device.",
+            "This mix is an input device of its own, named after it: pick it in OBS or \
+             Discord the way you would a microphone. The devices below are where it plays \
+             as well.",
         ));
         hint.add_css_class("caption");
         hint.add_css_class("dim-label");

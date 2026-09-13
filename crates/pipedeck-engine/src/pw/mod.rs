@@ -170,6 +170,9 @@ struct Mix {
     // Field order matters: the outputs are destroyed before the sink they
     // capture from, and each chain before the sinks at either end of it.
     outputs: Vec<Stage>,
+    /// The input device this mix is to the rest of the system, which reads
+    /// the sink below the same way an output does.
+    capture: Option<LoadedModule>,
     /// The plug-ins the mixer hosts itself, last before the sink.
     plugins: Option<PluginChain>,
     /// The sink they read, which the cells or the filter chain play into.
@@ -429,6 +432,43 @@ impl Graph {
 
     /// Load the loopbacks feeding a mix's devices. Any output that fails is
     /// reported and skipped: one dead device must not take the mix down.
+    /// Make the input device of a mix again, under the name it now has.
+    ///
+    /// The nodes of this mixer keep the description they were born with,
+    /// since rebuilding one cuts whatever is listening. This one is the
+    /// exception: its description is the name in someone's microphone list,
+    /// which is the whole of what it is for, and a recorder picking it back
+    /// out of that list is the cost.
+    pub fn rename_mix_capture(&mut self, id: MixId) {
+        let Some(cfg) = self.config.mix(id).cloned() else {
+            return;
+        };
+        if let Some(mix) = self.mixes.get_mut(&id) {
+            mix.capture = None;
+        }
+        let capture = self.load_capture(&cfg);
+        if let Some(mix) = self.mixes.get_mut(&id) {
+            mix.capture = capture;
+        }
+    }
+
+    /// Offer a mix as an input device, so a capture client finds it among
+    /// the microphones rather than having to know about monitors.
+    fn load_capture(&self, cfg: &MixConfig) -> Option<LoadedModule> {
+        let spec = LoopbackSpec::for_capture(cfg, &self.config.latency);
+        match LoadedModule::load(&self.context, LOOPBACK_MODULE, &spec.to_args()) {
+            Ok(module) => Some(module),
+            Err(e) => {
+                log::error!("{e}");
+                self.emit(Event::Error(format!(
+                    "cannot offer {} as an input device: {e}",
+                    cfg.name
+                )));
+                None
+            }
+        }
+    }
+
     fn load_outputs(&mut self, cfg: &MixConfig) -> Vec<Stage> {
         let mut stages = Vec::with_capacity(cfg.outputs.len());
         for (index, output) in cfg.outputs.iter().enumerate() {
@@ -596,10 +636,12 @@ impl Graph {
         );
         let effects = self.load_effects(&ChainSpec::for_mix(cfg));
         let outputs = self.load_outputs(cfg);
+        let capture = self.load_capture(cfg);
         self.mixes.insert(
             cfg.id,
             Mix {
                 outputs,
+                capture,
                 plugins: None,
                 plugins_sink,
                 _plugins_bound: plugins_bound,
@@ -1438,14 +1480,25 @@ impl Graph {
 
         let mixes: Vec<MixId> = self.config.mixes.iter().map(|mix| mix.id).collect();
         for id in mixes {
-            let devices = self
-                .config
-                .mix(id)
+            let cfg = self.config.mix(id).cloned();
+            let devices = cfg
+                .as_ref()
                 .map(|mix| mix.outputs.iter().map(|o| o.device.clone()).collect())
                 .unwrap_or_default();
             if let Err(e) = self.set_mix_outputs(id, devices) {
                 log::error!("{e}");
                 self.emit(Event::Error(e.to_string()));
+            }
+            // The input device is a loopback like any other, so it carries
+            // the quantum like any other and is reloaded with them.
+            if let Some(cfg) = cfg {
+                if let Some(mix) = self.mixes.get_mut(&id) {
+                    mix.capture = None;
+                }
+                let capture = self.load_capture(&cfg);
+                if let Some(mix) = self.mixes.get_mut(&id) {
+                    mix.capture = capture;
+                }
             }
         }
         log::info!("nodes reloaded at {}", self.config.latency);

@@ -76,6 +76,13 @@ impl MixId {
         format!("pipedeck.mix.{}", self.0)
     }
 
+    /// `node.name` of the input device this mix is, as the rest of the
+    /// system sees it: what a capture client such as OBS or Discord picks
+    /// out of its microphone list.
+    pub fn source_node_name(self) -> String {
+        format!("pipedeck.in.{}", self.0)
+    }
+
     /// `node.name` of the sink the cells play into when the mix runs effects
     /// of PipeWire's own. The chain reads it and hands the result on.
     pub fn effects_node_name(self) -> String {
@@ -499,6 +506,7 @@ mod tests {
     fn node_names_derive_from_ids() {
         assert_eq!(SourceId(7).sink_node_name(), "pipedeck.src.7");
         assert_eq!(MixId(2).sink_node_name(), "pipedeck.mix.2");
+        assert_eq!(MixId(2).source_node_name(), "pipedeck.in.2");
         assert_eq!(MixId(2).effects_node_name(), "pipedeck.mixfx.2");
         assert_eq!(MixId(2).plugins_node_name(), "pipedeck.mixvst.2");
     }

@@ -38,7 +38,8 @@ pub enum Command {
     /// Rename a column. The graph keeps the description its nodes were born
     /// with: `node.name` derives from the id and never moves, and rebuilding
     /// the sink just to refresh a label would cut the audio and make a
-    /// capture client reselect it.
+    /// capture client reselect it. The one node made again is the input
+    /// device the mix is, whose description is that name.
     RenameMix {
         id: MixId,
         name: String,
@@ -470,7 +471,11 @@ fn handle_command(
             cfg.mixes.retain(|m| m.id != id);
             cfg.prune_links();
         }),
-        Command::RenameMix { id, name } => rename_mix(&mut g, id, name),
+        Command::RenameMix { id, name } => rename_mix(&mut g, id, name).inspect(|()| {
+            // The name is what a capture client sees in its list, so the
+            // device it picks from there is made again to carry it.
+            g.rename_mix_capture(id);
+        }),
         Command::SetMixIcon { id, icon } => g
             .config_mut()
             .mix_mut(id)
