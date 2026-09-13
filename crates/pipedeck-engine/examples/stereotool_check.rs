@@ -24,7 +24,10 @@ fn peak(buffer: &[f32]) -> f32 {
 
 fn main() -> ExitCode {
     env_logger::init();
-    let preset = std::env::args().nth(1).map(PathBuf::from);
+    let preset = std::env::args()
+        .skip(1)
+        .find(|arg| !arg.starts_with("--"))
+        .map(PathBuf::from);
     let license = std::env::var("PIPEDECK_STEREOTOOL_LICENSE").ok();
 
     let Some(path) = stereotool::library_path() else {
@@ -88,6 +91,25 @@ fn main() -> ExitCode {
         println!("[FAIL] nothing came out");
         return ExitCode::FAILURE;
     }
+
+    // `--window` puts Stereo Tool's own interface on the screen for a few
+    // seconds, which is the one thing that cannot be told from the symbols
+    // alone: only the X11 builds carry it, and it wants a display.
+    if std::env::args().any(|arg| arg == "--window") {
+        match stereotool::Window::open(instance.handle()) {
+            Ok(window) => {
+                println!("[ ok ] its window is up; closing in 10 seconds");
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                drop(window);
+                println!("[ ok ] and it closed");
+            }
+            Err(e) => {
+                println!("[FAIL] {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     println!("STEREO TOOL OK");
     ExitCode::SUCCESS
 }

@@ -15,38 +15,32 @@ use adw::prelude::*;
 use libadwaita as adw;
 
 use pipedeck_engine::stereotool::Status;
-use pipedeck_engine::{vst3::Plugin, Command, Control, Effect, EffectKind, MixId, SourceId};
+use pipedeck_engine::{vst3::Plugin, Command, Control, Effect, EffectKind, EffectTarget};
 
 use crate::effects;
 use crate::engine_link::EngineLink;
 use crate::widgets;
 
-/// Which object the chain belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Target {
-    Channel(SourceId),
-    Mix(MixId),
+/// Which object the chain belongs to. The engine names them the same way.
+pub type Target = EffectTarget;
+
+fn command(target: Target, effects: Vec<Effect>) -> Command {
+    match target {
+        Target::Channel(id) => Command::SetEffects { id, effects },
+        Target::Mix(id) => Command::SetMixEffects { id, effects },
+    }
 }
 
-impl Target {
-    fn command(self, effects: Vec<Effect>) -> Command {
-        match self {
-            Target::Channel(id) => Command::SetEffects { id, effects },
-            Target::Mix(id) => Command::SetMixEffects { id, effects },
+/// What the tab says about where the chain runs.
+fn hint(target: Target) -> &'static str {
+    match target {
+        Target::Channel(_) => {
+            "Every mix hears this channel through these, in order. Changing one reloads the \
+             chain, so the audio stops for a moment."
         }
-    }
-
-    /// What the tab says about where the chain runs.
-    fn hint(self) -> &'static str {
-        match self {
-            Target::Channel(_) => {
-                "Every mix hears this channel through these, in order. Changing one reloads the \
-                 chain, so the audio stops for a moment."
-            }
-            Target::Mix(_) => {
-                "This mix runs these on its way out, in order, and nothing else hears them. \
-                 Changing one reloads the chain, so the audio stops for a moment."
-            }
+        Target::Mix(_) => {
+            "This mix runs these on its way out, in order, and nothing else hears them. \
+             Changing one reloads the chain, so the audio stops for a moment."
         }
     }
 }
@@ -103,7 +97,7 @@ impl EffectPanel {
     fn build(self: &Rc<Self>) {
         self.page.set_margin_top(12);
 
-        let hint = gtk::Label::new(Some(self.target.hint()));
+        let hint = gtk::Label::new(Some(hint(self.target)));
         hint.add_css_class("caption");
         hint.add_css_class("dim-label");
         hint.set_xalign(0.0);
@@ -175,6 +169,28 @@ impl EffectPanel {
         let (top, title) = widgets::card_title(&effect.name);
         if let Some(spec) = effects::spec(effect) {
             title.set_tooltip_text(Some(spec.description));
+        }
+
+        // Stereo Tool's own interface: every band and every curve it has,
+        // and the only place its settings can be made, since they live in
+        // Stereo Tool and not here. The builds for a machine without X11
+        // carry no window, and then there is none to offer.
+        if effect.kind == EffectKind::StereoTool
+            && matches!(&*self.stereotool.borrow(), Status::Ready(info) if info.windows)
+        {
+            let open = gtk::Button::with_label("Open");
+            open.add_css_class("flat");
+            open.set_tooltip_text(Some("Open Stereo Tool's own window"));
+            open.connect_clicked({
+                let this = self.clone();
+                move |_| {
+                    this.engine.send(Command::ShowEffectWindow {
+                        target: this.target,
+                        index: position,
+                    })
+                }
+            });
+            top.append(&open);
         }
 
         let remove = gtk::Button::from_icon_name("list-remove-symbolic");
@@ -376,7 +392,7 @@ impl EffectPanel {
             self.shown.borrow_mut().clear();
             self.drawn.set(false);
             self.show(&chain);
-            self.engine.send(self.target.command(chain));
+            self.engine.send(command(self.target, chain));
             return;
         }
         // A control that moved already shows its own value, and redrawing
@@ -388,7 +404,7 @@ impl EffectPanel {
         let source =
             gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
                 this.pending.borrow_mut().take();
-                this.engine.send(this.target.command(chain));
+                this.engine.send(command(this.target, chain));
             });
         *self.pending.borrow_mut() = Some(source);
     }

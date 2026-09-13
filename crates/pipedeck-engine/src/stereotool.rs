@@ -14,7 +14,7 @@
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -43,28 +43,31 @@ pub fn library_dir() -> Option<PathBuf> {
 
 /// The names Thimeo gives the library for this machine, best first.
 ///
-/// The download holds one build per machine and, for each, a plain one and
-/// two saying what they do about X11. The plain one is what the vendor
-/// documents; the others are there because a machine without X11 libraries
-/// cannot load a build that wants them, and then the next one down works.
+/// The download holds one build per machine and, for each, several saying
+/// what they do about X11. The X11 one comes first because it is the only
+/// one carrying Stereo Tool's own window — the vendor's header says as much
+/// — and the others follow for a machine whose X11 libraries it would ask
+/// for and not find.
 fn preferred_names() -> &'static [&'static str] {
     match std::env::consts::ARCH {
         "x86_64" => &[
+            "libStereoToolX11_intel64.so",
             "libStereoTool_intel64.so",
             "libStereoTool_noX11_intel64.so",
-            "libStereoToolX11_intel64.so",
         ],
         "x86" => &[
+            "libStereoToolX11_intel32.so",
             "libStereoTool_intel32.so",
             "libStereoTool_noX11_intel32.so",
-            "libStereoToolX11_intel32.so",
         ],
         "aarch64" => &[
+            "libStereoToolX11_arm64.so",
             "libStereoTool_arm64.so",
             "libStereoTool_noX11_arm64.so",
             "libStereoTool_pi4_64.so",
         ],
         "arm" => &[
+            "libStereoToolX11_arm32.so",
             "libStereoTool_arm32.so",
             "libStereoTool_noX11_arm32.so",
             "libStereoTool_pi2.so",
@@ -155,6 +158,9 @@ pub struct Info {
     /// The features it is using without a licence for them, as it names
     /// them. Those are what put speech and beeps in the audio.
     pub unlicensed: Option<String>,
+    /// Whether this build carries Stereo Tool's own window. The builds made
+    /// for machines without X11 do not.
+    pub windows: bool,
 }
 
 /// What the mixer can say about Stereo Tool without being asked twice.
@@ -177,7 +183,19 @@ struct Api {
     check_license: unsafe extern "C" fn(*mut c_void) -> bool,
     unlicensed: unsafe extern "C" fn(*mut c_void, *mut c_char, c_int) -> bool,
     software_version: unsafe extern "C" fn() -> c_int,
+    /// Stereo Tool's own window. Only the X11 builds carry it, so this is
+    /// what the mixer has rather than a promise it cannot keep.
+    gui: Option<Gui>,
     path: PathBuf,
+}
+
+/// The window entry points, taken together because a build has all of them
+/// or none.
+struct Gui {
+    create: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    show: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    hide: unsafe extern "C" fn(*mut c_void),
+    delete: unsafe extern "C" fn(*mut c_void),
 }
 
 /// The library, once it has been loaded.
@@ -266,6 +284,34 @@ unsafe fn load(path: &Path) -> Result<Api, String> {
         software_version: std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> c_int>(
             symbol(b"stereoTool_GetSoftwareVersion\0")?,
         ),
+        gui: match (
+            symbol(b"stereoTool_GUI_Create\0"),
+            symbol(b"stereoTool_GUI_Show\0"),
+            symbol(b"stereoTool_GUI_Hide\0"),
+            symbol(b"stereoTool_GUI_SetSize\0"),
+            symbol(b"stereoTool_GUI_Delete\0"),
+        ) {
+            // `GUI_SetSize` is asked for and not kept: a build that has it
+            // is the one carrying the window, but calling it walks into
+            // XResizeWindow with nothing to resize. See `Window::open`.
+            (Ok(create), Ok(show), Ok(hide), Ok(_set_size), Ok(delete)) => Some(Gui {
+                create: std::mem::transmute::<
+                    *mut c_void,
+                    unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+                >(create),
+                show: std::mem::transmute::<
+                    *mut c_void,
+                    unsafe extern "C" fn(*mut c_void, *mut c_void),
+                >(show),
+                hide: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut c_void)>(hide),
+                delete: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut c_void)>(
+                    delete,
+                ),
+            }),
+            // A build without them is the one the vendor ships for machines
+            // with no X11 at all. Everything else about it works.
+            _ => None,
+        },
         path: path.to_owned(),
     };
     // Kept loaded on purpose: see the note on `API`.
@@ -301,6 +347,7 @@ pub fn probe(license: Option<&str>) -> Result<Info, String> {
         version: unsafe { (api.software_version)() },
         licensed: instance.licensed(),
         unlicensed: instance.unlicensed_features(),
+        windows: api.gui.is_some(),
     })
 }
 
@@ -363,12 +410,110 @@ pub enum ProcessError {
     BlockSize,
 }
 
+/// A processor the library made, released when the last holder lets go.
+///
+/// The audio thread runs it block by block while the control thread opens
+/// and closes its window, which is how every plug-in host is built and what
+/// the vendor's own VST does. The pointer is therefore shared rather than
+/// owned by either side.
+pub struct Handle {
+    ptr: *mut c_void,
+    api: &'static Api,
+}
+
+// SAFETY: the library is made to be driven this way — one thread handing it
+// blocks, another showing its window — and nothing here reads or writes the
+// pointer itself, only passes it back.
+unsafe impl Send for Handle {}
+unsafe impl Sync for Handle {}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // Closing is as talkative as opening.
+        let _quiet = Hushed::new();
+        // SAFETY: the pointer came from `create` and is released once, when
+        // the last holder of this handle lets go.
+        unsafe { (self.api.delete)(self.ptr) };
+    }
+}
+
+/// Stereo Tool's own window, on the processor it belongs to.
+///
+/// It is the whole application's interface — every band, every curve — and
+/// it is the only way to set up what the mixer runs, since the settings live
+/// in Stereo Tool and not here. Only the X11 builds carry it.
+///
+/// Dropping it takes the window away; the processor keeps running.
+pub struct Window {
+    /// Held so the processor outlives the window that draws it.
+    handle: Arc<Handle>,
+    ptr: *mut c_void,
+}
+
+impl Window {
+    /// Make the window for a processor, and put it on the screen.
+    pub fn open(handle: Arc<Handle>) -> Result<Self, String> {
+        let gui = handle
+            .api
+            .gui
+            .as_ref()
+            .ok_or("this build of Stereo Tool has no window; install the X11 one")?;
+        let _quiet = Hushed::new();
+        // SAFETY: the processor is alive, this handle holds it.
+        let ptr = unsafe { (gui.create)(handle.ptr) };
+        if ptr.is_null() {
+            return Err("Stereo Tool would not make its window".into());
+        }
+        // SAFETY: the window is ours and alive. A null host window is what
+        // the header asks for everywhere but Windows, and means a window of
+        // its own rather than one sitting inside another.
+        //
+        // Its size is left alone: `GUI_SetSize` reaches XResizeWindow with
+        // nothing to resize and takes the process down with it, before or
+        // after showing alike, on this build. The window opens at the size
+        // Stereo Tool remembers, and the user can drag it like any other.
+        unsafe { (gui.show)(ptr, std::ptr::null_mut()) };
+        Ok(Self { handle, ptr })
+    }
+
+    /// Put it back on the screen, having been hidden.
+    pub fn show(&self) {
+        if let Some(gui) = self.handle.api.gui.as_ref() {
+            let _quiet = Hushed::new();
+            // SAFETY: the window is ours and alive.
+            unsafe { (gui.show)(self.ptr, std::ptr::null_mut()) };
+        }
+    }
+
+    pub fn hide(&self) {
+        if let Some(gui) = self.handle.api.gui.as_ref() {
+            let _quiet = Hushed::new();
+            // SAFETY: the window is ours and alive.
+            unsafe { (gui.hide)(self.ptr) };
+        }
+    }
+}
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        if let Some(gui) = self.handle.api.gui.as_ref() {
+            let _quiet = Hushed::new();
+            // SAFETY: the window came from `create` and is deleted once,
+            // before the processor it belongs to, which this holds.
+            unsafe {
+                (gui.hide)(self.ptr);
+                (gui.delete)(self.ptr);
+            }
+        }
+    }
+}
+
 /// One Stereo Tool processor, ready to take blocks.
 ///
-/// Dropping it releases the processor; the library stays loaded.
+/// Dropping it releases the processor unless its window still holds it; the
+/// library stays loaded either way.
 pub struct Instance {
-    handle: *mut c_void,
-    api: &'static Api,
+    handle: Arc<Handle>,
     /// One block, interleaved, allocated once: the real-time thread must not
     /// ask for memory.
     scratch: Vec<f32>,
@@ -407,8 +552,7 @@ impl Instance {
             return Err("Stereo Tool refused to start".into());
         }
         let mut instance = Self {
-            handle,
-            api,
+            handle: Arc::new(Handle { ptr: handle, api }),
             scratch: vec![0.0; max_block * CHANNELS],
             max_block,
             preset: None,
@@ -426,7 +570,9 @@ impl Instance {
         let path = CString::new(preset.as_os_str().as_encoded_bytes())
             .map_err(|_| format!("{} is not a usable path", preset.display()))?;
         // SAFETY: the path outlives the call and the handle is ours.
-        let loaded = unsafe { (self.api.load_preset)(self.handle, path.as_ptr(), LOAD_TOTALINIT) };
+        let loaded = unsafe {
+            (self.handle.api.load_preset)(self.handle.ptr, path.as_ptr(), LOAD_TOTALINIT)
+        };
         if !loaded {
             return Err(format!("Stereo Tool refused {}", preset.display()));
         }
@@ -441,7 +587,7 @@ impl Instance {
     /// Does the licence cover what it is running?
     pub fn licensed(&self) -> bool {
         // SAFETY: the handle is ours and alive.
-        unsafe { (self.api.check_license)(self.handle) }
+        unsafe { (self.handle.api.check_license)(self.handle.ptr) }
     }
 
     /// The features running without a licence, as the library names them.
@@ -450,7 +596,11 @@ impl Instance {
         // SAFETY: the buffer is ours, and its length is what the call is
         // told; the library writes a zero-terminated string into it.
         let written = unsafe {
-            (self.api.unlicensed)(self.handle, buffer.as_mut_ptr(), buffer.len() as c_int)
+            (self.handle.api.unlicensed)(
+                self.handle.ptr,
+                buffer.as_mut_ptr(),
+                buffer.len() as c_int,
+            )
         };
         if !written {
             return None;
@@ -467,7 +617,7 @@ impl Instance {
     pub fn latency(&self) -> usize {
         // SAFETY: the handle is ours; `false` says the mixer does not feed
         // it silence to flush the delay.
-        let frames = unsafe { (self.api.latency)(self.handle, SAMPLE_RATE, false) };
+        let frames = unsafe { (self.handle.api.latency)(self.handle.ptr, SAMPLE_RATE, false) };
         frames.max(0) as usize
     }
 
@@ -496,8 +646,8 @@ impl Instance {
         // SAFETY: the block is ours and holds exactly `frames * CHANNELS`
         // floats, which is what the counts say.
         unsafe {
-            (self.api.process)(
-                self.handle,
+            (self.handle.api.process)(
+                self.handle.ptr,
                 self.scratch.as_mut_ptr(),
                 frames as c_int,
                 CHANNELS as c_int,
@@ -513,12 +663,10 @@ impl Instance {
     }
 }
 
-impl Drop for Instance {
-    fn drop(&mut self) {
-        // Closing is as talkative as opening.
-        let _quiet = Hushed::new();
-        // SAFETY: the handle came from `create` and is released once.
-        unsafe { (self.api.delete)(self.handle) };
+impl Instance {
+    /// The processor itself, to hold on to for as long as its window is up.
+    pub fn handle(&self) -> Arc<Handle> {
+        self.handle.clone()
     }
 }
 

@@ -122,16 +122,28 @@ run — at startup, after an import, and when a licence key is given — because
 a library already loaded cannot be swapped inside one run anyway. It also
 keeps its state in `~/.libStereoTool_*.so.rc`.
 
-The licence key is a field on the same page, passed to the library and to
+**Open** on the effect brings up Stereo Tool's own interface — every band and
+every curve it has — on the processor the mixer is running, so what you change
+is heard at once and stays in its own settings file. It is a window of its
+own, not one embedded in Pipedeck: the library draws it in X11, which is also
+why the X11 build is the one loaded first. The builds for a machine without
+X11 carry no window, and then the button is not offered. A preset exported
+from Stereo Tool can be loaded on the effect instead, which is what a machine
+with no display has.
+
+The licence key is a field on the settings page, passed to the library and to
 nothing else. Without one Stereo Tool still runs and puts speech and beeps in
 the audio, which is the vendor's doing; the settings say so rather than let it
-be discovered on air. Settings come from a preset exported from Stereo Tool
-itself, chosen on the effect. It adds 50 to 100 ms of delay depending on what
-it runs, which is the reason to put it on the mix that goes out and not on a
-channel every mix hears.
+be discovered on air. It adds 50 to 100 ms of delay depending on what it runs,
+which is the reason to put it on the mix that goes out and not on a channel
+every mix hears.
 
 `cargo run -p pipedeck-engine --example stereotool_check [preset.sts]` runs a
-tone through it with no PipeWire in the way, and says what the licence covers.
+tone through it with no PipeWire in the way, and says what the licence covers;
+`--window` puts its interface on the screen for ten seconds, which is the one
+thing the symbols alone cannot tell you. `PIPEDECK_SMOKE_WINDOW=1` adds the
+same check to the smoke test, where the window is opened the way the interface
+opens it: from the engine thread.
 
 ## Settings
 

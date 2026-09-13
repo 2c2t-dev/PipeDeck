@@ -24,8 +24,8 @@ use crate::config::Config;
 use crate::error::EngineError;
 use crate::pw::Graph;
 use crate::types::{
-    self, App, ChainState, Device, Effect, LinkConfig, MixConfig, MixId, SourceConfig, SourceId,
-    MAX_MIXES,
+    self, App, ChainState, Device, Effect, EffectTarget, LinkConfig, MixConfig, MixId,
+    SourceConfig, SourceId, MAX_MIXES,
 };
 
 /// Requests from a client to the engine.
@@ -114,6 +114,12 @@ pub enum Command {
     SetMixEffects {
         id: MixId,
         effects: Vec<Effect>,
+    },
+    /// Put the interface of one hosted plug-in on the screen, by its place
+    /// in the chain. Stereo Tool has one; a VST3 does not, here.
+    ShowEffectWindow {
+        target: EffectTarget,
+        index: usize,
     },
     /// The Stereo Tool licence key, which the mixer only hands to the
     /// library. Whatever runs on it is opened again, because a processor is
@@ -503,6 +509,10 @@ fn handle_command(
         }
         Command::SetEffects { id, effects } => g.set_effects(id, effects),
         Command::SetMixEffects { id, effects } => g.set_mix_effects(id, effects),
+        Command::ShowEffectWindow { target, index } => {
+            structural = false;
+            g.show_effect_window(target, index)
+        }
         Command::SetStereoToolLicense { key } => {
             structural = false;
             let result = g.set_stereotool_license(key);

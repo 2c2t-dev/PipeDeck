@@ -381,6 +381,16 @@ impl LinkConfig {
     }
 }
 
+/// Which object a chain belongs to.
+///
+/// A channel and a mix run the same effects, so anything said about one
+/// stage of a chain has to say which chain as well.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EffectTarget {
+    Channel(SourceId),
+    Mix(MixId),
+}
+
 /// One control of an effect, by the name the plugin gives it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Control {

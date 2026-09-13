@@ -10,7 +10,7 @@
 //! crosses: the plug-ins themselves live with the capture side and are only
 //! ever touched there.
 
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -144,6 +144,7 @@ impl Request {
 }
 
 /// One stage of the chain, whatever hosts it.
+#[allow(clippy::large_enum_variant)]
 enum Processor {
     Vst3(Instance),
     StereoTool(stereotool::Instance),
@@ -191,13 +192,44 @@ struct Playing {
     ring: Arc<Ring>,
 }
 
-/// A channel's plug-ins, running in the graph.
+/// A channel's or a mix's plug-ins, running in the graph.
 pub struct PluginChain {
     // Field order matters: the listeners go before the streams they hang on.
     _playback_listener: StreamListener<Playing>,
     _capture_listener: StreamListener<Processing>,
     _playback: StreamRc,
     _capture: StreamRc,
+    /// The processors that have an interface of their own, one slot per
+    /// plug-in the chain was asked for, and the windows currently up.
+    ///
+    /// The audio thread runs the processor while this side opens its window,
+    /// which is how the vendor's own plug-in works and why the processor is
+    /// shared rather than owned by either.
+    windows: Vec<Option<Arc<stereotool::Handle>>>,
+    open: RefCell<Vec<Option<stereotool::Window>>>,
+}
+
+impl PluginChain {
+    /// Put the interface of one plug-in of this chain on the screen.
+    ///
+    /// `index` counts the plug-ins of the chain, not the effects: the caller
+    /// knows which effect it means and how many of the ones before it the
+    /// mixer hosts.
+    pub fn show_window(&self, index: usize) -> Result<(), String> {
+        let Some(handle) = self.windows.get(index).and_then(|slot| slot.clone()) else {
+            return Err("that effect has no window of its own".into());
+        };
+        let mut open = self.open.borrow_mut();
+        match open.get_mut(index).and_then(|slot| slot.as_ref()) {
+            // Already up: bring it back rather than making a second one.
+            Some(window) => window.show(),
+            None => {
+                let window = stereotool::Window::open(handle)?;
+                open[index] = Some(window);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl PluginChain {
@@ -221,13 +253,23 @@ impl PluginChain {
         let rate = 48_000.0;
         let mut opened = Vec::new();
         let mut names = Vec::new();
+        // One slot per plug-in asked for, whether or not it opened, so the
+        // caller can point at "the third effect" and be understood.
+        let mut windows: Vec<Option<Arc<stereotool::Handle>>> = Vec::new();
         for plugin in plugins {
             match Processor::open(plugin, rate, MAX_BLOCK) {
                 Ok(instance) => {
                     names.push(instance.name().to_owned());
+                    windows.push(match &instance {
+                        Processor::StereoTool(stereotool) => Some(stereotool.handle()),
+                        Processor::Vst3(_) => None,
+                    });
                     opened.push(instance);
                 }
-                Err(e) => log::error!("cannot open a plug-in of {owner}: {e}"),
+                Err(e) => {
+                    log::error!("cannot open a plug-in of {owner}: {e}");
+                    windows.push(None);
+                }
             }
         }
         if opened.is_empty() {
@@ -380,11 +422,14 @@ impl PluginChain {
             names.len(),
             names.join(", ")
         );
+        let open = RefCell::new((0..windows.len()).map(|_| None).collect());
         Ok(Self {
             _playback_listener: playback_listener,
             _capture_listener: capture_listener,
             _playback: playback,
             _capture: capture,
+            windows,
+            open,
         })
     }
 }

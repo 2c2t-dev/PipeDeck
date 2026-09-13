@@ -251,6 +251,19 @@ fn wait_levels(
     (loudest_source, loudest_mix)
 }
 
+/// The first complaint the engine makes inside `window`, if it makes one.
+fn wait_error(rx: &mpsc::Receiver<Event>, window: Duration) -> Option<String> {
+    let deadline = Instant::now() + window;
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(Event::Error(e)) => return Some(e),
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    None
+}
+
 fn settle() {
     std::thread::sleep(Duration::from_millis(900));
 }
@@ -929,6 +942,26 @@ fn main() -> ExitCode {
                 "the chain sink has no serial to play into",
                 &mut failures,
             ),
+        }
+
+        // Its own window, opened the way the interface asks for it: from the
+        // engine thread, not the one that started the process. X11 is
+        // particular about that, and a library that minded would take the
+        // whole mixer down rather than report anything. Off by default
+        // because it puts a window on the screen of whoever runs the test.
+        if std::env::var_os("PIPEDECK_SMOKE_WINDOW").is_some() {
+            engine
+                .send(Command::ShowEffectWindow {
+                    target: pipedeck_engine::EffectTarget::Mix(mix),
+                    index: 0,
+                })
+                .unwrap();
+            let complaint = wait_error(&rx, Duration::from_secs(6));
+            check(
+                complaint.is_none(),
+                &format!("its window opens from the engine thread: {complaint:?}"),
+                &mut failures,
+            );
         }
     } else {
         println!("[skip] Stereo Tool is not installed, so nothing to run on the mix");

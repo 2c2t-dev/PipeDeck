@@ -43,8 +43,8 @@ use crate::config::Config;
 use crate::engine::{Event, StateSnapshot};
 use crate::error::EngineError;
 use crate::types::{
-    App, ChainState, Device, Effect, EffectKind, LinkConfig, MixConfig, MixId, MixOutput,
-    SourceConfig, SourceId,
+    App, ChainState, Device, Effect, EffectKind, EffectTarget, LinkConfig, MixConfig, MixId,
+    MixOutput, SourceConfig, SourceId,
 };
 use crate::vst3::Plugin;
 
@@ -1160,6 +1160,53 @@ impl Graph {
                 log::error!("{e}");
                 self.emit(Event::Error(e.to_string()));
             }
+        }
+        Ok(())
+    }
+
+    /// Put the interface of one hosted plug-in on the screen.
+    ///
+    /// `index` is the effect's place in the chain the user is looking at;
+    /// which plug-in that is depends on how many of the effects before it
+    /// the mixer hosts rather than PipeWire, which only this side knows.
+    pub fn show_effect_window(
+        &self,
+        target: EffectTarget,
+        index: usize,
+    ) -> Result<(), EngineError> {
+        let effects = match target {
+            EffectTarget::Channel(id) => self
+                .config
+                .source(id)
+                .map(|cfg| cfg.effects.clone())
+                .ok_or(EngineError::UnknownSource(id))?,
+            EffectTarget::Mix(id) => self
+                .config
+                .mix(id)
+                .map(|cfg| cfg.effects.clone())
+                .ok_or(EngineError::UnknownMix(id))?,
+        };
+        let among_plugins = effects
+            .iter()
+            .take(index)
+            .filter(|effect| effect.is_plugin())
+            .count();
+        let chain = match target {
+            EffectTarget::Channel(id) => self
+                .sources
+                .get(&id)
+                .and_then(|source| source.plugins.as_ref()),
+            EffectTarget::Mix(id) => self.mixes.get(&id).and_then(|mix| mix.plugins.as_ref()),
+        };
+        let Some(chain) = chain else {
+            self.emit(Event::Error(
+                "that effect is not running yet; give it a moment".into(),
+            ));
+            return Ok(());
+        };
+        if let Err(e) = chain.show_window(among_plugins) {
+            log::error!("{e}");
+            self.emit(Event::Error(e));
         }
         Ok(())
     }
