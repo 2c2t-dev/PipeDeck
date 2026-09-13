@@ -4,7 +4,7 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
-use pipedeck_engine::{Command, Device, MixConfig};
+use pipedeck_engine::{Command, Device, MixConfig, SourceConfig};
 
 use crate::engine_link::EngineLink;
 
@@ -103,18 +103,26 @@ pub fn add_source(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, inputs: &
     dialog.present(Some(parent));
 }
 
-/// Pick which devices a mix plays to. A mix with no device still exists as a
-/// sink, which is what a capture client such as OBS reads.
-pub fn mix_outputs(
+/// Everything about one mix: its name, the devices it plays to, and the way
+/// out. A mix with no device still exists as a sink, which is what a capture
+/// client such as OBS reads.
+pub fn edit_mix(
     parent: &impl IsA<gtk::Widget>,
     engine: &EngineLink,
     mix: &MixConfig,
     outputs: &[Device],
 ) {
     let dialog = adw::AlertDialog::new(
-        Some(&format!("Outputs of {}", mix.name)),
-        Some("This mix plays to every device you check. It stays capturable by OBS either way."),
+        Some(&format!("Edit {}", mix.name)),
+        Some("This mix plays to every device you check, and stays capturable by OBS either way."),
     );
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+
+    let name = gtk::Entry::new();
+    name.set_text(&mix.name);
+    name.set_activates_default(true);
+    content.append(&name);
 
     let list = gtk::ListBox::new();
     list.add_css_class("boxed-list");
@@ -136,52 +144,87 @@ pub fn mix_outputs(
     if outputs.is_empty() {
         let empty = gtk::Label::new(Some("No output device found."));
         empty.add_css_class("dim-label");
-        dialog.set_extra_child(Some(&empty));
+        content.append(&empty);
     } else {
         let scroller = gtk::ScrolledWindow::new();
         scroller.set_propagate_natural_height(true);
-        scroller.set_max_content_height(320);
+        scroller.set_max_content_height(280);
         scroller.set_child(Some(&list));
-        dialog.set_extra_child(Some(&scroller));
+        content.append(&scroller);
     }
+    dialog.set_extra_child(Some(&content));
 
     dialog.add_response("cancel", "Cancel");
+    dialog.add_response("remove", "Remove mix");
     dialog.add_response("apply", "Apply");
+    dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
     dialog.set_response_appearance("apply", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("apply"));
     dialog.set_close_response("cancel");
 
-    dialog.connect_response(Some("apply"), {
+    let id = mix.id;
+    let previous = mix.name.clone();
+    dialog.connect_response(None, {
         let engine = engine.clone();
-        let id = mix.id;
-        move |_, _| {
-            let devices = checks
-                .iter()
-                .filter(|(_, check)| check.is_active())
-                .map(|(name, _)| name.clone())
-                .collect();
-            engine.send(Command::SetMixOutputs { id, devices });
+        move |_, response| match response {
+            "apply" => {
+                let chosen = name.text().trim().to_owned();
+                if !chosen.is_empty() && chosen != previous {
+                    engine.send(Command::RenameMix { id, name: chosen });
+                }
+                let devices = checks
+                    .iter()
+                    .filter(|(_, check)| check.is_active())
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                engine.send(Command::SetMixOutputs { id, devices });
+            }
+            "remove" => engine.send(Command::RemoveMix(id)),
+            _ => {}
         }
     });
     dialog.present(Some(parent));
 }
 
-/// Confirm before tearing something down, since it cuts audio.
-pub fn confirm_remove(
-    parent: &impl IsA<gtk::Widget>,
-    engine: &EngineLink,
-    heading: &str,
-    body: &str,
-    command: Command,
-) {
-    let dialog = adw::AlertDialog::new(Some(heading), Some(body));
+/// Rename or remove a channel. What it captures is fixed when it is created,
+/// because that is what its place in the graph is made of.
+pub fn edit_channel(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, source: &SourceConfig) {
+    let dialog = adw::AlertDialog::new(
+        Some(&format!("Edit {}", source.name)),
+        source
+            .device
+            .as_deref()
+            .map(|device| format!("Captures {device}"))
+            .as_deref(),
+    );
+
+    let name = gtk::Entry::new();
+    name.set_text(&source.name);
+    name.set_activates_default(true);
+    dialog.set_extra_child(Some(&name));
+
     dialog.add_response("cancel", "Cancel");
-    dialog.add_response("remove", "Remove");
+    dialog.add_response("remove", "Remove channel");
+    dialog.add_response("apply", "Apply");
     dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+    dialog.set_response_appearance("apply", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("apply"));
     dialog.set_close_response("cancel");
-    dialog.connect_response(Some("remove"), {
+
+    let id = source.id;
+    let previous = source.name.clone();
+    dialog.connect_response(None, {
         let engine = engine.clone();
-        move |_, _| engine.send(command.clone())
+        move |_, response| match response {
+            "apply" => {
+                let chosen = name.text().trim().to_owned();
+                if !chosen.is_empty() && chosen != previous {
+                    engine.send(Command::RenameSource { id, name: chosen });
+                }
+            }
+            "remove" => engine.send(Command::RemoveSource(id)),
+            _ => {}
+        }
     });
     dialog.present(Some(parent));
 }

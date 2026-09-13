@@ -91,6 +91,7 @@ fn activate(app: &adw::Application) {
         let _ = tx.send_blocking(Msg::Quit);
     });
 
+    window::load_css();
     let window = Window::new(app, engine.clone());
 
     // Stop the engine (and wait for the graph teardown) when the app exits.

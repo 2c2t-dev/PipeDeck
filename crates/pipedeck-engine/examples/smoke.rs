@@ -11,48 +11,65 @@ use std::time::{Duration, Instant};
 
 use pipedeck_engine::{spawn, Command, Device, Event, MixId, SourceId, StateSnapshot};
 
-fn pw_dump() -> String {
+/// The PipeWire graph, as objects.
+fn pw_dump() -> Vec<serde_json::Value> {
     let out = Process::new("pw-dump")
         .output()
         .expect("pw-dump must be installed");
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    serde_json::from_slice(&out.stdout).expect("pw-dump returns JSON")
 }
 
-/// Names of the nodes we own.
-fn pipedeck_nodes(dump: &str) -> Vec<String> {
-    let mut names: Vec<String> = dump
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("\"node.name\": \"pipedeck."))
-        .map(|rest| {
-            format!(
-                "pipedeck.{}",
-                rest.trim_end_matches("\",").trim_end_matches('"')
-            )
+fn props(object: &serde_json::Value) -> &serde_json::Value {
+    &object["info"]["props"]
+}
+
+/// Only the nodes this process owns.
+///
+/// Another Pipedeck may well be running on the same graph, and it uses the
+/// same node names, since they are derived from ids that are private to each
+/// mixer. Matching on the client's pid is what keeps this test honest.
+fn our_nodes(dump: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    let pid = std::process::id() as i64;
+    let clients: Vec<i64> = dump
+        .iter()
+        .filter(|o| o["type"].as_str().is_some_and(|t| t.ends_with("Client")))
+        .filter(|o| props(o)["application.process.id"].as_i64() == Some(pid))
+        .filter_map(|o| o["id"].as_i64())
+        .collect();
+    dump.iter()
+        .filter(|o| o["type"].as_str().is_some_and(|t| t.ends_with("Node")))
+        .filter(|o| {
+            props(o)["client.id"]
+                .as_i64()
+                .is_some_and(|id| clients.contains(&id))
         })
+        .collect()
+}
+
+/// Names of the nodes this process owns, sorted.
+fn node_names(dump: &[serde_json::Value]) -> Vec<String> {
+    let mut names: Vec<String> = our_nodes(dump)
+        .iter()
+        .filter_map(|n| props(n)["node.name"].as_str())
+        .map(str::to_owned)
         .collect();
     names.sort();
     names.dedup();
     names
 }
 
-/// The `channelVolumes` and `mute` of the node named `name`.
-fn node_volume(dump: &str, name: &str) -> Option<(Vec<f32>, bool)> {
-    let needle = format!("\"node.name\": \"{name}\"");
-    for block in dump.split("\n  },\n  {") {
-        if !block.contains(&needle) {
-            continue;
-        }
-        let vol_line = block.lines().find(|l| l.contains("\"channelVolumes\":"))?;
-        let mute_line = block.lines().find(|l| l.contains("\"mute\":"))?;
-        let vols = vol_line
-            .split(['[', ']'])
-            .nth(1)?
-            .split(',')
-            .filter_map(|v| v.trim().parse::<f32>().ok())
-            .collect();
-        return Some((vols, mute_line.contains("true")));
-    }
-    None
+/// The `channelVolumes` and `mute` of one of our nodes.
+fn node_volume(dump: &[serde_json::Value], name: &str) -> Option<(Vec<f32>, bool)> {
+    let node = our_nodes(dump)
+        .into_iter()
+        .find(|n| props(n)["node.name"].as_str() == Some(name))?;
+    let props_param = node["info"]["params"]["Props"].as_array()?.first()?;
+    let volumes = props_param["channelVolumes"]
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_f64().map(|v| v as f32))
+        .collect();
+    Some((volumes, props_param["mute"].as_bool().unwrap_or(false)))
 }
 
 fn wait_for<F: Fn(&Event) -> bool>(rx: &mpsc::Receiver<Event>, what: &str, pred: F) -> Event {
@@ -124,7 +141,7 @@ fn main() -> ExitCode {
         _ => unreachable!(),
     };
     settle();
-    let nodes = pipedeck_nodes(&pw_dump());
+    let nodes = node_names(&pw_dump());
     check(
         nodes == [format!("pipedeck.mix.{mix}")],
         &format!("a fresh config yields one mix sink and nothing else: {nodes:?}"),
@@ -146,7 +163,7 @@ fn main() -> ExitCode {
     let state = wait_state(&rx, "source added", |s| !s.sources.is_empty());
     let source: SourceId = state.sources[0].id;
     settle();
-    let nodes = pipedeck_nodes(&pw_dump());
+    let nodes = node_names(&pw_dump());
     check(
         nodes
             == [
@@ -184,7 +201,7 @@ fn main() -> ExitCode {
     let dump = pw_dump();
     let link_node = format!("pipedeck.link.{source}.{mix}");
     check(
-        pipedeck_nodes(&dump).contains(&link_node),
+        node_names(&dump).contains(&link_node),
         &format!("the cell node exists: {link_node}"),
         &mut failures,
     );
@@ -209,7 +226,7 @@ fn main() -> ExitCode {
         s.mixes.first().is_some_and(|m| m.outputs.len() == 1)
     });
     settle();
-    let nodes = pipedeck_nodes(&pw_dump());
+    let nodes = node_names(&pw_dump());
     check(
         nodes.contains(&format!("pipedeck.out.{mix}.0")),
         &format!("the mix output node exists: {nodes:?}"),
@@ -233,7 +250,7 @@ fn main() -> ExitCode {
         .unwrap();
     wait_state(&rx, "link removed", |s| s.links.is_empty());
     settle();
-    let nodes = pipedeck_nodes(&pw_dump());
+    let nodes = node_names(&pw_dump());
     check(
         !nodes.iter().any(|n| n.starts_with("pipedeck.link.")),
         &format!("the cell is gone, the rest stays: {nodes:?}"),
@@ -245,7 +262,7 @@ fn main() -> ExitCode {
     engine.send(Command::RemoveMix(mix)).unwrap();
     wait_state(&rx, "mix removed", |s| s.mixes.is_empty());
     settle();
-    let nodes = pipedeck_nodes(&pw_dump());
+    let nodes = node_names(&pw_dump());
     check(
         nodes.is_empty(),
         &format!("removing the mix takes its output with it: {nodes:?}"),
@@ -255,7 +272,7 @@ fn main() -> ExitCode {
     engine.shutdown();
     wait_for(&rx, "Stopped", |e| matches!(e, Event::Stopped));
     settle();
-    let nodes = pipedeck_nodes(&pw_dump());
+    let nodes = node_names(&pw_dump());
     check(
         nodes.is_empty(),
         &format!("no pipedeck node left after shutdown: {nodes:?}"),

@@ -35,6 +35,14 @@ pub enum Command {
         name: String,
     },
     RemoveMix(MixId),
+    /// Rename a column. The graph keeps the description its nodes were born
+    /// with: `node.name` derives from the id and never moves, and rebuilding
+    /// the sink just to refresh a label would cut the audio and make a
+    /// capture client reselect it.
+    RenameMix {
+        id: MixId,
+        name: String,
+    },
     /// Replace the devices a mix plays to, in one go.
     SetMixOutputs {
         id: MixId,
@@ -46,6 +54,11 @@ pub enum Command {
         device: Option<String>,
     },
     RemoveSource(SourceId),
+    /// Rename a row. Same trade-off as [`Command::RenameMix`].
+    RenameSource {
+        id: SourceId,
+        name: String,
+    },
     /// Create or destroy one cell of the matrix.
     SetLink {
         source: SourceId,
@@ -322,6 +335,7 @@ fn handle_command(
             cfg.mixes.retain(|m| m.id != id);
             cfg.prune_links();
         }),
+        Command::RenameMix { id, name } => rename_mix(&mut g, id, name),
         Command::SetMixOutputs { id, devices } => g.set_mix_outputs(id, devices),
         Command::AddSource { name, device } => add_source(&mut g, name, device),
         Command::RemoveSource(id) => g.remove_source(id).map(|()| {
@@ -329,6 +343,7 @@ fn handle_command(
             cfg.sources.retain(|s| s.id != id);
             cfg.prune_links();
         }),
+        Command::RenameSource { id, name } => rename_source(&mut g, id, name),
         Command::SetLink {
             source,
             mix,
@@ -375,6 +390,30 @@ fn add_source(g: &mut Graph, name: String, device: Option<String>) -> Result<(),
     };
     g.create_source(&cfg)?;
     g.config_mut().sources.push(cfg);
+    Ok(())
+}
+
+fn rename_mix(g: &mut Graph, id: MixId, name: String) -> Result<(), EngineError> {
+    let name = name.trim().to_owned();
+    if name.is_empty() {
+        return Ok(());
+    }
+    g.config_mut()
+        .mix_mut(id)
+        .ok_or(EngineError::UnknownMix(id))?
+        .name = name;
+    Ok(())
+}
+
+fn rename_source(g: &mut Graph, id: SourceId, name: String) -> Result<(), EngineError> {
+    let name = name.trim().to_owned();
+    if name.is_empty() {
+        return Ok(());
+    }
+    g.config_mut()
+        .source_mut(id)
+        .ok_or(EngineError::UnknownSource(id))?
+        .name = name;
     Ok(())
 }
 

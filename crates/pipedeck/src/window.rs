@@ -10,7 +10,7 @@ use adw::prelude::*;
 use libadwaita as adw;
 
 use pipedeck_engine::{
-    Command, Device, Event, MixConfig, MixId, SourceConfig, SourceId, StateSnapshot, MAX_MIXES,
+    Device, Event, MixConfig, MixId, SourceConfig, SourceId, StateSnapshot, MAX_MIXES,
 };
 
 use crate::cell::{link_button, Cell};
@@ -20,6 +20,8 @@ use crate::engine_link::EngineLink;
 const MIX_COLUMN_WIDTH: i32 = 240;
 const SOURCE_COLUMN_WIDTH: i32 = 180;
 const ROW_HEIGHT: i32 = 56;
+const MIX_HEADER_HEIGHT: i32 = 72;
+const BADGE_ICON_SIZE: i32 = 16;
 const ADD_MIX_WIDTH: i32 = 56;
 
 pub struct Window {
@@ -229,108 +231,127 @@ impl Window {
     }
 
     fn mix_header(self: &Rc<Self>, mix: &MixConfig) -> gtk::Widget {
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        root.add_css_class("card");
-        root.set_width_request(MIX_COLUMN_WIDTH);
-        root.set_margin_bottom(6);
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
 
-        let inner = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        inner.set_margin_top(10);
-        inner.set_margin_bottom(10);
-        inner.set_margin_start(10);
-        inner.set_margin_end(10);
-        root.append(&inner);
+        content.append(&icon_badge("audio-speakers-symbolic"));
 
-        let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        labels.set_hexpand(true);
+        labels.set_valign(gtk::Align::Center);
         let title = gtk::Label::new(Some(&mix.name));
         title.add_css_class("heading");
-        title.set_hexpand(true);
         title.set_xalign(0.0);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        top.append(&title);
+        labels.append(&title);
+        let subtitle = gtk::Label::new(Some(&output_label(mix.outputs.len())));
+        subtitle.add_css_class("caption");
+        subtitle.add_css_class("dim-label");
+        subtitle.set_xalign(0.0);
+        subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        labels.append(&subtitle);
+        content.append(&labels);
 
-        let remove = gtk::Button::from_icon_name("user-trash-symbolic");
-        remove.add_css_class("flat");
-        remove.set_tooltip_text(Some("Remove this mix"));
-        remove.connect_clicked({
-            let this = self.clone();
-            let id = mix.id;
-            let name = mix.name.clone();
-            move |_| {
-                dialogs::confirm_remove(
-                    &this.window,
-                    &this.engine,
-                    &format!("Remove {name}?"),
-                    "Its outputs and every fader on this mix are removed.",
-                    Command::RemoveMix(id),
-                )
-            }
-        });
-        top.append(&remove);
-        inner.append(&top);
-
-        let devices = gtk::Button::new();
-        devices.add_css_class("flat");
-        devices.set_child(Some(
-            &adw::ButtonContent::builder()
-                .icon_name("audio-speakers-symbolic")
-                .label(output_label(mix.outputs.len()))
-                .build(),
-        ));
-        devices.set_tooltip_text(Some("Choose the devices this mix plays to"));
-        devices.connect_clicked({
+        let card = clickable_card(&content, MIX_COLUMN_WIDTH, MIX_HEADER_HEIGHT);
+        card.set_tooltip_text(Some("Rename this mix, choose its outputs, or remove it"));
+        card.connect_clicked({
             let this = self.clone();
             let mix = mix.clone();
-            move |_| dialogs::mix_outputs(&this.window, &this.engine, &mix, &this.outputs.borrow())
+            move |_| dialogs::edit_mix(&this.window, &this.engine, &mix, &this.outputs.borrow())
         });
-        inner.append(&devices);
-
-        root.upcast()
+        card.set_margin_bottom(6);
+        card.upcast()
     }
 
     fn source_header(self: &Rc<Self>, source: &SourceConfig) -> gtk::Widget {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        root.add_css_class("card");
-        root.set_width_request(SOURCE_COLUMN_WIDTH);
-        root.set_height_request(ROW_HEIGHT);
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
 
-        let icon = gtk::Image::from_icon_name(if source.is_input() {
+        content.append(&icon_badge(if source.is_input() {
             "audio-input-microphone-symbolic"
         } else {
             "audio-speakers-symbolic"
-        });
-        icon.set_margin_start(10);
-        root.append(&icon);
+        }));
 
         let title = gtk::Label::new(Some(&source.name));
         title.add_css_class("heading");
         title.set_hexpand(true);
         title.set_xalign(0.0);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        title.set_tooltip_text(Some(&source.name));
-        root.append(&title);
+        content.append(&title);
 
-        let remove = gtk::Button::from_icon_name("user-trash-symbolic");
-        remove.add_css_class("flat");
-        remove.set_margin_end(6);
-        remove.set_tooltip_text(Some("Remove this channel"));
-        remove.connect_clicked({
+        let card = clickable_card(&content, SOURCE_COLUMN_WIDTH, ROW_HEIGHT);
+        card.set_tooltip_text(Some("Rename or remove this channel"));
+        card.connect_clicked({
             let this = self.clone();
-            let id = source.id;
-            let name = source.name.clone();
-            move |_| {
-                dialogs::confirm_remove(
-                    &this.window,
-                    &this.engine,
-                    &format!("Remove {name}?"),
-                    "Applications sending audio to it lose their output.",
-                    Command::RemoveSource(id),
-                )
-            }
+            let source = source.clone();
+            move |_| dialogs::edit_channel(&this.window, &this.engine, &source)
         });
-        root.append(&remove);
+        card.upcast()
+    }
+}
 
-        root.upcast()
+/// A card whose whole surface acts as a button, showing a pencil on hover to
+/// say so without spending room on a permanent button.
+///
+/// The reveal is left to the stylesheet in [`load_css`], so it also covers
+/// keyboard focus and needs no event plumbing.
+fn clickable_card(content: &gtk::Box, width: i32, height: i32) -> gtk::Button {
+    let pencil = gtk::Image::from_icon_name("document-edit-symbolic");
+    pencil.add_css_class("pd-pencil");
+    // Always in the layout, so revealing it never shifts the text.
+    content.append(&pencil);
+
+    content.set_margin_top(8);
+    content.set_margin_bottom(8);
+    content.set_margin_start(10);
+    content.set_margin_end(10);
+
+    let card = gtk::Button::new();
+    card.add_css_class("card");
+    card.add_css_class("flat");
+    card.add_css_class("pd-card");
+    card.set_child(Some(content));
+    card.set_width_request(width);
+    card.set_height_request(height);
+    card
+}
+
+/// An icon in a rounded badge, so a card reads as an object at a glance.
+///
+/// The badge inverts the window colours, which keeps it readable in both
+/// themes without hardcoding a palette.
+fn icon_badge(icon_name: &str) -> gtk::Image {
+    let icon = gtk::Image::from_icon_name(icon_name);
+    icon.set_pixel_size(BADGE_ICON_SIZE);
+    icon.add_css_class("pd-badge");
+    // Without this the image stretches to the height of the card and the
+    // badge stops being a square.
+    icon.set_valign(gtk::Align::Center);
+    icon.set_halign(gtk::Align::Center);
+    icon
+}
+
+/// Install the stylesheet. Call once, after GTK is initialised.
+pub fn load_css() {
+    const CSS: &str = "
+        .pd-card .pd-pencil { opacity: 0; transition: opacity 120ms ease-out; }
+        .pd-card:hover .pd-pencil,
+        .pd-card:focus-visible .pd-pencil { opacity: 1; }
+        .pd-badge {
+            background-color: @window_fg_color;
+            color: @window_bg_color;
+            border-radius: 10px;
+            min-width: 32px;
+            min-height: 32px;
+        }
+    ";
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(CSS);
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
     }
 }
 
