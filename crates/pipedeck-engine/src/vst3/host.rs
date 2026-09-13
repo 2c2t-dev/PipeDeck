@@ -26,6 +26,15 @@ use super::scan::{module_factory, Plugin};
 /// How many channels a mixer hands a plug-in.
 pub const CHANNELS: usize = 2;
 
+/// Why a block did not go through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ProcessError {
+    #[error("the buffers are empty, uneven, or longer than the block the plug-in was opened for")]
+    BlockSize,
+    #[error("the plug-in refused the block")]
+    Refused,
+}
+
 /// A queue that accepts points and keeps none.
 ///
 /// A plug-in writes its output parameters into one of these every block. A
@@ -198,13 +207,13 @@ impl Instance {
     /// longer than the block size the plug-in was opened for. A plug-in is
     /// free to write its result straight into the input buffers, which is
     /// why they are the same buffers here.
-    pub fn process(&self, channels: &mut [&mut [f32]]) -> Result<(), ()> {
+    pub fn process(&self, channels: &mut [&mut [f32]]) -> Result<(), ProcessError> {
         let frames = channels.first().map_or(0, |channel| channel.len());
         if frames == 0 || frames > self.max_block {
-            return Err(());
+            return Err(ProcessError::BlockSize);
         }
         if channels.iter().any(|channel| channel.len() != frames) {
-            return Err(());
+            return Err(ProcessError::BlockSize);
         }
 
         let mut pointers: Vec<*mut f32> = channels
@@ -242,7 +251,7 @@ impl Instance {
         if result == kResultOk {
             Ok(())
         } else {
-            Err(())
+            Err(ProcessError::Refused)
         }
     }
 }

@@ -54,6 +54,12 @@ impl SourceId {
         format!("pipedeck.src.{}", self.0)
     }
 
+    /// `node.name` of the sink carrying this source once its plug-ins have
+    /// run, which is what the cells read when it has any.
+    pub fn plugins_node_name(self) -> String {
+        format!("pipedeck.vst.{}", self.0)
+    }
+
     /// `node.name` of the sink carrying this source once its effects have
     /// been applied. Cells capture this one instead when there are any.
     pub fn effects_node_name(self) -> String {
@@ -111,6 +117,13 @@ pub struct SourceConfig {
     /// as they appear. An input row has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub apps: Vec<String>,
+}
+
+impl Effect {
+    /// Is this one hosted by the mixer rather than by PipeWire?
+    pub fn is_plugin(&self) -> bool {
+        self.kind == EffectKind::Vst3
+    }
 }
 
 impl SourceConfig {
@@ -353,6 +366,8 @@ pub enum EffectKind {
     Builtin,
     Lv2,
     Ladspa,
+    /// A VST3 plug-in installed on the machine, hosted by the mixer itself.
+    Vst3,
 }
 
 impl EffectKind {
@@ -361,6 +376,7 @@ impl EffectKind {
             EffectKind::Builtin => "builtin",
             EffectKind::Lv2 => "lv2",
             EffectKind::Ladspa => "ladspa",
+            EffectKind::Vst3 => "vst3",
         }
     }
 }
@@ -377,7 +393,8 @@ pub struct Effect {
     /// The LV2 URI or the LADSPA library; unused by a builtin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin: Option<String>,
-    /// Which filter inside that plugin.
+    /// Which filter inside that plugin. For a VST3 plug-in this is the
+    /// class id, which is what its factory is asked for.
     pub label: String,
     #[serde(default)]
     pub controls: Vec<Control>,

@@ -47,7 +47,14 @@ fn node(name: String, effect: &Effect) -> Val {
 /// Returns nothing when the channel has no effect: a chain of none would be
 /// a node, a quantum and a name for nothing.
 pub fn args(source: &SourceConfig, latency: &str) -> Option<String> {
-    if source.effects.is_empty() {
+    // Plug-ins are hosted by the mixer, not by PipeWire, so they are not
+    // part of this graph.
+    let effects: Vec<&Effect> = source
+        .effects
+        .iter()
+        .filter(|effect| !effect.is_plugin())
+        .collect();
+    if effects.is_empty() {
         return None;
     }
 
@@ -57,10 +64,10 @@ pub fn args(source: &SourceConfig, latency: &str) -> Option<String> {
     let mut outputs = Vec::new();
 
     for (channel, suffix) in CHANNEL_SUFFIX.iter().enumerate() {
-        let names: Vec<String> = (0..source.effects.len())
+        let names: Vec<String> = (0..effects.len())
             .map(|step| format!("fx{step}{suffix}"))
             .collect();
-        for (effect, name) in source.effects.iter().zip(&names) {
+        for (effect, name) in effects.iter().zip(&names) {
             nodes.push(node(name.clone(), effect));
         }
         for pair in names.windows(2) {

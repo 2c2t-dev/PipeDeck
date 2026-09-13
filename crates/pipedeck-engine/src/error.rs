@@ -29,6 +29,8 @@ pub enum EngineError {
     UnknownOutput(MixId, usize),
     #[error("a mixer holds at most {0} mixes")]
     TooManyMixes(usize),
+    #[error("not one plug-in of the chain could be opened")]
+    NoPlugin,
     #[error("the engine thread is no longer running")]
     Stopped,
 }

@@ -19,6 +19,7 @@ pub mod filter_chain;
 pub mod loopback;
 pub mod meter;
 pub mod module;
+pub mod plugin_chain;
 pub mod props;
 
 use std::cell::RefCell;
@@ -45,10 +46,12 @@ use crate::types::{
     App, ChainState, Device, Effect, LinkConfig, MixConfig, MixId, MixOutput, SourceConfig,
     SourceId,
 };
+use crate::vst3::Plugin;
 
 use loopback::{LoopbackSpec, AUDIO_POSITION, CHANNELS};
 use meter::Meter;
 use module::LoadedModule;
+use plugin_chain::PluginChain;
 
 const NODE_PREFIX: &str = "pipedeck.";
 /// Marks the nodes of this mixer. Node names come from ids that are private
@@ -71,6 +74,18 @@ enum Owner {
 struct BoundNode {
     global_id: u32,
     proxy: Node,
+}
+
+/// The node a channel ends on: its plug-ins if it has any, else what
+/// PipeWire runs for it, else the channel's own sink.
+pub fn channel_output(source: &SourceConfig) -> String {
+    if source.effects.iter().any(|effect| effect.is_plugin()) {
+        source.id.plugins_node_name()
+    } else if !source.effects.is_empty() {
+        source.id.effects_node_name()
+    } else {
+        source.id.sink_node_name()
+    }
 }
 
 /// This process, as written on the nodes it owns.
@@ -145,6 +160,11 @@ struct Effects {
 }
 
 struct Source {
+    /// The plug-ins the mixer hosts itself, after the filter chain.
+    plugins: Option<PluginChain>,
+    /// The sink the plug-ins play into, kept while they run.
+    plugins_sink: Option<Node>,
+    _plugins_bound: Option<ProxyListener>,
     /// The effects chain, when the row has one. It is dropped before the
     /// sink it captures.
     effects: Option<Effects>,
@@ -226,6 +246,10 @@ pub struct Graph {
     /// its channel's signal scaled by its own fader.
     source_meters: HashMap<SourceId, Meter>,
     mix_meters: HashMap<MixId, Meter>,
+    /// The plug-ins installed on the machine, read once: opening a bundle
+    /// runs its code, and doing that on every tick would be both slow and
+    /// rude.
+    plugins: Vec<Plugin>,
     /// Application playback streams currently on the graph.
     streams: HashMap<u32, AppStream>,
     streams_dirty: bool,
@@ -264,6 +288,7 @@ impl Graph {
             retired: Vec::new(),
             devices: HashMap::new(),
             devices_dirty: false,
+            plugins: crate::vst3::installed(),
             source_meters: HashMap::new(),
             mix_meters: HashMap::new(),
             streams: HashMap::new(),
@@ -400,8 +425,7 @@ impl Graph {
     fn meter_target(&self, cfg: &SourceConfig) -> (String, bool) {
         match &cfg.device {
             Some(device) => (device.clone(), false),
-            None if !cfg.effects.is_empty() => (cfg.id.effects_node_name(), true),
-            None => (cfg.id.sink_node_name(), true),
+            None => (channel_output(cfg), true),
         }
     }
 
@@ -659,8 +683,10 @@ impl Graph {
             }
         };
         // The effects chain reads the row's sink and offers a sink of its
-        // own, which is what the cells capture from then on.
+        // own, which is what the cells capture from then on. The plug-ins
+        // the mixer hosts come after it, on a sink of their own again.
         let effects = self.load_effects(cfg);
+        let (plugins_sink, plugins_bound) = self.load_plugins(cfg);
 
         // A virtual row is measured on its sink's monitor, an input row on
         // the device it captures, which is the same signal every cell gets.
@@ -671,6 +697,9 @@ impl Graph {
         self.sources.insert(
             cfg.id,
             Source {
+                plugins: None,
+                plugins_sink,
+                _plugins_bound: plugins_bound,
                 effects,
                 sink,
                 _sink_listener: sink_listener,
@@ -710,7 +739,9 @@ impl Graph {
     /// asking a filter chain to be a sink crashes PipeWire 1.6, and the
     /// cells want a monitor to capture in any case.
     fn load_effects(&self, cfg: &SourceConfig) -> Option<Effects> {
-        if cfg.effects.is_empty() {
+        // Plug-ins are hosted by the mixer, so a row that has only those
+        // needs nothing from PipeWire and no sink to put it in.
+        if !cfg.effects.iter().any(|effect| !effect.is_plugin()) {
             return None;
         }
         let sink = match self.create_sink(
@@ -733,6 +764,107 @@ impl Graph {
             _bound: bound,
             sink,
         })
+    }
+
+    /// Make the sink a row's plug-ins will play into.
+    ///
+    /// The chain itself waits: it has to be told the ids of the nodes it
+    /// sits between, and the server names them only once the loop runs
+    /// again. [`Graph::hook_up_plugins`] finishes the job.
+    fn load_plugins(&self, cfg: &SourceConfig) -> (Option<Node>, Option<ProxyListener>) {
+        if !cfg.effects.iter().any(|effect| effect.is_plugin()) {
+            return (None, None);
+        }
+        match self.create_sink(
+            cfg.id.plugins_node_name(),
+            format!("Pipedeck: {} plug-ins", cfg.name),
+        ) {
+            Ok(sink) => {
+                let bound = self.watch_sink_id(&sink, cfg.id.plugins_node_name());
+                (Some(sink), Some(bound))
+            }
+            Err(e) => {
+                log::error!("{e}");
+                self.emit(Event::Error(format!(
+                    "cannot run the plug-ins of {}: {e}",
+                    cfg.name
+                )));
+                (None, None)
+            }
+        }
+    }
+
+    /// The plug-ins a row asks for, as the scanner knows them.
+    fn wanted_plugins(&self, cfg: &SourceConfig) -> Vec<Plugin> {
+        let installed = &self.plugins;
+        cfg.effects
+            .iter()
+            .filter(|effect| effect.is_plugin())
+            .filter_map(|effect| {
+                let found = installed
+                    .iter()
+                    .find(|plugin| plugin.class_id == effect.label)
+                    .cloned();
+                if found.is_none() {
+                    log::error!("{} is not installed any more", effect.name);
+                }
+                found
+            })
+            .collect()
+    }
+
+    /// Open the chains whose two ends the server has now named.
+    fn hook_up_plugins(&mut self) {
+        let sources: Vec<SourceConfig> = self.config.sources.clone();
+        for cfg in sources {
+            let wants = cfg.effects.iter().any(|effect| effect.is_plugin());
+            let running = self
+                .sources
+                .get(&cfg.id)
+                .is_some_and(|source| source.plugins.is_some());
+            if !wants || running {
+                continue;
+            }
+
+            // What the plug-ins read: whatever PipeWire runs for the row, or
+            // the row itself.
+            let from_name = if cfg.effects.iter().any(|effect| !effect.is_plugin()) {
+                cfg.id.effects_node_name()
+            } else {
+                cfg.id.sink_node_name()
+            };
+            let (Some(from), Some(into)) = (
+                self.sink_ids.get(&from_name).copied(),
+                self.sink_ids.get(&cfg.id.plugins_node_name()).copied(),
+            ) else {
+                continue;
+            };
+
+            let plugins = self.wanted_plugins(&cfg);
+            if plugins.is_empty() {
+                continue;
+            }
+            match PluginChain::new(&self.core, &cfg, &plugins, from, into, &self.config.latency) {
+                Ok(chain) => {
+                    if let Some(source) = self.sources.get_mut(&cfg.id) {
+                        source.plugins = Some(chain);
+                    }
+                }
+                Err(e) => {
+                    log::error!("{e}");
+                    self.emit(Event::Error(format!(
+                        "cannot run the plug-ins of {}: {e}",
+                        cfg.name
+                    )));
+                    // Asking again every tick would spin; the row keeps its
+                    // sink and stays silent until something changes.
+                    if let Some(source) = self.sources.get_mut(&cfg.id) {
+                        source.plugins_sink = None;
+                    }
+                    self.sink_ids.remove(&cfg.id.plugins_node_name());
+                }
+            }
+        }
     }
 
     /// Load the chain itself, against a sink that already exists.
@@ -776,10 +908,16 @@ impl Graph {
             .is_some_and(|source| source.effects.is_some());
         let has_chain = !cfg.effects.is_empty();
 
+        let had_plugins = self
+            .sources
+            .get(&id)
+            .is_some_and(|source| source.plugins.is_some());
+        let has_plugins = cfg.effects.iter().any(|effect| effect.is_plugin());
+
         // Changing what a chain runs keeps its sink: recreating that sink
         // would put a second node behind the same name for a moment, and the
         // new chain would as likely feed the old one as the new.
-        if had_chain && has_chain {
+        if had_chain && has_chain && !had_plugins && !has_plugins {
             if let Some(fx) = self
                 .sources
                 .get_mut(&id)
@@ -810,12 +948,19 @@ impl Graph {
             self.drop_link((link.source, link.mix));
         }
         if let Some(source) = self.sources.get_mut(&id) {
+            source.plugins = None;
+            source.plugins_sink = None;
             source.effects = None;
         }
         self.sink_ids.remove(&id.effects_node_name());
+        self.sink_ids.remove(&id.plugins_node_name());
         let loaded = self.load_effects(&cfg);
+        let (plugins_sink, plugins_bound) = self.load_plugins(&cfg);
         if let Some(source) = self.sources.get_mut(&id) {
             source.effects = loaded;
+            source.plugins = None;
+            source.plugins_sink = plugins_sink;
+            source._plugins_bound = plugins_bound;
         }
         for link in &cells {
             if let Err(e) = self.create_link(link) {
@@ -1239,6 +1384,13 @@ impl Graph {
         (outputs, inputs)
     }
 
+    /// What the interface can offer to put on a channel.
+    pub fn emit_plugins(&self) {
+        self.emit(Event::Plugins {
+            available: self.plugins.clone(),
+        });
+    }
+
     pub fn emit_devices(&mut self) {
         self.devices_dirty = false;
         let (outputs, inputs) = self.device_lists();
@@ -1287,6 +1439,7 @@ impl Graph {
     /// Periodic housekeeping from the engine timer: debounced config saves
     /// and device list updates.
     pub fn tick(&mut self) {
+        self.hook_up_plugins();
         self.hook_up_meters();
         self.absorb_levels();
         // The server has told us by now that these nodes are gone, so their

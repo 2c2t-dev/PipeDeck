@@ -8,7 +8,10 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
-use pipedeck_engine::{App, ChainState, Command, Control, Device, Effect, SourceConfig, SourceId};
+use pipedeck_engine::{
+    vst3::Plugin, App, ChainState, Command, Control, Device, Effect, EffectKind, SourceConfig,
+    SourceId,
+};
 
 use crate::desktop::{self, DesktopApp};
 use crate::effects;
@@ -39,6 +42,9 @@ pub struct ChannelDialog {
     /// What the chain looked like when it was last drawn, so an echo of our
     /// own change does not redraw it under the pointer.
     shown_effects: RefCell<Vec<Effect>>,
+    /// The plug-ins the engine found installed, offered alongside the
+    /// filters PipeWire ships.
+    available_plugins: RefCell<Vec<Plugin>>,
     /// A control being dragged sends one command when it settles rather than
     /// one per pixel: each change reloads the chain.
     pending: Rc<RefCell<Option<gtk::glib::SourceId>>>,
@@ -59,6 +65,7 @@ impl ChannelDialog {
         source: &SourceConfig,
         inputs: &[Device],
         running: &[App],
+        plugins: &[Plugin],
     ) -> Rc<Self> {
         let dialog = adw::Dialog::new();
         dialog.set_title("Channel");
@@ -103,6 +110,7 @@ impl ChannelDialog {
             effects: gtk::Box::new(gtk::Orientation::Vertical, 8),
             add_effect: gtk::MenuButton::new(),
             shown_effects: RefCell::new(Vec::new()),
+            available_plugins: RefCell::new(Vec::new()),
             pending: Rc::new(RefCell::new(None)),
             add_app,
             installed: if source.is_input() {
@@ -115,7 +123,7 @@ impl ChannelDialog {
         });
 
         dialog.set_child(Some(&this.build(source)));
-        this.refresh(source, inputs, running);
+        this.refresh(source, inputs, running, plugins);
         this.connect(source);
         dialog.present(Some(parent));
         this
@@ -438,6 +446,51 @@ impl ChannelDialog {
             list.append(&button);
         }
 
+        let plugins = self.available_plugins.borrow();
+        if !plugins.is_empty() {
+            let heading = gtk::Label::new(Some("Plug-ins"));
+            heading.add_css_class("caption-heading");
+            heading.add_css_class("dim-label");
+            heading.set_xalign(0.0);
+            heading.set_margin_top(8);
+            heading.set_margin_start(6);
+            list.append(&heading);
+        }
+        for plugin in plugins.iter() {
+            let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            let name = gtk::Label::new(Some(&plugin.name));
+            name.set_xalign(0.0);
+            labels.append(&name);
+            let vendor = gtk::Label::new(Some(&plugin.vendor));
+            vendor.add_css_class("caption");
+            vendor.add_css_class("dim-label");
+            vendor.set_xalign(0.0);
+            labels.append(&vendor);
+
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.set_child(Some(&labels));
+            button.connect_clicked({
+                let this = self.clone();
+                let popover = popover.clone();
+                let plugin = plugin.clone();
+                move |_| {
+                    let mut chain = this.shown_effects.borrow().clone();
+                    chain.push(Effect {
+                        name: plugin.name.clone(),
+                        kind: EffectKind::Vst3,
+                        plugin: None,
+                        label: plugin.class_id.clone(),
+                        controls: Vec::new(),
+                    });
+                    this.send_effects(chain, false);
+                    popover.popdown();
+                }
+            });
+            list.append(&button);
+        }
+        drop(plugins);
+
         popover.set_child(Some(&list));
         popover
     }
@@ -529,7 +582,13 @@ impl ChannelDialog {
     }
 
     /// Push engine state into the window, rebuilding the app list.
-    pub fn refresh(self: &Rc<Self>, source: &SourceConfig, inputs: &[Device], running: &[App]) {
+    pub fn refresh(
+        self: &Rc<Self>,
+        source: &SourceConfig,
+        inputs: &[Device],
+        running: &[App],
+        plugins: &[Plugin],
+    ) {
         self.syncing.set(true);
         if self.name.text() != source.name {
             self.name.set_text(&source.name);
@@ -573,6 +632,8 @@ impl ChannelDialog {
 
         let popover = self.app_popover(source, running);
         self.add_app.set_popover(Some(&popover));
+        *self.available_plugins.borrow_mut() = plugins.to_vec();
+        self.add_effect.set_popover(Some(&self.effect_popover()));
         self.show_effects(&source.effects);
         self.syncing.set(false);
     }

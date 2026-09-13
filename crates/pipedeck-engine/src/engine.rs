@@ -161,6 +161,8 @@ pub enum Event {
     /// The whole matrix, sent once the graph is up and after every
     /// structural change. Clients rebuild their grid from it.
     State(StateSnapshot),
+    /// The plug-ins installed on the machine, read once at startup.
+    Plugins { available: Vec<crate::vst3::Plugin> },
     /// The applications currently playing audio, whatever they play into.
     Apps { running: Vec<App> },
     /// The audio devices currently on the system.
@@ -369,6 +371,7 @@ fn run(
         g.emit_state();
         g.emit_devices();
         g.emit_apps();
+        g.emit_plugins();
     }
 
     let _receiver = {

@@ -21,9 +21,7 @@ fn main() {
     }
     println!("\n{} effect(s):", plugins.len());
     for plugin in plugins {
-        println!(
-            "  {:<34} {:<18} {}",
-            plugin.name, plugin.vendor, plugin.category
-        );
+        println!("  {:<34} {}", plugin.name, plugin.class_id);
+        println!("  {:<34} {}", "", plugin.vendor);
     }
 }

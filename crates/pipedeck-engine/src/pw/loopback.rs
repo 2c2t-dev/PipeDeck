@@ -121,10 +121,9 @@ impl LoopbackSpec {
         let node_name = link_node_name(source.id, mix.id);
         let (target, from_sink) = match &source.device {
             Some(device) => (device.clone(), false),
-            // A row with effects ends on the sink its chain offers, and that
-            // is the one every mix should hear.
-            None if !source.effects.is_empty() => (source.id.effects_node_name(), true),
-            None => (source.id.sink_node_name(), true),
+            // A row ends on the last sink of its chain, and that is the one
+            // every mix should hear.
+            None => (crate::pw::channel_output(source), true),
         };
 
         let mut capture = capture_props(format!("{node_name}.in"), latency, target, from_sink);

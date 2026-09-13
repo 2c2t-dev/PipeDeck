@@ -184,7 +184,7 @@ pub fn installed() -> Vec<Plugin> {
             Err(e) => log::warn!("cannot read {}: {e}", bundle.display()),
         }
     }
-    plugins.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    plugins.sort_by_key(|plugin| plugin.name.to_lowercase());
     plugins
 }
 

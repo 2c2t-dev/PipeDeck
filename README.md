@@ -71,10 +71,14 @@ a band and a gain, each with its own controls. They are filters PipeWire
 ships, so nothing has to be installed, and they run in one filter chain
 between the channel and the cells that read it.
 
-The shape carries plug-ins as well, since an LV2 or LADSPA plug-in is a kind,
-a plugin and a label like these are, and only the catalogue would grow.
-Hosting VST3 is a different matter: it is a C++ ABI with its own windowing,
-and nothing in Rust hosts it out of the box, so it is not in here.
+A channel can also run **VST3 plug-ins**, which the mixer hosts itself. It
+reads the bundles installed under the usual paths, plus `VST3_PATH`, and
+offers their effects alongside the filters above. A plug-in runs between two
+streams of its own, after whatever PipeWire runs for the channel, and every
+mix hears the result.
+
+Their windows are not implemented: a plug-in's own editor is an X11 surface
+to embed, and GTK4 has no socket for one. Parameters are at their defaults.
 
 ## Settings
 

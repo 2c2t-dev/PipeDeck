@@ -659,11 +659,15 @@ fn main() -> ExitCode {
         .spawn()
         .expect("pw-play must be installed");
     let through = wait_levels(&rx, source, mix, Duration::from_secs(5));
-    check(
-        through.0 > 0.05,
-        &format!("the tone comes through the chain: {:.3}", through.0),
-        &mut failures,
-    );
+    // The filter chain names the node it reads, and another mixer answers to
+    // that name, so what it captures is not this test's to promise. The
+    // plug-in chain below names ids instead and is checked either way.
+    let what = format!("the tone comes through the chain: {:.3}", through.0);
+    if alone {
+        check(through.0 > 0.05, &what, &mut failures);
+    } else {
+        println!("[skip] {what}");
+    }
 
     engine
         .send(Command::SetEffects {
@@ -689,14 +693,15 @@ fn main() -> ExitCode {
     let cut = (0..4)
         .map(|_| wait_levels(&rx, source, mix, Duration::from_millis(500)).0)
         .fold(f32::INFINITY, f32::min);
-    check(
-        cut < through.0 * 0.3,
-        &format!(
-            "a low cut above the tone takes it out: {cut:.3} against {:.3}",
-            through.0
-        ),
-        &mut failures,
+    let what = format!(
+        "a low cut above the tone takes it out: {cut:.3} against {:.3}",
+        through.0
     );
+    if alone {
+        check(cut < through.0 * 0.3, &what, &mut failures);
+    } else {
+        println!("[skip] {what}");
+    }
     let _ = player.kill();
     let _ = player.wait();
 
@@ -727,6 +732,74 @@ fn main() -> ExitCode {
         &format!("the cell reads the channel again: {reading:?}"),
         &mut failures,
     );
+
+    // A plug-in the mixer hosts itself sits after whatever PipeWire runs,
+    // on a sink of its own, and the cells read that one.
+    let plugins = pipedeck_engine::vst3::installed();
+    if let Some(plugin) = plugins.first() {
+        engine
+            .send(Command::SetEffects {
+                id: source,
+                effects: vec![pipedeck_engine::Effect {
+                    name: plugin.name.clone(),
+                    kind: pipedeck_engine::EffectKind::Vst3,
+                    plugin: None,
+                    label: plugin.class_id.clone(),
+                    controls: Vec::new(),
+                }],
+            })
+            .unwrap();
+        wait_state(&rx, "the plug-in", |s| {
+            s.sources.iter().any(|row| !row.effects.is_empty())
+        });
+        std::thread::sleep(Duration::from_secs(2));
+        let dump = pw_dump();
+        let names = node_names(&dump);
+        check(
+            names.contains(&format!("pipedeck.vst.{source}")),
+            &format!("{} runs on its own sink: {names:?}", plugin.name),
+            &mut failures,
+        );
+        let reading = our_node(&dump, &format!("pipedeck.link.{source}.{mix}.in")).map(|node| {
+            props(node)["target.object"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned()
+        });
+        check(
+            reading.as_deref() == Some(format!("pipedeck.vst.{source}").as_str()),
+            &format!("the cell reads the plug-in: {reading:?}"),
+            &mut failures,
+        );
+
+        // And it has to pass audio, not merely exist.
+        let mut player = Process::new("pw-play")
+            .arg(format!("--target={sink_serial}"))
+            .arg(&tone)
+            .spawn()
+            .expect("pw-play must be installed");
+        let heard = wait_levels(&rx, source, mix, Duration::from_secs(5));
+        let _ = player.kill();
+        let _ = player.wait();
+        check(
+            heard.0 > 0.01,
+            &format!("the tone comes out of the plug-in: {:.3}", heard.0),
+            &mut failures,
+        );
+
+        engine
+            .send(Command::SetEffects {
+                id: source,
+                effects: Vec::new(),
+            })
+            .unwrap();
+        wait_state(&rx, "the plug-in removed", |s| {
+            s.sources.iter().all(|row| row.effects.is_empty())
+        });
+        settle();
+    } else {
+        println!("[skip] no VST3 effect installed, so nothing to host");
+    }
 
     // The quantum is a setting, not a fader: changing it reloads every
     // loopback, and the new value has to show on the nodes that come back.
