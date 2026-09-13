@@ -54,21 +54,27 @@ pub struct ChainSpec<'a> {
     pub owner: &'a str,
     /// Base `node.name` of the chain's own streams, which get `.in`/`.out`.
     pub node: String,
-    /// `node.name` of the sink the chain captures the monitor of.
+    /// `node.name` of the node the chain captures.
     pub capture_from: String,
+    /// Whether that node is a sink, whose monitor is what gets captured. A
+    /// channel bound to a microphone is read straight instead.
+    pub capture_from_sink: bool,
     /// `node.name` of the sink the chain plays into.
     pub playback_into: String,
 }
 
 impl<'a> ChainSpec<'a> {
-    /// A channel's chain: it reads the channel's own sink and offers the
-    /// sink named after it, which the cells capture instead.
+    /// A channel's chain: it reads what the channel starts on — its own
+    /// sink, or the device it captures — and offers the sink named after
+    /// it, which the cells capture instead.
     pub fn for_source(source: &'a SourceConfig) -> Self {
+        let (capture_from, capture_from_sink) = crate::pw::channel_input(source);
         Self {
             effects: &source.effects,
             owner: &source.name,
             node: source.id.effects_node_name(),
-            capture_from: source.id.sink_node_name(),
+            capture_from,
+            capture_from_sink,
             playback_into: source.id.effects_node_name(),
         }
     }
@@ -87,6 +93,7 @@ impl<'a> ChainSpec<'a> {
             owner: &mix.name,
             node: mix.id.effects_node_name(),
             capture_from: mix.id.effects_node_name(),
+            capture_from_sink: true,
             playback_into: into,
         }
     }
@@ -156,7 +163,9 @@ pub fn args(spec: &ChainSpec<'_>, latency: &str) -> Option<String> {
             "media.class".to_owned(),
             Val::from("Stream/Input/Audio/Internal"),
         ));
-        entries.push(("stream.capture.sink".to_owned(), Val::from(true)));
+        if spec.capture_from_sink {
+            entries.push(("stream.capture.sink".to_owned(), Val::from(true)));
+        }
         entries.push((
             "target.object".to_owned(),
             Val::from(spec.capture_from.clone()),

@@ -71,18 +71,20 @@ a band and a gain, each with its own controls. They are filters PipeWire
 ships, so nothing has to be installed, and they run in one filter chain
 between the channel and the cells that read it.
 
-**A mix runs the same effects**, in its own tab, and only that mix hears
-them. A column is treated the other way round from a channel: its cells play
-into the chain and the chain into the mix sink, so a capture client such as
-OBS reads the treated signal. That is where a processor belongs when it is
-meant for one destination — and where the delay one adds stays out of the way
-of the mix you monitor on.
+A channel bound to a microphone runs them too, in a tab of its own: it has no
+sink to read, so the chain captures the device itself and every mix hears the
+microphone through it.
 
-A channel or a mix can also run **VST3 plug-ins**, which the mixer hosts
-itself. It reads the bundles installed under the usual paths, plus
-`VST3_PATH`, and offers their effects alongside the filters above. A plug-in
-runs between two streams of its own, after whatever PipeWire runs for the
-object it belongs to.
+The engine can also run a chain on a *mix*, treated the other way round — its
+cells play into the chain and the chain into the mix sink, so a capture client
+reads the treated signal. The interface does not offer it; the smoke test
+exercises it.
+
+A channel can also run **VST3 plug-ins**, which the mixer hosts itself. It
+reads the bundles installed under the usual paths, plus `VST3_PATH`, and
+offers their effects alongside the filters above. A plug-in runs between two
+streams of its own, after whatever PipeWire runs for the channel, and every
+mix hears the result.
 
 Their windows are not implemented: a plug-in's own editor is an X11 surface
 to embed, and GTK4 has no socket for one. Parameters are at their defaults.
@@ -122,13 +124,14 @@ run — at startup, after an import, and when a licence key is given — because
 a library already loaded cannot be swapped inside one run anyway. It also
 keeps its state in `~/.libStereoTool_*.so.rc`.
 
-**Open** on the effect brings up Stereo Tool's own interface — every band and
-every curve it has — on the processor the mixer is running, so what you change
-is heard at once and stays in its own settings file. It is a window of its own
-next to Pipedeck's, drawn by the library in X11, which is why the X11 build is
-the one loaded first. The builds for a machine without X11 carry no window,
-and then the button is not offered; a preset exported from Stereo Tool can be
-loaded on the effect instead, which is what a machine with no display has.
+**Window** on the effect brings up Stereo Tool's own interface — every band
+and every curve it has — on the processor the mixer is running, so what you
+change is heard at once and stays in its own settings file. It is a window of
+its own next to Pipedeck's, drawn by the library in X11, which is why the X11
+build is the one loaded first. The builds for a machine without X11 carry no
+window, and then the button is not offered; a preset exported from Stereo Tool
+can be loaded on the effect instead, which is what a machine with no display
+has.
 
 Its interface has to be asked for the way a plug-in's is. `GUI_Show` takes the
 X11 id of a host window, as a plug-in is handed the window its host drew for
@@ -152,8 +155,8 @@ The licence key is a field on the settings page, passed to the library and to
 nothing else. Without one Stereo Tool still runs and puts speech and beeps in
 the audio, which is the vendor's doing; the settings say so rather than let it
 be discovered on air. It adds 50 to 100 ms of delay depending on what it runs,
-which is the reason to put it on the mix that goes out and not on a channel
-every mix hears.
+and a channel is heard by every mix, so what it delays includes the mix you
+monitor on.
 
 `cargo run -p pipedeck-engine --example stereotool_check [preset.sts]` runs a
 tone through it with no PipeWire in the way, and says what the licence covers;
@@ -183,16 +186,12 @@ different mix to hear a different balance.
  mic  ────────────────────────────────┘                            (captured by OBS)  └─ loopback ──▶ device
 ```
 
-With effects, each side grows a stage. A channel is treated before the cells
-read it, a mix after they have written into it, so the sink at the end of the
-column is the treated one:
+With effects, a channel grows a stage or two before the cells read it. A row
+bound to a microphone starts on that microphone instead of on a sink:
 
 ```
  [pipedeck.src.N] ─▶ [pipedeck.fx.N] ─▶ [pipedeck.vst.N] ─▶ cells
-   channel            PipeWire filters    hosted plug-ins
-
- cells ─▶ [pipedeck.mixfx.M] ─▶ [pipedeck.mixvst.M] ─▶ [pipedeck.mix.M]
-            PipeWire filters      hosted plug-ins        read by OBS
+  or the microphone   PipeWire filters    hosted plug-ins
 ```
 
 Audio crosses two of our nodes on its way to a device, one for the cell and

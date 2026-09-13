@@ -295,12 +295,12 @@ fn main() -> ExitCode {
     let mix: MixId = state.mixes.first().expect("one mix by default").id;
     // The first Devices event is empty: the registry has not replied yet, and
     // the real list follows on the next housekeeping tick.
-    let devices = match wait_for(
+    let (devices, capture_devices) = match wait_for(
         &rx,
         "devices",
         |e| matches!(e, Event::Devices { outputs, .. } if !outputs.is_empty()),
     ) {
-        Event::Devices { outputs, .. } => outputs,
+        Event::Devices { outputs, inputs } => (outputs, inputs),
         _ => unreachable!(),
     };
     settle();
@@ -1052,6 +1052,80 @@ fn main() -> ExitCode {
         &format!("the cell plays into the mix sink again: {into:?}"),
         &mut failures,
     );
+
+    // A row bound to a microphone has no sink of its own, so its effects
+    // read the device itself rather than a monitor. It is left unlinked on
+    // purpose: the mix here plays to a speaker, and what a microphone hears
+    // has no business coming back out of it.
+    if let Some(microphone) = capture_devices.first() {
+        engine
+            .send(Command::AddSource {
+                name: "Microphone".into(),
+                device: Some(microphone.name.clone()),
+                icon: None,
+            })
+            .unwrap();
+        let mic = wait_state(&rx, "the microphone row", |s| s.sources.len() == 2)
+            .sources
+            .iter()
+            .find(|row| row.device.is_some())
+            .map(|row| row.id)
+            .expect("the row that was just made");
+        engine
+            .send(Command::SetEffects {
+                id: mic,
+                effects: vec![pipedeck_engine::Effect {
+                    name: "Low cut".into(),
+                    kind: pipedeck_engine::EffectKind::Builtin,
+                    plugin: None,
+                    label: "bq_highpass".into(),
+                    controls: vec![pipedeck_engine::Control {
+                        name: "Freq".into(),
+                        value: 90.0,
+                    }],
+                }],
+            })
+            .unwrap();
+        wait_state(&rx, "the microphone effect", |s| {
+            s.sources
+                .iter()
+                .any(|row| row.device.is_some() && !row.effects.is_empty())
+        });
+        settle();
+        let dump = pw_dump();
+        let names = node_names(&dump);
+        check(
+            names.contains(&format!("pipedeck.fx.{mic}")),
+            &format!("a microphone's effects run on a sink of their own: {names:?}"),
+            &mut failures,
+        );
+        let reading = our_node(&dump, &format!("pipedeck.fx.{mic}.in")).map(|node| {
+            (
+                props(node)["target.object"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+                props(node)["stream.capture.sink"].as_str().is_some(),
+            )
+        });
+        check(
+            reading
+                .as_ref()
+                .is_some_and(|(target, from_sink)| target == &microphone.name && !from_sink),
+            &format!("they read the microphone itself, not a monitor: {reading:?}"),
+            &mut failures,
+        );
+        engine.send(Command::RemoveSource(mic)).unwrap();
+        wait_state(&rx, "the microphone row removed", |s| s.sources.len() == 1);
+        settle();
+        check(
+            !node_names(&pw_dump()).contains(&format!("pipedeck.fx.{mic}")),
+            "and go when the row does",
+            &mut failures,
+        );
+    } else {
+        println!("[skip] no capture device on this machine, so no microphone row");
+    }
 
     // The quantum is a setting, not a fader: changing it reloads every
     // loopback, and the new value has to show on the nodes that come back.

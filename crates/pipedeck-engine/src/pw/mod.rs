@@ -77,15 +77,27 @@ struct BoundNode {
     proxy: Node,
 }
 
-/// The node a channel ends on: its plug-ins if it has any, else what
-/// PipeWire runs for it, else the channel's own sink.
-pub fn channel_output(source: &SourceConfig) -> String {
+/// The node a channel ends on, and whether it is a sink, whose monitor is
+/// what a reader captures, rather than a source to read straight.
+///
+/// Its plug-ins if it has any, else what PipeWire runs for it, else the
+/// channel itself — which for a row bound to a capture device is that
+/// device, and for any other row is its own sink.
+pub fn channel_output(source: &SourceConfig) -> (String, bool) {
     if source.effects.iter().any(|effect| effect.is_plugin()) {
-        source.id.plugins_node_name()
+        (source.id.plugins_node_name(), true)
     } else if !source.effects.is_empty() {
-        source.id.effects_node_name()
+        (source.id.effects_node_name(), true)
     } else {
-        source.id.sink_node_name()
+        channel_input(source)
+    }
+}
+
+/// The node a channel starts on: the device it captures, or its own sink.
+pub fn channel_input(source: &SourceConfig) -> (String, bool) {
+    match &source.device {
+        Some(device) => (device.clone(), false),
+        None => (source.id.sink_node_name(), true),
     }
 }
 
@@ -457,10 +469,7 @@ impl Graph {
     /// meter shows is what every mix hears, effects and all. An input row is
     /// measured at its device, which is the only thing it has.
     fn meter_target(&self, cfg: &SourceConfig) -> (String, bool) {
-        match &cfg.device {
-            Some(device) => (device.clone(), false),
-            None => (channel_output(cfg), true),
-        }
+        channel_output(cfg)
     }
 
     /// Point every meter at what it should be listening to.
@@ -853,6 +862,14 @@ impl Graph {
         }
     }
 
+    /// The id the server gave a device, by the name the config keeps.
+    fn device_id(&self, name: &str) -> Option<u32> {
+        self.devices
+            .iter()
+            .find(|(_, entry)| entry.device.name == name)
+            .map(|(id, _)| *id)
+    }
+
     /// The plug-ins an object asks for, resolved against what is installed.
     fn wanted_plugins(&self, effects: &[Effect]) -> Vec<Request> {
         let license = self.config.stereotool_license.as_deref();
@@ -881,15 +898,22 @@ impl Graph {
                 continue;
             }
 
-            // What the plug-ins read: whatever PipeWire runs for the row, or
-            // the row itself.
-            let from_name = if cfg.effects.iter().any(|effect| !effect.is_plugin()) {
-                cfg.id.effects_node_name()
+            // What the plug-ins read: whatever PipeWire runs for the row,
+            // or the row itself — which for a row bound to a microphone is
+            // that microphone, and is read straight rather than through a
+            // monitor.
+            let (from_name, from_sink) = if cfg.effects.iter().any(|effect| !effect.is_plugin()) {
+                (cfg.id.effects_node_name(), true)
             } else {
-                cfg.id.sink_node_name()
+                channel_input(&cfg)
+            };
+            let from = if from_sink {
+                self.sink_ids.get(&from_name).copied()
+            } else {
+                self.device_id(&from_name)
             };
             let (Some(from), Some(into)) = (
-                self.sink_ids.get(&from_name).copied(),
+                from,
                 self.sink_ids.get(&cfg.id.plugins_node_name()).copied(),
             ) else {
                 continue;
@@ -905,6 +929,7 @@ impl Graph {
                 &cfg.name,
                 &plugins,
                 from,
+                from_sink,
                 into,
                 &self.config.latency,
             );
@@ -958,6 +983,7 @@ impl Graph {
                 &cfg.name,
                 &plugins,
                 from,
+                true,
                 into,
                 &self.config.latency,
             );

@@ -181,13 +181,20 @@ impl ChannelDialog {
         left.append(&delete);
         panes.append(&left);
 
-        // Right: what passes through this channel. Applications today, and
-        // the effects on them once there are any, which is why the two are
-        // tabs rather than one list: the second will not be a list.
-        if !source.is_input() {
-            let right = gtk::Box::new(gtk::Orientation::Vertical, 12);
-            right.set_hexpand(true);
-
+        // Right: what passes through this channel. A row carrying
+        // applications has both those and the effects they are heard
+        // through, which is why they are tabs rather than one list: the
+        // second will not be a list. A row bound to a microphone carries no
+        // applications, so its effects stand alone.
+        let right = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        right.set_hexpand(true);
+        if source.is_input() {
+            let title = gtk::Label::new(Some("Audio effects"));
+            title.add_css_class("heading");
+            title.set_xalign(0.0);
+            right.append(&title);
+            right.append(&self.effects.widget());
+        } else {
             // A plain stack switcher rather than libadwaita's: that one
             // pairs every tab with an icon, and these two are named things,
             // not pictures.
@@ -201,8 +208,8 @@ impl ChannelDialog {
             tabs.set_halign(gtk::Align::Start);
             right.append(&tabs);
             right.append(&stack);
-            panes.append(&right);
         }
+        panes.append(&right);
 
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);

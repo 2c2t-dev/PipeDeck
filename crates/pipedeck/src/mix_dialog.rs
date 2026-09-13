@@ -8,10 +8,8 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
-use pipedeck_engine::stereotool::Status;
-use pipedeck_engine::{vst3::Plugin, ChainState, Command, Device, MixConfig, MixId};
+use pipedeck_engine::{ChainState, Command, Device, MixConfig, MixId};
 
-use crate::effect_panel::{EffectPanel, Target};
 use crate::engine_link::EngineLink;
 use crate::widgets;
 
@@ -31,8 +29,6 @@ pub struct MixDialog {
     meter: gtk::LevelBar,
     outputs: gtk::Box,
     add_output: gtk::MenuButton,
-    /// The effects tab, which a channel window has too.
-    effects: Rc<EffectPanel>,
     /// Devices currently attached, in engine order, so a row knows its index.
     attached: RefCell<Vec<String>>,
     /// Set while engine state is pushed into the widgets, so the handlers do
@@ -50,8 +46,6 @@ impl MixDialog {
         engine: &EngineLink,
         mix: &MixConfig,
         devices: &[Device],
-        plugins: &[Plugin],
-        stereotool: &Status,
     ) -> Rc<Self> {
         let dialog = adw::Dialog::new();
         dialog.set_title("Mix");
@@ -96,14 +90,13 @@ impl MixDialog {
             meter: widgets::meter(),
             outputs,
             add_output,
-            effects: EffectPanel::new(engine, Target::Mix(mix.id)),
             attached: RefCell::new(Vec::new()),
             syncing: Rc::new(StdCell::new(false)),
             closed: Rc::new(StdCell::new(false)),
         });
 
         dialog.set_child(Some(&this.build(mix)));
-        this.refresh(mix, devices, plugins, stereotool);
+        this.refresh(mix, devices);
         this.connect(mix);
         dialog.present(Some(parent));
         this
@@ -165,22 +158,15 @@ impl MixDialog {
         left.append(&delete);
         panes.append(&left);
 
-        // Right: where the mix goes, and what it runs on the way out. The
-        // same plain stack switcher as a channel window, for the same
-        // reason: these are named things, not pictures.
+        // Right: where the mix goes.
         let right = gtk::Box::new(gtk::Orientation::Vertical, 12);
         right.set_hexpand(true);
 
-        let stack = gtk::Stack::new();
-        stack.set_vexpand(true);
-        stack.add_titled(&self.outputs_page(), Some("outputs"), "Audio output");
-        stack.add_titled(&self.effects.widget(), Some("effects"), "Audio effects");
-
-        let tabs = gtk::StackSwitcher::new();
-        tabs.set_stack(Some(&stack));
-        tabs.set_halign(gtk::Align::Start);
-        right.append(&tabs);
-        right.append(&stack);
+        let title = gtk::Label::new(Some("Audio output"));
+        title.add_css_class("heading");
+        title.set_xalign(0.0);
+        right.append(&title);
+        right.append(&self.outputs_page());
         panes.append(&right);
 
         let view = adw::ToolbarView::new();
@@ -192,7 +178,6 @@ impl MixDialog {
     /// The devices this mix plays to, and the way to add one.
     fn outputs_page(self: &Rc<Self>) -> gtk::Widget {
         let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        page.set_margin_top(12);
 
         let hint = gtk::Label::new(Some(
             "A mix is capturable by OBS whether or not it plays to a device.",
@@ -301,15 +286,8 @@ impl MixDialog {
     }
 
     /// Push engine state into the window, rebuilding the output list.
-    pub fn refresh(
-        self: &Rc<Self>,
-        mix: &MixConfig,
-        devices: &[Device],
-        plugins: &[Plugin],
-        stereotool: &Status,
-    ) {
+    pub fn refresh(self: &Rc<Self>, mix: &MixConfig, devices: &[Device]) {
         self.syncing.set(true);
-        self.effects.refresh(&mix.effects, plugins, stereotool);
         if self.name.text() != mix.name {
             self.name.set_text(&mix.name);
         }

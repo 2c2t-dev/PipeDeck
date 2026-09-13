@@ -262,13 +262,16 @@ impl PluginChain {
     /// plug-ins read and `into` the sink they play into. Both ends are node
     /// ids rather than names, which is what makes a channel and a mix the
     /// same object here although the audio runs through them the other way
-    /// round.
+    /// round. `from_sink` says whether the first is a sink, whose monitor is
+    /// what gets captured, rather than a microphone to read straight.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         core: &CoreRc,
         node: &str,
         owner: &str,
         plugins: &[Request],
         from: u32,
+        from_sink: bool,
         into: u32,
         latency: &str,
     ) -> Result<Self, EngineError> {
@@ -319,7 +322,9 @@ impl PluginChain {
         );
         capture_props.insert(*pipewire::keys::MEDIA_CATEGORY, "Capture");
         capture_props.insert(*pipewire::keys::MEDIA_CLASS, "Stream/Input/Audio/Internal");
-        capture_props.insert(*pipewire::keys::STREAM_CAPTURE_SINK, "true");
+        if from_sink {
+            capture_props.insert(*pipewire::keys::STREAM_CAPTURE_SINK, "true");
+        }
 
         let mut playback_props = common(
             format!("{node}.out"),

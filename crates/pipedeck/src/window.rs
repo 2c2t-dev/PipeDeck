@@ -353,14 +353,7 @@ impl Window {
         if let Some(open) = self.mix_dialog.borrow_mut().take() {
             open.close();
         }
-        let dialog = MixDialog::present(
-            &self.window,
-            &self.engine,
-            mix,
-            &self.outputs.borrow(),
-            &self.plugins.borrow(),
-            &self.stereotool.borrow(),
-        );
+        let dialog = MixDialog::present(&self.window, &self.engine, mix, &self.outputs.borrow());
         *self.mix_dialog.borrow_mut() = Some(dialog);
     }
 
@@ -411,12 +404,7 @@ impl Window {
         if let Some(dialog) = open_mix {
             let state = self.state.borrow();
             match state.mixes.iter().find(|m| m.id == dialog.id()) {
-                Some(mix) => dialog.refresh(
-                    mix,
-                    &self.outputs.borrow(),
-                    &self.plugins.borrow(),
-                    &self.stereotool.borrow(),
-                ),
+                Some(mix) => dialog.refresh(mix, &self.outputs.borrow()),
                 None => {
                     drop(state);
                     dialog.close();
