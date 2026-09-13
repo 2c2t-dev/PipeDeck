@@ -18,13 +18,14 @@ stream, because they are different columns.
   such as OBS can read, and plays to any number of output devices you attach
   to it, each with its own level. It has a master level of its own. Up to
   five mixes.
+- Every channel and every mix carries a **meter**, and a cell draws what it
+  passes on: its channel's level scaled by its own fader.
 - A **cell** exists only when you press `+` on it. It is what links a source
   to a mix, and it carries that pair's fader and mute.
 
 ## Status
 
-MVP: routing plumbing and the mixer UI. No plugins, no VST, no per-application
-auto-routing. Level meters are not implemented yet.
+MVP: routing plumbing and the mixer UI. No plugins, no VST.
 
 ## Building
 

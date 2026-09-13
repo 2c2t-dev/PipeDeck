@@ -24,6 +24,7 @@ pub struct MixDialog {
     name: gtk::Entry,
     volume: gtk::Scale,
     mute: gtk::ToggleButton,
+    meter: gtk::LevelBar,
     outputs: gtk::Box,
     add_output: gtk::MenuButton,
     /// Devices currently attached, in engine order, so a row knows its index.
@@ -82,6 +83,7 @@ impl MixDialog {
             name,
             volume,
             mute,
+            meter: widgets::meter(),
             outputs,
             add_output,
             attached: RefCell::new(Vec::new()),
@@ -119,10 +121,9 @@ impl MixDialog {
         caption.set_margin_top(12);
         left.append(&caption);
 
-        let level = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        level.append(&self.mute);
-        level.append(&self.volume);
-        left.append(&level);
+        left.append(&widgets::level_row(&self.mute, &self.volume));
+        self.meter.set_margin_start(38);
+        left.append(&self.meter);
 
         let filler = gtk::Box::new(gtk::Orientation::Vertical, 0);
         filler.set_vexpand(true);
@@ -236,6 +237,11 @@ impl MixDialog {
                 });
             }
         });
+    }
+
+    /// Move the meter of the object this window is about.
+    pub fn set_level(&self, peak: f32) {
+        self.meter.set_value(widgets::meter_position(peak));
     }
 
     pub fn id(&self) -> MixId {

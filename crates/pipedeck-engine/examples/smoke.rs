@@ -47,10 +47,14 @@ fn our_nodes(dump: &[serde_json::Value]) -> Vec<&serde_json::Value> {
 }
 
 /// Names of the nodes this process owns, sorted.
+///
+/// Meter taps are left out: they measure the graph rather than carry it, and
+/// naming them in every expectation would say nothing about the routing.
 fn node_names(dump: &[serde_json::Value]) -> Vec<String> {
     let mut names: Vec<String> = our_nodes(dump)
         .iter()
         .filter_map(|n| props(n)["node.name"].as_str())
+        .filter(|name| !name.starts_with("pipedeck.meter."))
         .map(str::to_owned)
         .collect();
     names.sort();
@@ -153,6 +157,65 @@ fn node_id(dump: &[serde_json::Value], name: &str) -> Option<i64> {
         .filter(|o| o["type"].as_str().is_some_and(|t| t.ends_with("Node")))
         .find(|o| props(o)["node.name"].as_str() == Some(name))
         .and_then(|o| o["id"].as_i64())
+}
+
+/// A quiet tone, loud enough to move a meter. Nothing is attached to the
+/// mix in this test, so it reaches no device and makes no sound.
+fn tone_wav(path: &std::path::Path) {
+    const RATE: u32 = 48_000;
+    const SECONDS: u32 = 20;
+    let frames = RATE * SECONDS;
+    let data = frames * 4;
+    let mut wav = Vec::with_capacity(44 + data as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&RATE.to_le_bytes());
+    wav.extend_from_slice(&(RATE * 4).to_le_bytes());
+    wav.extend_from_slice(&4u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data.to_le_bytes());
+    for frame in 0..frames {
+        let phase = frame as f32 / RATE as f32 * 440.0 * std::f32::consts::TAU;
+        let sample = (phase.sin() * 12_000.0) as i16;
+        wav.extend_from_slice(&sample.to_le_bytes());
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    std::fs::write(path, wav).expect("cannot write the tone");
+}
+
+/// The loudest level reported for a channel and a mix over a window of time.
+fn wait_levels(
+    rx: &mpsc::Receiver<Event>,
+    source: SourceId,
+    mix: MixId,
+    window: Duration,
+) -> (f32, f32) {
+    let deadline = Instant::now() + window;
+    let (mut loudest_source, mut loudest_mix) = (0.0f32, 0.0f32);
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(Event::Levels { sources, mixes }) => {
+                for (id, level) in sources {
+                    if id == source {
+                        loudest_source = loudest_source.max(level);
+                    }
+                }
+                for (id, level) in mixes {
+                    if id == mix {
+                        loudest_mix = loudest_mix.max(level);
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    (loudest_source, loudest_mix)
 }
 
 fn settle() {
@@ -313,6 +376,78 @@ fn main() -> ExitCode {
             .as_ref()
             .is_some_and(|(v, m)| v.iter().all(|x| (x - 0.512).abs() < 1e-3) && *m),
         &format!("the output carries its own level and mute: {output:?}"),
+        &mut failures,
+    );
+
+    // A meter follows every channel and every mix, and reads what actually
+    // goes through them. Playing a tone into the channel has to move both,
+    // and muting the cell has to stop the mix hearing it while the channel
+    // still does.
+    let tone = dir.join("tone.wav");
+    tone_wav(&tone);
+    engine
+        .send(Command::SetLinkMute {
+            source,
+            mix,
+            muted: false,
+        })
+        .unwrap();
+    let mut player = Process::new("pw-play")
+        .arg(format!("--target=pipedeck.src.{source}"))
+        .arg(&tone)
+        .spawn()
+        .expect("pw-play must be installed");
+    let open = wait_levels(&rx, source, mix, Duration::from_secs(5));
+    check(
+        open.0 > 0.05,
+        &format!("the channel meter hears the tone: {:.3}", open.0),
+        &mut failures,
+    );
+    // The cell sits at 0.5, a linear 0.125, so the mix has to hear the tone
+    // roughly that much quieter. This is the fader itself under test, not
+    // the property it writes.
+    let expected = open.0 * 0.125;
+    check(
+        open.1 > expected * 0.4 && open.1 < expected * 2.5,
+        &format!(
+            "the mix hears the tone through the cell fader: {:.3}, around {expected:.3}",
+            open.1
+        ),
+        &mut failures,
+    );
+
+    engine
+        .send(Command::SetLinkMute {
+            source,
+            mix,
+            muted: true,
+        })
+        .unwrap();
+    settle();
+    let muted = wait_levels(&rx, source, mix, Duration::from_secs(3));
+    check(
+        muted.0 > 0.05,
+        &format!(
+            "the channel still hears itself when muted in a mix: {:.3}",
+            muted.0
+        ),
+        &mut failures,
+    );
+    check(
+        muted.1 < open.1 * 0.2,
+        &format!(
+            "muting the cell stops the mix hearing it: {:.3} against {:.3} open",
+            muted.1, open.1
+        ),
+        &mut failures,
+    );
+
+    let _ = player.kill();
+    let _ = player.wait();
+    let quiet = wait_levels(&rx, source, mix, Duration::from_secs(3));
+    check(
+        quiet.0 < 0.01,
+        &format!("the meters fall back to silence: {:.3}", quiet.0),
         &mut failures,
     );
 

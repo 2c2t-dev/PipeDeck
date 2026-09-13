@@ -27,6 +27,28 @@ pub fn mute_button(muted: bool, tooltip: &str) -> gtk::ToggleButton {
     button
 }
 
+/// A meter bar, thin enough to sit under a fader without crowding it.
+pub fn meter() -> gtk::LevelBar {
+    let bar = gtk::LevelBar::new();
+    bar.set_mode(gtk::LevelBarMode::Continuous);
+    bar.set_min_value(0.0);
+    bar.set_max_value(1.0);
+    bar.set_value(0.0);
+    bar.set_height_request(4);
+    bar.add_css_class("pd-meter");
+    bar
+}
+
+/// Where a peak sits on a meter.
+///
+/// Peaks are linear amplitudes, and a bar drawn straight from one spends
+/// most of its length on sounds nobody calls loud. The cube root spreads it
+/// the way the faders are spread, so a bar at half length means a fader at
+/// half travel.
+pub fn meter_position(peak: f32) -> f64 {
+    f64::from(peak.clamp(0.0, 1.0)).cbrt()
+}
+
 /// The mute and the fader side by side.
 pub fn level_row(mute: &gtk::ToggleButton, fader: &gtk::Scale) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);

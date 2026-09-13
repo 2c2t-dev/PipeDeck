@@ -27,6 +27,7 @@ pub struct ChannelDialog {
     trim: gtk::Box,
     /// What an input row captures, named the way the system names it.
     device: gtk::Label,
+    meter: gtk::LevelBar,
     apps: gtk::Box,
     add_app: gtk::MenuButton,
     /// Installed applications, read once when the window opens.
@@ -78,6 +79,7 @@ impl ChannelDialog {
             device,
             volume,
             mute,
+            meter: widgets::meter(),
             apps: gtk::Box::new(gtk::Orientation::Vertical, 8),
             add_app,
             installed: if source.is_input() {
@@ -133,6 +135,8 @@ impl ChannelDialog {
         } else {
             left.append(&self.trim);
         }
+        self.meter.set_margin_start(38);
+        left.append(&self.meter);
 
         let filler = gtk::Box::new(gtk::Orientation::Vertical, 0);
         filler.set_vexpand(true);
@@ -249,6 +253,11 @@ impl ChannelDialog {
                 });
             }
         });
+    }
+
+    /// Move the meter of the object this window is about.
+    pub fn set_level(&self, peak: f32) {
+        self.meter.set_value(widgets::meter_position(peak));
     }
 
     pub fn id(&self) -> SourceId {

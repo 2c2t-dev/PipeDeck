@@ -163,6 +163,12 @@ pub enum Event {
         mix: MixId,
         state: ChainState,
     },
+    /// Peaks measured since the last one of these, for the meters. Sent
+    /// several times a second while the engine runs.
+    Levels {
+        sources: Vec<(SourceId, f32)>,
+        mixes: Vec<(MixId, f32)>,
+    },
     /// Non-fatal problem worth showing to the user.
     Error(String),
     /// The engine thread is exiting; no further events follow.
@@ -360,6 +366,16 @@ fn run(
     };
     timer.update_timer(Some(TICK), Some(TICK));
 
+    // Meters run far faster than housekeeping: a level that updates once a
+    // quarter of a second reads as a stutter rather than as a signal.
+    let meter_timer = {
+        let graph = graph.clone();
+        mainloop
+            .loop_()
+            .add_timer(move |_| graph.borrow().emit_levels())
+    };
+    meter_timer.update_timer(Some(METER_TICK), Some(METER_TICK));
+
     log::info!("engine running");
     mainloop.run();
     log::info!("engine shutting down");
@@ -372,6 +388,7 @@ fn run(
 }
 
 const TICK: Duration = Duration::from_millis(250);
+const METER_TICK: Duration = Duration::from_millis(50);
 
 fn libc_epipe() -> i32 {
     32 // EPIPE on Linux

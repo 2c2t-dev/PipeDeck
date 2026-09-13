@@ -15,6 +15,7 @@
 //! process dies, the server drops all of it. Nothing lingers.
 
 pub mod loopback;
+pub mod meter;
 pub mod module;
 pub mod props;
 
@@ -41,6 +42,7 @@ use crate::types::{
 };
 
 use loopback::{LoopbackSpec, AUDIO_POSITION, CHANNELS};
+use meter::Meter;
 use module::LoadedModule;
 
 const NODE_PREFIX: &str = "pipedeck.";
@@ -165,6 +167,10 @@ pub struct Graph {
     retired: Vec<Node>,
     devices: HashMap<u32, DeviceEntry>,
     devices_dirty: bool,
+    /// One measurement per row and per column. A cell needs none: it carries
+    /// its channel's signal scaled by its own fader.
+    source_meters: HashMap<SourceId, Meter>,
+    mix_meters: HashMap<MixId, Meter>,
     /// Application playback streams currently on the graph.
     streams: HashMap<u32, AppStream>,
     streams_dirty: bool,
@@ -199,6 +205,8 @@ impl Graph {
             retired: Vec::new(),
             devices: HashMap::new(),
             devices_dirty: false,
+            source_meters: HashMap::new(),
+            mix_meters: HashMap::new(),
             streams: HashMap::new(),
             streams_dirty: false,
             metadata: None,
@@ -292,6 +300,37 @@ impl Graph {
         }
     }
 
+    /// Start measuring one node. A meter that cannot be created costs the
+    /// user a moving bar, not their audio, so it is reported and dropped.
+    fn watch_level(&self, name: &str, target: &str, from_sink: bool) -> Option<Meter> {
+        match Meter::new(&self.core, name, target, from_sink) {
+            Ok(meter) => Some(meter),
+            Err(e) => {
+                log::error!("cannot measure {target}: {e}");
+                None
+            }
+        }
+    }
+
+    /// Peaks since the last read, one per row and per column.
+    pub fn emit_levels(&self) {
+        if self.source_meters.is_empty() && self.mix_meters.is_empty() {
+            return;
+        }
+        self.emit(Event::Levels {
+            sources: self
+                .source_meters
+                .iter()
+                .map(|(id, meter)| (*id, meter.take()))
+                .collect(),
+            mixes: self
+                .mix_meters
+                .iter()
+                .map(|(id, meter)| (*id, meter.take()))
+                .collect(),
+        });
+    }
+
     fn forget_outputs(&mut self, id: MixId) {
         self.stage_index
             .retain(|_, owner| !matches!(owner, StageRef::Output(mix, _) if *mix == id));
@@ -305,6 +344,12 @@ impl Graph {
         }
         let sink = self.create_sink(cfg.id.sink_node_name(), format!("Pipedeck {}", cfg.name))?;
         apply_props(&sink, &cfg.id.sink_node_name(), &cfg.state());
+        self.watch_level(
+            &format!("pipedeck.meter.mix.{}", cfg.id),
+            &cfg.id.sink_node_name(),
+            true,
+        )
+        .map(|meter| self.mix_meters.insert(cfg.id, meter));
         let outputs = self.load_outputs(cfg);
         self.mixes.insert(cfg.id, Mix { outputs, sink });
         log::info!("mix {} ({}) created", cfg.id, cfg.name);
@@ -315,6 +360,7 @@ impl Graph {
     /// handler, never from a listener (see [`LoadedModule`]).
     pub fn remove_mix(&mut self, id: MixId) -> Result<(), EngineError> {
         let mut mix = self.mixes.remove(&id).ok_or(EngineError::UnknownMix(id))?;
+        self.mix_meters.remove(&id);
         for stage in &mut mix.outputs {
             self.retire(stage);
         }
@@ -430,6 +476,19 @@ impl Graph {
                 Some(self.create_sink(cfg.id.sink_node_name(), format!("Pipedeck: {}", cfg.name))?)
             }
         };
+        // A virtual row is measured on its sink's monitor, an input row on
+        // the device it captures, which is the same signal every cell gets.
+        let (target, from_sink) = match &cfg.device {
+            Some(device) => (device.clone(), false),
+            None => (cfg.id.sink_node_name(), true),
+        };
+        self.watch_level(
+            &format!("pipedeck.meter.src.{}", cfg.id),
+            &target,
+            from_sink,
+        )
+        .map(|meter| self.source_meters.insert(cfg.id, meter));
+
         self.sources.insert(cfg.id, Source { sink });
         log::info!("source {} ({}) created", cfg.id, cfg.name);
         Ok(())
@@ -440,6 +499,7 @@ impl Graph {
             .sources
             .remove(&id)
             .ok_or(EngineError::UnknownSource(id))?;
+        self.source_meters.remove(&id);
         let cells: Vec<(SourceId, MixId)> = self
             .links
             .keys()

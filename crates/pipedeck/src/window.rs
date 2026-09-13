@@ -41,6 +41,8 @@ pub struct Window {
     inputs: RefCell<Vec<Device>>,
     /// Applications currently playing, for the channel windows.
     apps: RefCell<Vec<App>>,
+    /// Last peak of every channel, so a cell can draw what it passes on.
+    channel_levels: RefCell<HashMap<SourceId, f32>>,
     cells: RefCell<HashMap<(SourceId, MixId), Cell>>,
     /// The object windows, while they are open, so engine changes reach them.
     mix_dialog: RefCell<Option<Rc<MixDialog>>>,
@@ -59,6 +61,11 @@ impl Window {
         let header = adw::HeaderBar::new();
 
         let grid = gtk::Grid::new();
+        // Cards keep their size in a wide window instead of stretching: a
+        // fader is easier to aim at when it does not change length with the
+        // window, and a row of them stays readable.
+        grid.set_halign(gtk::Align::Start);
+        grid.set_valign(gtk::Align::Start);
         grid.set_row_spacing(6);
         grid.set_column_spacing(6);
         grid.set_margin_top(12);
@@ -101,6 +108,7 @@ impl Window {
             outputs: RefCell::new(Vec::new()),
             inputs: RefCell::new(Vec::new()),
             apps: RefCell::new(Vec::new()),
+            channel_levels: RefCell::new(HashMap::new()),
             cells: RefCell::new(HashMap::new()),
             mix_dialog: RefCell::new(None),
             channel_dialog: RefCell::new(None),
@@ -130,6 +138,7 @@ impl Window {
                 *self.inputs.borrow_mut() = inputs;
                 self.refresh_dialogs();
             }
+            Event::Levels { sources, mixes } => self.draw_levels(&sources, &mixes),
             Event::MixChanged { .. }
             | Event::OutputChanged { .. }
             | Event::SourceChanged { .. } => {
@@ -193,6 +202,9 @@ impl Window {
                 let widget: gtk::Widget = match linked {
                     Some(link) => {
                         let cell = Cell::new(source.id, mix.id, link.state(), &self.engine);
+                        if let Some(peak) = self.channel_levels.borrow().get(&source.id) {
+                            cell.set_level(*peak);
+                        }
                         let root = cell.root.clone().upcast();
                         self.cells.borrow_mut().insert((source.id, mix.id), cell);
                         root
@@ -202,6 +214,8 @@ impl Window {
                 let holder = gtk::Box::new(gtk::Orientation::Horizontal, 0);
                 holder.add_css_class("card");
                 holder.set_height_request(ROW_HEIGHT);
+                holder.set_size_request(MIX_COLUMN_WIDTH, ROW_HEIGHT);
+                holder.set_hexpand(false);
                 holder.append(&widget);
                 widget.set_hexpand(true);
                 self.grid
@@ -212,6 +226,35 @@ impl Window {
         self.hint.set_visible(state.sources.is_empty());
         self.hint
             .set_label("Add a source to get a virtual output, then press + to send it to a mix.");
+    }
+
+    /// Move every meter: the cells of a channel, and the windows that are
+    /// open on the objects concerned.
+    fn draw_levels(self: &Rc<Self>, sources: &[(SourceId, f32)], mixes: &[(MixId, f32)]) {
+        let mut levels = self.channel_levels.borrow_mut();
+        for (id, peak) in sources {
+            levels.insert(*id, *peak);
+        }
+        drop(levels);
+
+        let cells = self.cells.borrow();
+        for ((source, _), cell) in cells.iter() {
+            if let Some((_, peak)) = sources.iter().find(|(id, _)| id == source) {
+                cell.set_level(*peak);
+            }
+        }
+        drop(cells);
+
+        if let Some(dialog) = self.channel_dialog.borrow().as_ref() {
+            if let Some((_, peak)) = sources.iter().find(|(id, _)| *id == dialog.id()) {
+                dialog.set_level(*peak);
+            }
+        }
+        if let Some(dialog) = self.mix_dialog.borrow().as_ref() {
+            if let Some((_, peak)) = mixes.iter().find(|(id, _)| *id == dialog.id()) {
+                dialog.set_level(*peak);
+            }
+        }
     }
 
     /// Open the window of one mix, replacing whichever was open.
