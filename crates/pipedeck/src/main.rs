@@ -14,7 +14,11 @@ use pipedeck_engine::{Config, Event};
 use engine_link::EngineLink;
 use window::Window;
 
-const APP_ID: &str = "dev.2c2t.Pipedeck";
+/// Reverse-DNS id of 2c2t.dev. GApplication (like D-Bus) forbids an element
+/// starting with a digit, so the `2c2t` component takes the conventional
+/// leading underscore. Changing this later also renames the .desktop file,
+/// the GSettings path and the Flatpak sandbox, so it is meant to be stable.
+const APP_ID: &str = "dev._2c2t.Pipedeck";
 
 enum Msg {
     Engine(Event),
