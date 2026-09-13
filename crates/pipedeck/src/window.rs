@@ -10,7 +10,7 @@ use adw::prelude::*;
 use libadwaita as adw;
 
 use pipedeck_engine::{
-    App, Device, Event, MixConfig, MixId, SourceConfig, SourceId, StateSnapshot, MAX_MIXES,
+    App, Command, Device, Event, MixConfig, MixId, SourceConfig, SourceId, StateSnapshot, MAX_MIXES,
 };
 
 use crate::cell::{link_button, Cell};
@@ -277,8 +277,9 @@ impl Window {
         }
 
         self.hint.set_visible(state.sources.is_empty());
-        self.hint
-            .set_label("Add a source to get a virtual output, then press + to send it to a mix.");
+        self.hint.set_label(
+            "Create a channel to get a virtual output, then press + to send it to a mix.",
+        );
     }
 
     /// Move every meter: the cells of a channel, and the windows that are
@@ -388,7 +389,7 @@ impl Window {
         button.set_sensitive(!self.stopped.get());
         button.connect_clicked({
             let this = self.clone();
-            move |_| dialogs::add_mix(&this.window, &this.engine)
+            move |_| this.engine.send(Command::AddMix)
         });
         button.upcast()
     }

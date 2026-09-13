@@ -14,7 +14,9 @@ stream, because they are different columns.
   onto it as they start playing, so you pick them once instead of every time.
   The picker offers what is playing right now and what the system knows how
   to launch, read from the desktop entries.
-- A **mix** collects the sources you send to it into a sink a capture client
+- A **mix** is created ready-made: the first is a Personal Mix, then a Chat,
+  Stream, Record and Aux Mix, each with its own icon, and the window renames
+  them. A mix collects the sources you send to it into a sink a capture client
   such as OBS can read, and plays to any number of output devices you attach
   to it, each with its own level. It has a master level of its own. Up to
   five mixes.

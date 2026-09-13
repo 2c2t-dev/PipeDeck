@@ -11,36 +11,6 @@ use crate::widgets;
 
 use crate::engine_link::EngineLink;
 
-/// Ask for a name and create a mix.
-pub fn add_mix(parent: &impl IsA<gtk::Widget>, engine: &EngineLink) {
-    let dialog = adw::AlertDialog::new(Some("New mix"), None);
-    let entry = gtk::Entry::new();
-    entry.set_placeholder_text(Some("Stream, Monitor, Record…"));
-    entry.set_activates_default(true);
-    dialog.set_extra_child(Some(&entry));
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("add", "Create");
-    dialog.set_response_appearance("add", adw::ResponseAppearance::Suggested);
-    dialog.set_default_response(Some("add"));
-    dialog.set_close_response("cancel");
-    dialog.set_response_enabled("add", false);
-
-    entry.connect_changed({
-        let dialog = dialog.clone();
-        move |entry| dialog.set_response_enabled("add", !entry.text().trim().is_empty())
-    });
-    dialog.connect_response(Some("add"), {
-        let engine = engine.clone();
-        move |_, _| {
-            let name = entry.text().trim().to_owned();
-            if !name.is_empty() {
-                engine.send(Command::AddMix { name });
-            }
-        }
-    });
-    dialog.present(Some(parent));
-}
-
 /// Offer what a new channel can be: a capture device, or one of the ready
 /// made empty channels.
 ///

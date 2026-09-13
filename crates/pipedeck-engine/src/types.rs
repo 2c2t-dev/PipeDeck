@@ -10,6 +10,33 @@ use serde::{Deserialize, Serialize};
 /// Hard cap on the number of mixes, mirroring what hardware mixers expose.
 pub const MAX_MIXES: usize = 5;
 
+/// What each mix is called when it is created, by rank, with the look that
+/// goes with it.
+///
+/// A mixer's columns are the same handful every time, so asking for a name
+/// on the way in would be a dialog in the way of a button. Naming happens
+/// here rather than in the interface because only this side knows how many
+/// mixes there already are: four quick clicks would otherwise all read the
+/// same stale count and produce the same name. The look is an opaque key,
+/// meaningless to the engine, passed on to whoever draws the mixer.
+pub const NEW_MIXES: [(&str, &str); MAX_MIXES] = [
+    ("Personal Mix", "headset"),
+    ("Chat Mix", "voice"),
+    ("Stream Mix", "stream"),
+    ("Record Mix", "record"),
+    ("Aux Mix", "aux1"),
+];
+
+/// The name and look for the mix about to be created.
+pub fn new_mix(existing: usize) -> (String, Option<String>) {
+    match NEW_MIXES.get(existing) {
+        Some((name, look)) => (name.to_string(), Some(look.to_string())),
+        // Past the list, which the cap makes unreachable, a plain name still
+        // beats no mix at all.
+        None => (format!("Mix {}", existing + 1), None),
+    }
+}
+
 /// Stable identifier of a source (a row). Persisted, never reused, and used
 /// to derive node names so renaming a source never touches the graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

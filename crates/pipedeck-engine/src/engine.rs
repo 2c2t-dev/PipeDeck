@@ -24,16 +24,15 @@ use crate::config::Config;
 use crate::error::EngineError;
 use crate::pw::Graph;
 use crate::types::{
-    App, ChainState, Device, LinkConfig, MixConfig, MixId, SourceConfig, SourceId, MAX_MIXES,
+    self, App, ChainState, Device, LinkConfig, MixConfig, MixId, SourceConfig, SourceId, MAX_MIXES,
 };
 
 /// Requests from a client to the engine.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// Add a column. Refused past [`MAX_MIXES`](crate::types::MAX_MIXES).
-    AddMix {
-        name: String,
-    },
+    /// Add a column, named and dressed by rank. Refused past
+    /// [`MAX_MIXES`](crate::types::MAX_MIXES).
+    AddMix,
     RemoveMix(MixId),
     /// Rename a column. The graph keeps the description its nodes were born
     /// with: `node.name` derives from the id and never moves, and rebuilding
@@ -421,7 +420,7 @@ fn handle_command(
     let mut g = graph.borrow_mut();
     let mut structural = true;
     let result = match cmd {
-        Command::AddMix { name } => add_mix(&mut g, name),
+        Command::AddMix => add_mix(&mut g),
         Command::RemoveMix(id) => g.remove_mix(id).map(|()| {
             let cfg = g.config_mut();
             cfg.mixes.retain(|m| m.id != id);
@@ -501,11 +500,14 @@ fn handle_command(
     }
 }
 
-fn add_mix(g: &mut Graph, name: String) -> Result<(), EngineError> {
-    if g.config().mixes.len() >= MAX_MIXES {
+fn add_mix(g: &mut Graph) -> Result<(), EngineError> {
+    let existing = g.config().mixes.len();
+    if existing >= MAX_MIXES {
         return Err(EngineError::TooManyMixes(MAX_MIXES));
     }
-    let cfg = MixConfig::new(g.config().next_mix_id(), name.trim());
+    let (name, icon) = types::new_mix(existing);
+    let mut cfg = MixConfig::new(g.config().next_mix_id(), name);
+    cfg.icon = icon;
     g.create_mix(&cfg)?;
     g.config_mut().mixes.push(cfg);
     Ok(())

@@ -138,10 +138,14 @@ impl Config {
     }
 
     /// A brand new config: one empty mix, no source. The mix has no output
-    /// until the user attaches a device to it.
+    /// until the user attaches a device to it, and is named the way any
+    /// first mix is.
     pub fn fresh() -> Self {
+        let (name, icon) = crate::types::new_mix(0);
+        let mut first = MixConfig::new(MixId(1), name);
+        first.icon = icon;
         Self {
-            mixes: vec![MixConfig::new(MixId(1), "Mix 1")],
+            mixes: vec![first],
             ..Self::default()
         }
     }
@@ -332,6 +336,16 @@ muted = true
         cfg.links.push(LinkConfig::new(SourceId(1), MixId(9)));
         cfg.prune_links();
         assert_eq!(cfg.links.len(), 1);
+    }
+
+    #[test]
+    fn the_first_mix_is_named_like_any_first_mix() {
+        let cfg = Config::fresh();
+        assert_eq!(cfg.mixes[0].name, crate::types::NEW_MIXES[0].0);
+        assert_eq!(
+            cfg.mixes[0].icon.as_deref(),
+            Some(crate::types::NEW_MIXES[0].1)
+        );
     }
 
     #[test]
