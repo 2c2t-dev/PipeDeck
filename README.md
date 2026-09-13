@@ -27,7 +27,9 @@ stream, because they are different columns.
 
 ## Status
 
-MVP: routing plumbing and the mixer UI. No plugins, no VST.
+MVP: routing plumbing and the mixer UI. A channel window has a tab for the
+effects on it, and it says what it is: empty until plug-ins are
+implemented.
 
 ## Building
 

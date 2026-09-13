@@ -174,34 +174,26 @@ impl ChannelDialog {
         left.append(&delete);
         panes.append(&left);
 
-        // Right: the applications this channel carries. An input row has
-        // none: it takes its audio from a device, not from applications.
+        // Right: what passes through this channel. Applications today, and
+        // the effects on them once there are any, which is why the two are
+        // tabs rather than one list: the second will not be a list.
         if !source.is_input() {
             let right = gtk::Box::new(gtk::Orientation::Vertical, 12);
             right.set_hexpand(true);
 
-            let title = gtk::Label::new(Some("Apps"));
-            title.add_css_class("heading");
-            title.set_xalign(0.0);
-            right.append(&title);
+            // A plain stack switcher rather than libadwaita's: that one
+            // pairs every tab with an icon, and these two are named things,
+            // not pictures.
+            let stack = gtk::Stack::new();
+            stack.set_vexpand(true);
+            stack.add_titled(&self.apps_page(), Some("apps"), "Apps");
+            stack.add_titled(&effects_page(), Some("effects"), "Audio effects");
 
-            let hint = gtk::Label::new(Some(
-                "These applications play into this channel, now and the next time they start.",
-            ));
-            hint.add_css_class("caption");
-            hint.add_css_class("dim-label");
-            hint.set_xalign(0.0);
-            hint.set_wrap(true);
-            right.append(&hint);
-
-            let scroller = gtk::ScrolledWindow::new();
-            scroller.set_vexpand(true);
-            scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-            scroller.set_child(Some(&self.apps));
-            right.append(&scroller);
-
-            self.add_app.set_halign(gtk::Align::Center);
-            right.append(&self.add_app);
+            let tabs = gtk::StackSwitcher::new();
+            tabs.set_stack(Some(&stack));
+            tabs.set_halign(gtk::Align::Start);
+            right.append(&tabs);
+            right.append(&stack);
             panes.append(&right);
         }
 
@@ -209,6 +201,31 @@ impl ChannelDialog {
         view.add_top_bar(&header);
         view.set_content(Some(&panes));
         view.upcast()
+    }
+
+    /// The applications this channel carries, and the way to add one.
+    fn apps_page(self: &Rc<Self>) -> gtk::Widget {
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        page.set_margin_top(12);
+
+        let hint = gtk::Label::new(Some(
+            "These applications play into this channel, now and the next time they start.",
+        ));
+        hint.add_css_class("caption");
+        hint.add_css_class("dim-label");
+        hint.set_xalign(0.0);
+        hint.set_wrap(true);
+        page.append(&hint);
+
+        let scroller = gtk::ScrolledWindow::new();
+        scroller.set_vexpand(true);
+        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroller.set_child(Some(&self.apps));
+        page.append(&scroller);
+
+        self.add_app.set_halign(gtk::Align::Center);
+        page.append(&self.add_app);
+        page.upcast()
     }
 
     fn connect(self: &Rc<Self>, source: &SourceConfig) {
@@ -511,6 +528,37 @@ impl ChannelDialog {
         });
         button.upcast()
     }
+}
+
+/// Where the effects on a channel will go.
+///
+/// Nothing is plugged in yet, and a tab that says so is worth more than one
+/// that pretends: this is the place VST support will land, and it has to be
+/// a place before it can be filled.
+fn effects_page() -> gtk::Widget {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    page.set_valign(gtk::Align::Center);
+    page.set_vexpand(true);
+
+    let icon = gtk::Image::from_icon_name("pd-sfx-symbolic");
+    icon.set_pixel_size(48);
+    icon.add_css_class("dim-label");
+    page.append(&icon);
+
+    let title = gtk::Label::new(Some("No effects yet"));
+    title.add_css_class("heading");
+    page.append(&title);
+
+    let body = gtk::Label::new(Some(
+        "Plug-ins on a channel are not implemented. This is where they will go.",
+    ));
+    body.add_css_class("dim-label");
+    body.set_wrap(true);
+    body.set_justify(gtk::Justification::Center);
+    body.set_max_width_chars(34);
+    page.append(&body);
+
+    page.upcast()
 }
 
 /// A heading between two groups of the picker.
