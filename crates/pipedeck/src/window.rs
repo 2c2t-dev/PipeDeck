@@ -250,6 +250,10 @@ impl Window {
     /// Keep the open windows in step with the engine, and close one whose
     /// object is gone.
     fn refresh_dialogs(self: &Rc<Self>) {
+        // A window the user closed is forgotten rather than refreshed.
+        self.mix_dialog.borrow_mut().take_if(|d| !d.is_open());
+        self.channel_dialog.borrow_mut().take_if(|d| !d.is_open());
+
         let open_mix = self.mix_dialog.borrow().clone();
         if let Some(dialog) = open_mix {
             let state = self.state.borrow();

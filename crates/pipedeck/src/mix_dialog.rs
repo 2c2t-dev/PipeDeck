@@ -31,6 +31,9 @@ pub struct MixDialog {
     /// Set while engine state is pushed into the widgets, so the handlers do
     /// not echo it back as a command.
     syncing: Rc<StdCell<bool>>,
+    /// Set once the window is gone, so it is never closed twice: the second
+    /// time, libadwaita has nothing left to close and says so loudly.
+    closed: Rc<StdCell<bool>>,
 }
 
 impl MixDialog {
@@ -83,6 +86,7 @@ impl MixDialog {
             add_output,
             attached: RefCell::new(Vec::new()),
             syncing: Rc::new(StdCell::new(false)),
+            closed: Rc::new(StdCell::new(false)),
         });
 
         dialog.set_child(Some(&this.build()));
@@ -200,7 +204,13 @@ impl MixDialog {
             let rename = rename.clone();
             move |_| rename()
         });
-        self.dialog.connect_closed(move |_| rename());
+        self.dialog.connect_closed({
+            let closed = self.closed.clone();
+            move |_| {
+                closed.set(true);
+                rename();
+            }
+        });
 
         self.volume.connect_value_changed({
             let this = self.clone();
@@ -232,8 +242,15 @@ impl MixDialog {
         self.id
     }
 
+    /// True until the window goes away, whoever closed it.
+    pub fn is_open(&self) -> bool {
+        !self.closed.get()
+    }
+
     pub fn close(&self) {
-        self.dialog.close();
+        if self.is_open() {
+            self.dialog.close();
+        }
     }
 
     /// Push engine state into the window, rebuilding the output list.
