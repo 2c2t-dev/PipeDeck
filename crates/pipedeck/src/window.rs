@@ -407,8 +407,8 @@ impl Window {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
 
         content.append(&widgets::badge(
-            "audio-speakers-symbolic",
-            None,
+            presets::icon_for(mix.icon.as_deref(), false),
+            mix.icon.as_deref(),
             BADGE_ICON_SIZE,
         ));
 

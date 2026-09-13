@@ -223,6 +223,10 @@ impl<'de> Deserialize<'de> for MixOutput {
 pub struct MixConfig {
     pub id: MixId,
     pub name: String,
+    /// Which look the interface gives this column. The engine only carries
+    /// it, the same way it carries a row's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     /// Master level, applied to the mix sink, so it scales what the outputs
     /// play and what a capture client reads alike.
     #[serde(default = "unity_gain")]
@@ -238,6 +242,7 @@ impl MixConfig {
         Self {
             id,
             name: name.into(),
+            icon: None,
             gain: 1.0,
             muted: false,
             outputs: Vec::new(),

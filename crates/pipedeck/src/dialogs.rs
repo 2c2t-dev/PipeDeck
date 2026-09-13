@@ -81,7 +81,7 @@ pub fn add_source(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, inputs: &
     }
 
     list.append(&section("Empty channels"));
-    for preset in presets::PRESETS {
+    for preset in presets::kinds() {
         list.append(&choice(
             preset.label,
             preset.icon,

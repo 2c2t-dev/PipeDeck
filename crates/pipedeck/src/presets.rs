@@ -19,6 +19,10 @@ pub struct Preset {
     pub color: &'static str,
 }
 
+/// How many of the looks are offered as kinds when creating a channel. The
+/// rest exist only in the icon picker.
+pub const KINDS: usize = 8;
+
 pub const PRESETS: &[Preset] = &[
     Preset {
         key: "music",
@@ -68,7 +72,61 @@ pub const PRESETS: &[Preset] = &[
         icon: "audio-speakers-symbolic",
         color: "#4cc26a",
     },
+    // Past this point the looks are only offered by the icon picker.
+    Preset {
+        key: "headset",
+        label: "Headset",
+        icon: "audio-headphones-symbolic",
+        color: "#3ba7c9",
+    },
+    Preset {
+        key: "mic",
+        label: "Microphone",
+        icon: "audio-input-microphone-symbolic",
+        color: "#d8594f",
+    },
+    Preset {
+        key: "star",
+        label: "Star",
+        icon: "starred-symbolic",
+        color: "#e0b13a",
+    },
+    Preset {
+        key: "people",
+        label: "People",
+        icon: "system-users-symbolic",
+        color: "#5b8cf5",
+    },
+    Preset {
+        key: "video",
+        label: "Video",
+        icon: "camera-video-symbolic",
+        color: "#a563e8",
+    },
+    Preset {
+        key: "stream",
+        label: "Stream",
+        icon: "network-wireless-symbolic",
+        color: "#e35db5",
+    },
+    Preset {
+        key: "record",
+        label: "Record",
+        icon: "media-record-symbolic",
+        color: "#e0514b",
+    },
+    Preset {
+        key: "fun",
+        label: "Fun",
+        icon: "face-smile-symbolic",
+        color: "#7ec44f",
+    },
 ];
+
+/// The looks offered as kinds when a channel is created.
+pub fn kinds() -> &'static [Preset] {
+    &PRESETS[..KINDS]
+}
 
 /// The preset a channel was created from, if it still exists.
 pub fn find(key: Option<&str>) -> Option<&'static Preset> {
@@ -106,6 +164,20 @@ pub fn css() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kinds_are_the_head_of_the_catalogue() {
+        assert_eq!(kinds().len(), KINDS);
+        assert!(
+            PRESETS.len() > KINDS,
+            "the picker needs more than the kinds"
+        );
+        let mut keys: Vec<&str> = PRESETS.iter().map(|p| p.key).collect();
+        keys.sort_unstable();
+        let count = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), count, "two looks share a key");
+    }
 
     #[test]
     fn every_preset_has_a_colour_rule() {

@@ -117,6 +117,80 @@ pub fn big_badge(icon_name: &str, preset: Option<&str>) -> gtk::Image {
     icon
 }
 
+/// Point a badge at another look, dropping the colour it had.
+pub fn set_badge_look(badge: &gtk::Image, icon_name: &str, preset: Option<&str>, fallback: &str) {
+    for look in crate::presets::PRESETS {
+        badge.remove_css_class(&format!("pd-badge-{}", look.key));
+    }
+    badge.set_icon_name(Some(known_icon(icon_name, fallback)));
+    if let Some(class) = crate::presets::badge_class(preset) {
+        badge.add_css_class(&class);
+    }
+}
+
+/// The "..." button that opens the icon picker of an object window.
+///
+/// Picking a look is not renaming or re-routing anything, so it sits out of
+/// the way behind a menu rather than taking room next to the level.
+pub fn look_menu(
+    current: Option<&str>,
+    on_pick: impl Fn(Option<String>) + 'static,
+) -> gtk::MenuButton {
+    const COLUMNS: i32 = 5;
+
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(6);
+    grid.set_column_spacing(6);
+    grid.set_margin_top(6);
+    grid.set_margin_bottom(6);
+    grid.set_margin_start(6);
+    grid.set_margin_end(6);
+
+    let heading = gtk::Label::new(Some("Select an icon"));
+    heading.add_css_class("caption-heading");
+    heading.set_margin_bottom(6);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&heading);
+    content.append(&grid);
+
+    let popover = gtk::Popover::new();
+    popover.set_child(Some(&content));
+
+    let on_pick = std::rc::Rc::new(on_pick);
+    for (position, look) in crate::presets::PRESETS.iter().enumerate() {
+        let button = gtk::Button::new();
+        button.add_css_class("flat");
+        button.set_tooltip_text(Some(look.label));
+        button.set_child(Some(&badge(look.icon, Some(look.key), 16)));
+        if current == Some(look.key) {
+            button.add_css_class("suggested-action");
+        }
+        button.connect_clicked({
+            let on_pick = on_pick.clone();
+            let popover = popover.clone();
+            let key = look.key;
+            move |_| {
+                on_pick(Some(key.to_owned()));
+                popover.popdown();
+            }
+        });
+        let position = position as i32;
+        grid.attach(&button, position % COLUMNS, position / COLUMNS, 1, 1);
+    }
+
+    let button = gtk::MenuButton::new();
+    button.set_icon_name(known_icon(
+        "view-more-horizontal-symbolic",
+        "view-more-symbolic",
+    ));
+    button.add_css_class("flat");
+    button.set_tooltip_text(Some("Choose an icon"));
+    button.set_halign(gtk::Align::Center);
+    button.set_popover(Some(&popover));
+    button
+}
+
 /// The name field at the top of an object window.
 pub fn name_entry(name: &str) -> gtk::Entry {
     let entry = gtk::Entry::new();

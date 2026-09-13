@@ -50,6 +50,10 @@ Stream Mix and Monitor, keeping every fader.
 Set `PIPEDECK_APP_ID` to run a development build next to an installed one,
 instead of handing over to the running instance.
 
+Each card carries an icon, chosen from a small set of looks: a channel picks
+one when it is created, and both a channel and a mix can change it later from
+the menu above their icon.
+
 Clicking a card opens the window of that object. A mix window holds its
 name, its master level and the devices it plays to, each with a level of
 its own. A channel window holds its name, its trim and the applications it carries.

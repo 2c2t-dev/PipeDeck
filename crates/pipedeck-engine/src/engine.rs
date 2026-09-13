@@ -83,6 +83,16 @@ pub enum Command {
         id: SourceId,
         name: String,
     },
+    /// The look the interface gives a row or a column. The engine stores it
+    /// and passes it on; what it means is the interface's business.
+    SetSourceIcon {
+        id: SourceId,
+        icon: Option<String>,
+    },
+    SetMixIcon {
+        id: MixId,
+        icon: Option<String>,
+    },
     /// Trim of a row, applied to its sink ahead of every cell.
     SetSourceGain {
         id: SourceId,
@@ -411,6 +421,16 @@ fn handle_command(
             cfg.prune_links();
         }),
         Command::RenameMix { id, name } => rename_mix(&mut g, id, name),
+        Command::SetMixIcon { id, icon } => g
+            .config_mut()
+            .mix_mut(id)
+            .map(|mix| mix.icon = icon)
+            .ok_or(EngineError::UnknownMix(id)),
+        Command::SetSourceIcon { id, icon } => g
+            .config_mut()
+            .source_mut(id)
+            .map(|source| source.icon = icon)
+            .ok_or(EngineError::UnknownSource(id)),
         Command::SetMixOutputs { id, devices } => g.set_mix_outputs(id, devices),
         Command::SetMixGain { id, gain } => {
             structural = false;

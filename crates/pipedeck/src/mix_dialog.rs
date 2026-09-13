@@ -22,6 +22,8 @@ pub struct MixDialog {
     id: MixId,
     engine: EngineLink,
     name: gtk::Entry,
+    badge: gtk::Image,
+    look: gtk::Box,
     volume: gtk::Scale,
     mute: gtk::ToggleButton,
     meter: gtk::LevelBar,
@@ -81,6 +83,8 @@ impl MixDialog {
             id: mix.id,
             engine: engine.clone(),
             name,
+            badge: widgets::big_badge("audio-speakers-symbolic", mix.icon.as_deref()),
+            look: gtk::Box::new(gtk::Orientation::Vertical, 6),
             volume,
             mute,
             meter: widgets::meter(),
@@ -91,14 +95,14 @@ impl MixDialog {
             closed: Rc::new(StdCell::new(false)),
         });
 
-        dialog.set_child(Some(&this.build()));
+        dialog.set_child(Some(&this.build(mix)));
         this.refresh(mix, devices);
         this.connect(mix);
         dialog.present(Some(parent));
         this
     }
 
-    fn build(self: &Rc<Self>) -> gtk::Widget {
+    fn build(self: &Rc<Self>, mix: &MixConfig) -> gtk::Widget {
         let header = adw::HeaderBar::new();
 
         let panes = gtk::Box::new(gtk::Orientation::Horizontal, 18);
@@ -112,9 +116,15 @@ impl MixDialog {
         left.set_width_request(LEFT_PANE_WIDTH);
         left.append(&self.name);
 
-        let icon = widgets::big_badge("audio-speakers-symbolic", None);
-        icon.set_margin_top(12);
-        left.append(&icon);
+        // The "..." sits above the badge, as a mixer's own icon picker does.
+        let menu = widgets::look_menu(mix.icon.as_deref(), {
+            let this = self.clone();
+            move |icon| this.engine.send(Command::SetMixIcon { id: this.id, icon })
+        });
+        self.look.append(&menu);
+        self.badge.set_margin_top(6);
+        self.look.append(&self.badge);
+        left.append(&self.look);
 
         let caption = gtk::Label::new(Some("Mix volume"));
         caption.add_css_class("dim-label");
@@ -276,6 +286,12 @@ impl MixDialog {
         }
         self.volume.set_value(f64::from(mix.gain) * FADER_MAX);
         self.mute.set_active(mix.muted);
+        widgets::set_badge_look(
+            &self.badge,
+            crate::presets::icon_for(mix.icon.as_deref(), false),
+            mix.icon.as_deref(),
+            "audio-speakers-symbolic",
+        );
 
         *self.attached.borrow_mut() = mix.outputs.iter().map(|o| o.device.clone()).collect();
 

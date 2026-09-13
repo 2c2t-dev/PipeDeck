@@ -21,6 +21,8 @@ pub struct ChannelDialog {
     id: SourceId,
     engine: EngineLink,
     name: gtk::Entry,
+    badge: gtk::Image,
+    look: gtk::Box,
     volume: gtk::Scale,
     mute: gtk::ToggleButton,
     /// Hidden for an input row, which has no sink to trim.
@@ -75,6 +77,11 @@ impl ChannelDialog {
             id: source.id,
             engine: engine.clone(),
             name: widgets::name_entry(&source.name),
+            badge: widgets::big_badge(
+                crate::presets::icon_for(source.icon.as_deref(), source.is_input()),
+                source.icon.as_deref(),
+            ),
+            look: gtk::Box::new(gtk::Orientation::Vertical, 6),
             trim: widgets::level_row(&mute, &volume),
             device,
             volume,
@@ -112,12 +119,17 @@ impl ChannelDialog {
         left.set_width_request(LEFT_PANE_WIDTH);
         left.append(&self.name);
 
-        let badge = widgets::big_badge(
-            crate::presets::icon_for(source.icon.as_deref(), source.is_input()),
-            source.icon.as_deref(),
-        );
-        badge.set_margin_top(12);
-        left.append(&badge);
+        let menu = widgets::look_menu(source.icon.as_deref(), {
+            let this = self.clone();
+            move |icon| {
+                this.engine
+                    .send(Command::SetSourceIcon { id: this.id, icon })
+            }
+        });
+        self.look.append(&menu);
+        self.badge.set_margin_top(6);
+        self.look.append(&self.badge);
+        left.append(&self.look);
 
         let caption = gtk::Label::new(Some(if source.is_input() {
             "Captured device"
@@ -293,6 +305,16 @@ impl ChannelDialog {
         self.volume
             .set_value(f64::from(source.gain) * widgets::FADER_MAX);
         self.mute.set_active(source.muted);
+        widgets::set_badge_look(
+            &self.badge,
+            crate::presets::icon_for(source.icon.as_deref(), source.is_input()),
+            source.icon.as_deref(),
+            if source.is_input() {
+                "audio-input-microphone-symbolic"
+            } else {
+                "audio-speakers-symbolic"
+            },
+        );
         if let Some(device) = &source.device {
             let described = inputs
                 .iter()
