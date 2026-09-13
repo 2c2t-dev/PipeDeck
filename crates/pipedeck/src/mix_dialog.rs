@@ -83,10 +83,7 @@ impl MixDialog {
             id: mix.id,
             engine: engine.clone(),
             name,
-            badge: widgets::big_badge(
-                crate::presets::icon_for(mix.icon.as_deref(), false),
-                mix.icon.as_deref(),
-            ),
+            badge: widgets::big_badge(mix.icon.as_deref(), false, widgets::Tone::White),
             look: gtk::Box::new(gtk::Orientation::Vertical, 6),
             volume,
             mute,
@@ -120,7 +117,7 @@ impl MixDialog {
         left.append(&self.name);
 
         // The "..." sits above the badge, as a mixer's own icon picker does.
-        let menu = widgets::look_menu(mix.icon.as_deref(), {
+        let menu = widgets::look_menu(mix.icon.as_deref(), widgets::Tone::White, {
             let this = self.clone();
             move |icon| this.engine.send(Command::SetMixIcon { id: this.id, icon })
         });
@@ -291,9 +288,9 @@ impl MixDialog {
         self.mute.set_active(mix.muted);
         widgets::set_badge_look(
             &self.badge,
-            crate::presets::icon_for(mix.icon.as_deref(), false),
             mix.icon.as_deref(),
-            "pd-speaker-symbolic",
+            false,
+            widgets::Tone::White,
         );
 
         *self.attached.borrow_mut() = mix.outputs.iter().map(|o| o.device.clone()).collect();

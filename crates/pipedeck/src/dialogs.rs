@@ -65,14 +65,14 @@ pub fn add_source(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, inputs: &
         for device in inputs {
             let button = choice(
                 &device.description,
-                "pd-mic-symbolic",
-                None,
+                Some(presets::default_key(true)),
+                true,
                 &dialog,
                 engine,
                 Command::AddSource {
                     name: device.description.clone(),
                     device: Some(device.name.clone()),
-                    icon: None,
+                    icon: Some(presets::default_key(true).to_owned()),
                 },
             );
             button.set_tooltip_text(Some(&device.name));
@@ -84,8 +84,8 @@ pub fn add_source(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, inputs: &
     for preset in presets::kinds() {
         list.append(&choice(
             preset.label,
-            preset.icon,
             Some(preset.key),
+            false,
             &dialog,
             engine,
             Command::AddSource {
@@ -113,13 +113,13 @@ pub fn add_source(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, inputs: &
 /// One line of the new-channel list: a coloured badge and a name.
 fn choice(
     label: &str,
-    icon: &str,
-    preset: Option<&str>,
+    look: Option<&str>,
+    is_input: bool,
     dialog: &adw::Dialog,
     engine: &EngineLink,
     command: Command,
 ) -> gtk::Button {
-    let badge = widgets::badge(icon, preset, 16);
+    let badge = widgets::badge(look, is_input, widgets::Tone::Colour, 16);
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     row.append(&badge);
     row.append(

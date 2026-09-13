@@ -19,11 +19,43 @@ pub struct Preset {
     pub color: &'static str,
 }
 
-/// How many of the looks are offered as kinds when creating a channel. The
-/// rest exist only in the icon picker.
+/// The catalogue is laid out as numbers, then the kinds a channel can be
+/// created as, then looks that exist only in the picker.
+const NUMBERS: usize = 5;
 pub const KINDS: usize = 8;
 
 pub const PRESETS: &[Preset] = &[
+    // Numbers come first: they are what a mix is most often given.
+    Preset {
+        key: "one",
+        label: "1",
+        icon: "pd-1-symbolic",
+        color: "#8a93a6",
+    },
+    Preset {
+        key: "two",
+        label: "2",
+        icon: "pd-2-symbolic",
+        color: "#8a93a6",
+    },
+    Preset {
+        key: "three",
+        label: "3",
+        icon: "pd-3-symbolic",
+        color: "#8a93a6",
+    },
+    Preset {
+        key: "four",
+        label: "4",
+        icon: "pd-4-symbolic",
+        color: "#8a93a6",
+    },
+    Preset {
+        key: "five",
+        label: "5",
+        icon: "pd-5-symbolic",
+        color: "#8a93a6",
+    },
     Preset {
         key: "music",
         label: "Music",
@@ -67,8 +99,8 @@ pub const PRESETS: &[Preset] = &[
         color: "#2fb9ad",
     },
     Preset {
-        key: "aux2",
-        label: "Aux 2",
+        key: "speaker",
+        label: "Speaker",
         icon: "pd-speaker-symbolic",
         color: "#4cc26a",
     },
@@ -125,25 +157,36 @@ pub const PRESETS: &[Preset] = &[
 
 /// The looks offered as kinds when a channel is created.
 pub fn kinds() -> &'static [Preset] {
-    &PRESETS[..KINDS]
+    &PRESETS[NUMBERS..NUMBERS + KINDS]
 }
 
-/// The preset a channel was created from, if it still exists.
+/// The look a key names, if it still exists.
 pub fn find(key: Option<&str>) -> Option<&'static Preset> {
     let key = key?;
     PRESETS.iter().find(|preset| preset.key == key)
 }
 
-/// Icon of a channel: its preset's, or the neutral one for its kind.
-pub fn icon_for(key: Option<&str>, is_input: bool) -> &'static str {
-    match find(key) {
-        Some(preset) => preset.icon,
-        None if is_input => "pd-mic-symbolic",
-        None => "pd-speaker-symbolic",
+/// The key an object falls back to when it has chosen no look.
+///
+/// A default that is one of the looks rather than a colourless icon of its
+/// own means the picker always has something to point at, and a card never
+/// stands out for having made no choice.
+pub fn default_key(is_input: bool) -> &'static str {
+    if is_input {
+        "mic"
+    } else {
+        "speaker"
     }
 }
 
-/// CSS class colouring a badge, empty for a channel with no preset.
+/// The look to draw for an object, whether or not it chose one.
+pub fn look(key: Option<&str>, is_input: bool) -> &'static Preset {
+    find(key)
+        .or_else(|| find(Some(default_key(is_input))))
+        .expect("the default look is in the catalogue")
+}
+
+/// CSS class colouring a badge.
 pub fn badge_class(key: Option<&str>) -> Option<String> {
     find(key).map(|preset| format!("pd-badge-{}", preset.key))
 }
@@ -193,11 +236,15 @@ mod tests {
     }
 
     #[test]
-    fn a_channel_without_a_preset_keeps_a_neutral_icon() {
-        assert_eq!(icon_for(Some("game"), false), "pd-game-symbolic");
-        assert_eq!(icon_for(None, true), "pd-mic-symbolic");
-        assert_eq!(icon_for(Some("gone"), false), "pd-speaker-symbolic");
+    fn an_object_without_a_look_falls_back_into_the_catalogue() {
+        assert_eq!(look(Some("game"), false).icon, "pd-game-symbolic");
+        assert_eq!(look(None, true).icon, "pd-mic-symbolic");
+        assert_eq!(look(Some("gone"), false).icon, "pd-speaker-symbolic");
+        // Whatever an object carries, the look it is drawn with is one of
+        // the catalogue, so the picker can always point at it.
+        for key in [None, Some("gone"), Some("music")] {
+            assert!(PRESETS.iter().any(|p| p.key == look(key, false).key));
+        }
         assert!(badge_class(Some("music")).is_some());
-        assert!(badge_class(None).is_none());
     }
 }

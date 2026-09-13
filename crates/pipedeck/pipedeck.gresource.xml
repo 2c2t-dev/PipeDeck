@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
   <gresource prefix="/dev/_2c2t/Pipedeck/icons/scalable/actions">
+    <file preprocess="xml-stripblanks">pd-1-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-2-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-3-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-4-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-5-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-aux-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-browser-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-fun-symbolic.svg</file>

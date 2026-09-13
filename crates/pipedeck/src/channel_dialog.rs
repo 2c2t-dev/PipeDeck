@@ -78,8 +78,9 @@ impl ChannelDialog {
             engine: engine.clone(),
             name: widgets::name_entry(&source.name),
             badge: widgets::big_badge(
-                crate::presets::icon_for(source.icon.as_deref(), source.is_input()),
                 source.icon.as_deref(),
+                source.is_input(),
+                widgets::Tone::Colour,
             ),
             look: gtk::Box::new(gtk::Orientation::Vertical, 6),
             trim: widgets::level_row(&mute, &volume),
@@ -119,7 +120,7 @@ impl ChannelDialog {
         left.set_width_request(LEFT_PANE_WIDTH);
         left.append(&self.name);
 
-        let menu = widgets::look_menu(source.icon.as_deref(), {
+        let menu = widgets::look_menu(source.icon.as_deref(), widgets::Tone::Colour, {
             let this = self.clone();
             move |icon| {
                 this.engine
@@ -307,13 +308,9 @@ impl ChannelDialog {
         self.mute.set_active(source.muted);
         widgets::set_badge_look(
             &self.badge,
-            crate::presets::icon_for(source.icon.as_deref(), source.is_input()),
             source.icon.as_deref(),
-            if source.is_input() {
-                "pd-mic-symbolic"
-            } else {
-                "pd-speaker-symbolic"
-            },
+            source.is_input(),
+            widgets::Tone::Colour,
         );
         if let Some(device) = &source.device {
             let described = inputs

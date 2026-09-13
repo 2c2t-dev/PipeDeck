@@ -89,13 +89,30 @@ pub fn known_icon<'a>(name: &'a str, fallback: &'a str) -> &'a str {
     }
 }
 
-/// An icon in a rounded badge, coloured by the preset it belongs to.
-pub fn badge(icon_name: &str, preset: Option<&str>, size: i32) -> gtk::Image {
-    let icon = gtk::Image::from_icon_name(known_icon(icon_name, "pd-speaker-symbolic"));
+/// Whether a badge wears the colour of its look.
+///
+/// Channels are colour, so a row is picked out at a glance. Mixes are white:
+/// there are at most five of them, they sit in their own row, and colouring
+/// them too would leave nothing plain for the eye to rest on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Colour,
+    White,
+}
+
+/// An icon in a rounded badge.
+///
+/// The look is resolved here, so an object that never chose one still gets a
+/// badge from the catalogue rather than an icon of its own.
+pub fn badge(key: Option<&str>, is_input: bool, tone: Tone, size: i32) -> gtk::Image {
+    let look = crate::presets::look(key, is_input);
+    let icon = gtk::Image::from_icon_name(known_icon(look.icon, "pd-speaker-symbolic"));
     icon.set_pixel_size(size);
     icon.add_css_class("pd-badge");
-    if let Some(class) = crate::presets::badge_class(preset) {
-        icon.add_css_class(&class);
+    if tone == Tone::Colour {
+        if let Some(class) = crate::presets::badge_class(Some(look.key)) {
+            icon.add_css_class(&class);
+        }
     }
     // Without this the image stretches to the height of its row and the
     // badge stops being a square.
@@ -105,12 +122,15 @@ pub fn badge(icon_name: &str, preset: Option<&str>, size: i32) -> gtk::Image {
 }
 
 /// The large icon that stands for the object a window is about.
-pub fn big_badge(icon_name: &str, preset: Option<&str>) -> gtk::Image {
-    let icon = gtk::Image::from_icon_name(known_icon(icon_name, "pd-speaker-symbolic"));
+pub fn big_badge(key: Option<&str>, is_input: bool, tone: Tone) -> gtk::Image {
+    let look = crate::presets::look(key, is_input);
+    let icon = gtk::Image::from_icon_name(known_icon(look.icon, "pd-speaker-symbolic"));
     icon.set_pixel_size(72);
     icon.add_css_class("pd-badge-large");
-    if let Some(class) = crate::presets::badge_class(preset) {
-        icon.add_css_class(&class);
+    if tone == Tone::Colour {
+        if let Some(class) = crate::presets::badge_class(Some(look.key)) {
+            icon.add_css_class(&class);
+        }
     }
     icon.set_halign(gtk::Align::Center);
     icon.set_valign(gtk::Align::Center);
@@ -118,13 +138,16 @@ pub fn big_badge(icon_name: &str, preset: Option<&str>) -> gtk::Image {
 }
 
 /// Point a badge at another look, dropping the colour it had.
-pub fn set_badge_look(badge: &gtk::Image, icon_name: &str, preset: Option<&str>, fallback: &str) {
+pub fn set_badge_look(badge: &gtk::Image, key: Option<&str>, is_input: bool, tone: Tone) {
     for look in crate::presets::PRESETS {
         badge.remove_css_class(&format!("pd-badge-{}", look.key));
     }
-    badge.set_icon_name(Some(known_icon(icon_name, fallback)));
-    if let Some(class) = crate::presets::badge_class(preset) {
-        badge.add_css_class(&class);
+    let look = crate::presets::look(key, is_input);
+    badge.set_icon_name(Some(known_icon(look.icon, "pd-speaker-symbolic")));
+    if tone == Tone::Colour {
+        if let Some(class) = crate::presets::badge_class(Some(look.key)) {
+            badge.add_css_class(&class);
+        }
     }
 }
 
@@ -134,6 +157,7 @@ pub fn set_badge_look(badge: &gtk::Image, icon_name: &str, preset: Option<&str>,
 /// the way behind a menu rather than taking room next to the level.
 pub fn look_menu(
     current: Option<&str>,
+    tone: Tone,
     on_pick: impl Fn(Option<String>) + 'static,
 ) -> gtk::MenuButton {
     const COLUMNS: i32 = 5;
@@ -162,7 +186,7 @@ pub fn look_menu(
         let button = gtk::Button::new();
         button.add_css_class("flat");
         button.set_tooltip_text(Some(look.label));
-        button.set_child(Some(&badge(look.icon, Some(look.key), 16)));
+        button.set_child(Some(&badge(Some(look.key), false, tone, 16)));
         if current == Some(look.key) {
             button.add_css_class("suggested-action");
         }

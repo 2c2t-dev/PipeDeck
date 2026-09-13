@@ -407,8 +407,9 @@ impl Window {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
 
         content.append(&widgets::badge(
-            presets::icon_for(mix.icon.as_deref(), false),
             mix.icon.as_deref(),
+            false,
+            widgets::Tone::White,
             BADGE_ICON_SIZE,
         ));
 
@@ -443,8 +444,9 @@ impl Window {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
 
         content.append(&widgets::badge(
-            presets::icon_for(source.icon.as_deref(), source.is_input()),
             source.icon.as_deref(),
+            source.is_input(),
+            widgets::Tone::Colour,
             BADGE_ICON_SIZE,
         ));
 
