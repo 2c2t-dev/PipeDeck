@@ -117,7 +117,7 @@ impl MixDialog {
         left.append(&self.name);
 
         // The "..." sits above the badge, as a mixer's own icon picker does.
-        let menu = widgets::look_menu(mix.icon.as_deref(), widgets::Tone::White, {
+        let menu = widgets::mix_look_menu(mix.icon.as_deref(), {
             let this = self.clone();
             move |icon| this.engine.send(Command::SetMixIcon { id: this.id, icon })
         });

@@ -120,7 +120,7 @@ impl ChannelDialog {
         left.set_width_request(LEFT_PANE_WIDTH);
         left.append(&self.name);
 
-        let menu = widgets::look_menu(source.icon.as_deref(), widgets::Tone::Colour, {
+        let menu = widgets::channel_look_menu(source.icon.as_deref(), source.is_input(), {
             let this = self.clone();
             move |icon| {
                 this.engine

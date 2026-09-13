@@ -160,6 +160,12 @@ pub fn kinds() -> &'static [Preset] {
     &PRESETS[NUMBERS..NUMBERS + KINDS]
 }
 
+/// What a channel can wear: everything but the numbers, which say which mix
+/// is which and mean nothing on a row.
+pub fn channel_looks() -> &'static [Preset] {
+    &PRESETS[NUMBERS..]
+}
+
 /// The look a key names, if it still exists.
 pub fn find(key: Option<&str>) -> Option<&'static Preset> {
     let key = key?;
@@ -220,6 +226,20 @@ mod tests {
         let count = keys.len();
         keys.dedup();
         assert_eq!(keys.len(), count, "two looks share a key");
+    }
+
+    #[test]
+    fn numbers_are_for_mixes_only() {
+        let numbered: Vec<&str> = PRESETS[..NUMBERS].iter().map(|p| p.key).collect();
+        assert_eq!(numbered.len(), NUMBERS);
+        for look in channel_looks() {
+            assert!(
+                !numbered.contains(&look.key),
+                "a channel was offered the number {}",
+                look.label
+            );
+        }
+        assert_eq!(channel_looks().len(), PRESETS.len() - NUMBERS);
     }
 
     #[test]

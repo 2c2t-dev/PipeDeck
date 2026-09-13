@@ -155,9 +155,13 @@ pub fn set_badge_look(badge: &gtk::Image, key: Option<&str>, is_input: bool, ton
 ///
 /// Picking a look is not renaming or re-routing anything, so it sits out of
 /// the way behind a menu rather than taking room next to the level.
-pub fn look_menu(
+///
+/// A mix gets a grid: its looks are mostly numbers and it wears no colour,
+/// so the glyphs are the whole story. A channel gets a named list: its looks
+/// stand for what plays through it, and "Voice chat" says that where a
+/// speech bubble only hints at it.
+pub fn mix_look_menu(
     current: Option<&str>,
-    tone: Tone,
     on_pick: impl Fn(Option<String>) + 'static,
 ) -> gtk::MenuButton {
     const COLUMNS: i32 = 5;
@@ -165,44 +169,103 @@ pub fn look_menu(
     let grid = gtk::Grid::new();
     grid.set_row_spacing(6);
     grid.set_column_spacing(6);
-    grid.set_margin_top(6);
-    grid.set_margin_bottom(6);
-    grid.set_margin_start(6);
-    grid.set_margin_end(6);
-
-    let heading = gtk::Label::new(Some("Select an icon"));
-    heading.add_css_class("caption-heading");
-    heading.set_margin_bottom(6);
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&heading);
-    content.append(&grid);
 
     let popover = gtk::Popover::new();
-    popover.set_child(Some(&content));
-
     let on_pick = std::rc::Rc::new(on_pick);
     for (position, look) in crate::presets::PRESETS.iter().enumerate() {
         let button = gtk::Button::new();
         button.add_css_class("flat");
         button.set_tooltip_text(Some(look.label));
-        button.set_child(Some(&badge(Some(look.key), false, tone, 16)));
-        if current == Some(look.key) {
-            button.add_css_class("suggested-action");
-        }
-        button.connect_clicked({
-            let on_pick = on_pick.clone();
-            let popover = popover.clone();
-            let key = look.key;
-            move |_| {
-                on_pick(Some(key.to_owned()));
-                popover.popdown();
-            }
-        });
+        button.set_child(Some(&badge(Some(look.key), false, Tone::White, 16)));
+        mark_current(&button, current == Some(look.key));
+        button.connect_clicked(pick(&on_pick, &popover, look.key));
         let position = position as i32;
         grid.attach(&button, position % COLUMNS, position / COLUMNS, 1, 1);
     }
 
+    popover.set_child(Some(&framed("Select an icon", &grid, false)));
+    menu_button(&popover)
+}
+
+pub fn channel_look_menu(
+    current: Option<&str>,
+    is_input: bool,
+    on_pick: impl Fn(Option<String>) + 'static,
+) -> gtk::MenuButton {
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+
+    let popover = gtk::Popover::new();
+    let on_pick = std::rc::Rc::new(on_pick);
+    let current = current.unwrap_or(crate::presets::default_key(is_input));
+    for look in crate::presets::channel_looks() {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        row.append(&badge(Some(look.key), false, Tone::Colour, 16));
+        row.append(
+            &gtk::Label::builder()
+                .label(look.label)
+                .xalign(0.0)
+                .hexpand(true)
+                .build(),
+        );
+
+        let button = gtk::Button::new();
+        button.add_css_class("flat");
+        button.set_child(Some(&row));
+        mark_current(&button, current == look.key);
+        button.connect_clicked(pick(&on_pick, &popover, look.key));
+        list.append(&button);
+    }
+
+    popover.set_child(Some(&framed("Select an icon", &list, true)));
+    menu_button(&popover)
+}
+
+/// Heading and margins around the contents of a picker, scrolling when the
+/// list is longer than a menu should be.
+fn framed(heading: &str, content: &impl IsA<gtk::Widget>, scroll: bool) -> gtk::Box {
+    let title = gtk::Label::new(Some(heading));
+    title.add_css_class("caption-heading");
+    title.set_margin_bottom(6);
+
+    let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    frame.set_margin_top(6);
+    frame.set_margin_bottom(6);
+    frame.set_margin_start(6);
+    frame.set_margin_end(6);
+    frame.append(&title);
+    if scroll {
+        let scroller = gtk::ScrolledWindow::new();
+        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroller.set_max_content_height(360);
+        scroller.set_propagate_natural_height(true);
+        scroller.set_child(Some(content));
+        frame.append(&scroller);
+    } else {
+        frame.append(content);
+    }
+    frame
+}
+
+fn mark_current(button: &gtk::Button, current: bool) {
+    if current {
+        button.add_css_class("suggested-action");
+    }
+}
+
+fn pick(
+    on_pick: &std::rc::Rc<impl Fn(Option<String>) + 'static>,
+    popover: &gtk::Popover,
+    key: &'static str,
+) -> impl Fn(&gtk::Button) + 'static {
+    let on_pick = on_pick.clone();
+    let popover = popover.clone();
+    move |_: &gtk::Button| {
+        on_pick(Some(key.to_owned()));
+        popover.popdown();
+    }
+}
+
+fn menu_button(popover: &gtk::Popover) -> gtk::MenuButton {
     let button = gtk::MenuButton::new();
     button.set_icon_name(known_icon(
         "view-more-horizontal-symbolic",
@@ -211,7 +274,7 @@ pub fn look_menu(
     button.add_css_class("flat");
     button.set_tooltip_text(Some("Choose an icon"));
     button.set_halign(gtk::Align::Center);
-    button.set_popover(Some(&popover));
+    button.set_popover(Some(popover));
     button
 }
 
