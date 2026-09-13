@@ -13,6 +13,7 @@ pub mod engine;
 pub mod error;
 mod pw;
 pub mod types;
+pub mod vst3;
 
 pub use config::Config;
 pub use engine::{spawn, Command, EngineHandle, Event, StateSnapshot};
