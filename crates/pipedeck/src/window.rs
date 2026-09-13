@@ -20,7 +20,7 @@ use crate::engine_link::EngineLink;
 const MIX_COLUMN_WIDTH: i32 = 240;
 const SOURCE_COLUMN_WIDTH: i32 = 180;
 const ROW_HEIGHT: i32 = 56;
-const ADD_BUTTON_WIDTH: i32 = 120;
+const ADD_MIX_WIDTH: i32 = 56;
 
 pub struct Window {
     pub window: adw::ApplicationWindow,
@@ -189,17 +189,13 @@ impl Window {
     }
 
     fn add_mix_button(self: &Rc<Self>) -> gtk::Widget {
-        let button = gtk::Button::new();
-        button.set_child(Some(
-            &adw::ButtonContent::builder()
-                .icon_name("list-add-symbolic")
-                .label("Mix")
-                .build(),
-        ));
+        // Icon only: this one sits in the header row next to named mixes, so
+        // it stays out of the way until you look for it.
+        let button = gtk::Button::from_icon_name("list-add-symbolic");
         button.set_tooltip_text(Some("Add a mix"));
         button.add_css_class("flat");
         button.add_css_class("card");
-        button.set_width_request(ADD_BUTTON_WIDTH);
+        button.set_width_request(ADD_MIX_WIDTH);
         button.set_margin_bottom(6);
         button.set_sensitive(!self.stopped.get());
         button.connect_clicked({
