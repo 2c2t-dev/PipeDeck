@@ -210,22 +210,31 @@ pub struct PluginChain {
 }
 
 impl PluginChain {
-    /// Put the interface of one plug-in of this chain on the screen.
+    /// Put the interface of one plug-in of this chain on the screen, or take
+    /// it away.
     ///
     /// `index` counts the plug-ins of the chain, not the effects: the caller
     /// knows which effect it means and how many of the ones before it the
     /// mixer hosts.
-    pub fn show_window(&self, index: usize) -> Result<(), String> {
+    pub fn set_window(&self, index: usize, open: bool) -> Result<(), String> {
+        if !open {
+            // Dropping it takes the window off the screen and gives back
+            // what drawing it costs; the processor carries on either way.
+            if let Some(slot) = self.open.borrow_mut().get_mut(index) {
+                *slot = None;
+            }
+            return Ok(());
+        }
         let Some(handle) = self.windows.get(index).and_then(|slot| slot.clone()) else {
             return Err("that effect has no window of its own".into());
         };
-        let mut open = self.open.borrow_mut();
-        match open.get_mut(index).and_then(|slot| slot.as_ref()) {
+        let mut windows = self.open.borrow_mut();
+        match windows.get_mut(index).and_then(|slot| slot.as_ref()) {
             // Already up: bring it back rather than making a second one.
             Some(window) => window.show(),
             None => {
                 let window = stereotool::Window::open(handle)?;
-                open[index] = Some(window);
+                windows[index] = Some(window);
             }
         }
         Ok(())

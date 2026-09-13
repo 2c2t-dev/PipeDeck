@@ -187,6 +187,16 @@ fn node_id(dump: &[serde_json::Value], name: &str) -> Option<i64> {
     our_node(dump, name)?["id"].as_i64()
 }
 
+/// The id of a node belonging to anyone, for the ones that are not ours to
+/// begin with: the player this test starts is its own process, so looking
+/// for it among our own nodes never finds it.
+fn any_node_id(dump: &[serde_json::Value], name: &str) -> Option<i64> {
+    dump.iter()
+        .filter(|o| o["type"].as_str().is_some_and(|t| t.ends_with("Node")))
+        .find(|o| props(o)["node.name"].as_str() == Some(name))?["id"]
+        .as_i64()
+}
+
 /// The serial a player uses to name a target, which is not the object id.
 fn node_serial(dump: &[serde_json::Value], name: &str) -> Option<i64> {
     props(our_node(dump, name)?)["object.serial"].as_i64()
@@ -456,10 +466,11 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
-    // The cell sits at 0.5, a linear 0.125, so the mix has to hear the tone
-    // roughly that much quieter. This is the fader itself under test, not
-    // the property it writes.
-    let expected = open.0 * 0.125;
+    // The cell sits at 0.5, a linear 0.125, and the mix master is there too
+    // by now, which its sink applies to the monitor ports this meter reads.
+    // So the mix hears the tone through both. This is the faders themselves
+    // under test, not the properties they write.
+    let expected = open.0 * 0.125 * 0.125;
     let what = format!(
         "the mix hears the tone through the cell fader: {:.3}, around {expected:.3}",
         open.1
@@ -581,7 +592,7 @@ fn main() -> ExitCode {
         .unwrap();
     settle();
     let dump = pw_dump();
-    let player_node = node_id(&dump, "pw-play");
+    let player_node = any_node_id(&dump, "pw-play");
     let sink_node = node_id(&dump, &format!("pipedeck.src.{source}"));
     let plugged = match (player_node, sink_node) {
         (Some(player), Some(sink)) => links(&dump).contains(&(player, sink)),
@@ -675,9 +686,12 @@ fn main() -> ExitCode {
     // The filter chain names the node it reads, and another mixer answers to
     // that name, so what it captures is not this test's to promise. The
     // plug-in chain below names ids instead and is checked either way.
+    // The channel carries its trim by now, so this is about hearing the tone
+    // at all rather than at any particular level; the low cut below is what
+    // puts a number on it.
     let what = format!("the tone comes through the chain: {:.3}", through.0);
     if alone {
-        check(through.0 > 0.05, &what, &mut failures);
+        check(through.0 > 0.01, &what, &mut failures);
     } else {
         println!("[skip] {what}");
     }
@@ -813,6 +827,31 @@ fn main() -> ExitCode {
     } else {
         println!("[skip] no VST3 effect installed, so nothing to host");
     }
+
+    // Every fader goes back to unity first, and the cell is unmuted: the
+    // mute test above left it closed, and the mix meter reads through the
+    // channel's trim, the cell and the mix master alike. What follows is
+    // about a chain passing audio, so nothing else may be in the way.
+    for command in [
+        Command::SetLinkMute {
+            source,
+            mix,
+            muted: false,
+        },
+        Command::SetSourceGain {
+            id: source,
+            gain: 1.0,
+        },
+        Command::SetLinkGain {
+            source,
+            mix,
+            gain: 1.0,
+        },
+        Command::SetMixGain { id: mix, gain: 1.0 },
+    ] {
+        engine.send(command).unwrap();
+    }
+    settle();
 
     // A mix is treated the other way round from a channel: its cells play
     // into the chain and the chain into the sink, so that what OBS reads on
@@ -951,15 +990,32 @@ fn main() -> ExitCode {
         // because it puts a window on the screen of whoever runs the test.
         if std::env::var_os("PIPEDECK_SMOKE_WINDOW").is_some() {
             engine
-                .send(Command::ShowEffectWindow {
+                .send(Command::SetEffectWindow {
                     target: pipedeck_engine::EffectTarget::Mix(mix),
                     index: 0,
+                    open: true,
                 })
                 .unwrap();
             let complaint = wait_error(&rx, Duration::from_secs(6));
             check(
                 complaint.is_none(),
                 &format!("its window opens from the engine thread: {complaint:?}"),
+                &mut failures,
+            );
+
+            // And closes again on being asked, since nothing else can close
+            // it: the library ignores the window manager's request.
+            engine
+                .send(Command::SetEffectWindow {
+                    target: pipedeck_engine::EffectTarget::Mix(mix),
+                    index: 0,
+                    open: false,
+                })
+                .unwrap();
+            let complaint = wait_error(&rx, Duration::from_secs(3));
+            check(
+                complaint.is_none(),
+                &format!("and closes on being asked: {complaint:?}"),
                 &mut failures,
             );
         }

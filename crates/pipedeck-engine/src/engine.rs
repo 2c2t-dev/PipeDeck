@@ -115,11 +115,17 @@ pub enum Command {
         id: MixId,
         effects: Vec<Effect>,
     },
-    /// Put the interface of one hosted plug-in on the screen, by its place
-    /// in the chain. Stereo Tool has one; a VST3 does not, here.
-    ShowEffectWindow {
+    /// Put the interface of one hosted plug-in on the screen, or take it
+    /// away, by its place in the chain. Stereo Tool has one; a VST3 does
+    /// not, here.
+    ///
+    /// Closing is the host's job: the window carries WM_DELETE_WINDOW like
+    /// any other, and the library does nothing with it, so the button that
+    /// opened it is what closes it.
+    SetEffectWindow {
         target: EffectTarget,
         index: usize,
+        open: bool,
     },
     /// The Stereo Tool licence key, which the mixer only hands to the
     /// library. Whatever runs on it is opened again, because a processor is
@@ -509,9 +515,13 @@ fn handle_command(
         }
         Command::SetEffects { id, effects } => g.set_effects(id, effects),
         Command::SetMixEffects { id, effects } => g.set_mix_effects(id, effects),
-        Command::ShowEffectWindow { target, index } => {
+        Command::SetEffectWindow {
+            target,
+            index,
+            open,
+        } => {
             structural = false;
-            g.show_effect_window(target, index)
+            g.set_effect_window(target, index, open)
         }
         Command::SetStereoToolLicense { key } => {
             structural = false;

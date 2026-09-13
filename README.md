@@ -137,6 +137,12 @@ makes one X11 window, never maps it, and holds it out to be pointed at;
 Stereo Tool then opens its real window beside it. Nothing of ours is on the
 screen.
 
+Closing it is the host's job too. The window carries the usual close request
+and the library does nothing with it, the way a plug-in leaves its editor to
+whoever opened it, so **Window** is a toggle: the button that put it up is the
+one that takes it down. Removing the effect or changing the chain closes it as
+well, since the processor it draws goes with them.
+
 The licence key is a field on the settings page, passed to the library and to
 nothing else. Without one Stereo Tool still runs and puts speech and beeps in
 the audio, which is the vendor's doing; the settings say so rather than let it

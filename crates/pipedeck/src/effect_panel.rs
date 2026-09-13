@@ -178,15 +178,20 @@ impl EffectPanel {
         if effect.kind == EffectKind::StereoTool
             && matches!(&*self.stereotool.borrow(), Status::Ready(info) if info.windows)
         {
-            let open = gtk::Button::with_label("Open");
+            // A toggle, not a button: the window carries the usual close
+            // request and Stereo Tool does nothing with it, the way a
+            // plug-in leaves its editor to its host, so what opened it is
+            // what has to close it.
+            let open = gtk::ToggleButton::with_label("Window");
             open.add_css_class("flat");
-            open.set_tooltip_text(Some("Open Stereo Tool's own window"));
-            open.connect_clicked({
+            open.set_tooltip_text(Some("Show Stereo Tool's own window"));
+            open.connect_toggled({
                 let this = self.clone();
-                move |_| {
-                    this.engine.send(Command::ShowEffectWindow {
+                move |button| {
+                    this.engine.send(Command::SetEffectWindow {
                         target: this.target,
                         index: position,
+                        open: button.is_active(),
                     })
                 }
             });

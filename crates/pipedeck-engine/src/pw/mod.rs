@@ -1164,15 +1164,17 @@ impl Graph {
         Ok(())
     }
 
-    /// Put the interface of one hosted plug-in on the screen.
+    /// Put the interface of one hosted plug-in on the screen, or take it
+    /// away.
     ///
     /// `index` is the effect's place in the chain the user is looking at;
     /// which plug-in that is depends on how many of the effects before it
     /// the mixer hosts rather than PipeWire, which only this side knows.
-    pub fn show_effect_window(
+    pub fn set_effect_window(
         &self,
         target: EffectTarget,
         index: usize,
+        open: bool,
     ) -> Result<(), EngineError> {
         let effects = match target {
             EffectTarget::Channel(id) => self
@@ -1199,12 +1201,14 @@ impl Graph {
             EffectTarget::Mix(id) => self.mixes.get(&id).and_then(|mix| mix.plugins.as_ref()),
         };
         let Some(chain) = chain else {
-            self.emit(Event::Error(
-                "that effect is not running yet; give it a moment".into(),
-            ));
+            if open {
+                self.emit(Event::Error(
+                    "that effect is not running yet; give it a moment".into(),
+                ));
+            }
             return Ok(());
         };
-        if let Err(e) = chain.show_window(among_plugins) {
+        if let Err(e) = chain.set_window(among_plugins, open) {
             log::error!("{e}");
             self.emit(Event::Error(e));
         }
