@@ -8,7 +8,7 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
-use pipedeck_engine::{ChainState, Command, Device, LinkConfig, MixConfig, SourceConfig, SourceId};
+use pipedeck_engine::{App, Command, Device, SourceConfig, SourceId};
 
 use crate::engine_link::EngineLink;
 use crate::widgets;
@@ -26,8 +26,8 @@ pub struct ChannelDialog {
     trim: gtk::Box,
     /// What an input row captures, named the way the system names it.
     device: gtk::Label,
-    mixes: gtk::Box,
-    add_mix: gtk::MenuButton,
+    apps: gtk::Box,
+    add_app: gtk::MenuButton,
     /// Set while engine state is pushed into the widgets.
     syncing: Rc<StdCell<bool>>,
 }
@@ -37,9 +37,8 @@ impl ChannelDialog {
         parent: &impl IsA<gtk::Widget>,
         engine: &EngineLink,
         source: &SourceConfig,
-        mixes: &[MixConfig],
-        links: &[LinkConfig],
         inputs: &[Device],
+        running: &[App],
     ) -> Rc<Self> {
         let dialog = adw::Dialog::new();
         dialog.set_title("Channel");
@@ -49,14 +48,14 @@ impl ChannelDialog {
         let volume = widgets::fader(source.gain);
         let mute = widgets::mute_button(source.muted, "Mute this channel everywhere");
 
-        let add_mix = gtk::MenuButton::new();
-        add_mix.set_child(Some(
+        let add_app = gtk::MenuButton::new();
+        add_app.set_child(Some(
             &adw::ButtonContent::builder()
                 .icon_name("list-add-symbolic")
-                .label("Send to a mix")
+                .label("Add app")
                 .build(),
         ));
-        add_mix.set_tooltip_text(Some("Send this channel to one more mix"));
+        add_app.set_tooltip_text(Some("Send an application's audio to this channel"));
 
         let device = gtk::Label::new(None);
         device.add_css_class("caption");
@@ -73,13 +72,13 @@ impl ChannelDialog {
             device,
             volume,
             mute,
-            mixes: gtk::Box::new(gtk::Orientation::Vertical, 8),
-            add_mix,
+            apps: gtk::Box::new(gtk::Orientation::Vertical, 8),
+            add_app,
             syncing: Rc::new(StdCell::new(false)),
         });
 
         dialog.set_child(Some(&this.build(source)));
-        this.refresh(source, mixes, links, inputs);
+        this.refresh(source, inputs, running);
         this.connect(source);
         dialog.present(Some(parent));
         this
@@ -147,33 +146,36 @@ impl ChannelDialog {
         left.append(&delete);
         panes.append(&left);
 
-        // Right: the mixes this channel feeds.
-        let right = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        right.set_hexpand(true);
+        // Right: the applications this channel carries. An input row has
+        // none: it takes its audio from a device, not from applications.
+        if !source.is_input() {
+            let right = gtk::Box::new(gtk::Orientation::Vertical, 12);
+            right.set_hexpand(true);
 
-        let title = gtk::Label::new(Some("Mixes"));
-        title.add_css_class("heading");
-        title.set_xalign(0.0);
-        right.append(&title);
+            let title = gtk::Label::new(Some("Apps"));
+            title.add_css_class("heading");
+            title.set_xalign(0.0);
+            right.append(&title);
 
-        let hint = gtk::Label::new(Some(
-            "Each mix hears this channel at the level set here, which is the same fader as the grid.",
-        ));
-        hint.add_css_class("caption");
-        hint.add_css_class("dim-label");
-        hint.set_xalign(0.0);
-        hint.set_wrap(true);
-        right.append(&hint);
+            let hint = gtk::Label::new(Some(
+                "These applications play into this channel, now and the next time they start.",
+            ));
+            hint.add_css_class("caption");
+            hint.add_css_class("dim-label");
+            hint.set_xalign(0.0);
+            hint.set_wrap(true);
+            right.append(&hint);
 
-        let scroller = gtk::ScrolledWindow::new();
-        scroller.set_vexpand(true);
-        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        scroller.set_child(Some(&self.mixes));
-        right.append(&scroller);
+            let scroller = gtk::ScrolledWindow::new();
+            scroller.set_vexpand(true);
+            scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+            scroller.set_child(Some(&self.apps));
+            right.append(&scroller);
 
-        self.add_mix.set_halign(gtk::Align::Center);
-        right.append(&self.add_mix);
-        panes.append(&right);
+            self.add_app.set_halign(gtk::Align::Center);
+            right.append(&self.add_app);
+            panes.append(&right);
+        }
 
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
@@ -240,14 +242,8 @@ impl ChannelDialog {
         self.dialog.close();
     }
 
-    /// Push engine state into the window, rebuilding the mix list.
-    pub fn refresh(
-        self: &Rc<Self>,
-        source: &SourceConfig,
-        mixes: &[MixConfig],
-        links: &[LinkConfig],
-        inputs: &[Device],
-    ) {
+    /// Push engine state into the window, rebuilding the app list.
+    pub fn refresh(self: &Rc<Self>, source: &SourceConfig, inputs: &[Device], running: &[App]) {
         self.syncing.set(true);
         if self.name.text() != source.name {
             self.name.set_text(&source.name);
@@ -263,96 +259,77 @@ impl ChannelDialog {
                 .unwrap_or_else(|| format!("{device} (unavailable)"));
             self.device.set_label(&described);
             self.device.set_tooltip_text(Some(device));
+            self.syncing.set(false);
+            return;
         }
 
-        while let Some(child) = self.mixes.first_child() {
-            self.mixes.remove(&child);
+        while let Some(child) = self.apps.first_child() {
+            self.apps.remove(&child);
         }
-        let fed: Vec<&LinkConfig> = links.iter().filter(|l| l.source == source.id).collect();
-        if fed.is_empty() {
-            let empty = gtk::Label::new(Some("This channel is not in any mix yet."));
+        if source.apps.is_empty() {
+            let empty = gtk::Label::new(Some("No application sends its audio here yet."));
             empty.add_css_class("dim-label");
             empty.set_margin_top(24);
-            self.mixes.append(&empty);
+            self.apps.append(&empty);
         }
-        for link in &fed {
-            let Some(mix) = mixes.iter().find(|m| m.id == link.mix) else {
-                continue;
-            };
-            let row = self.mix_row(mix, link.state());
-            self.mixes.append(&row);
+        for key in &source.apps {
+            // An assigned application that is not playing right now is still
+            // listed, since the assignment is what outlives the stream.
+            let name = running
+                .iter()
+                .find(|app| &app.key == key)
+                .map(|app| app.name.clone());
+            let row = self.app_row(key, name);
+            self.apps.append(&row);
         }
 
-        let popover = self.mix_popover(mixes, &fed);
-        self.add_mix.set_popover(Some(&popover));
+        let popover = self.app_popover(source, running);
+        self.add_app.set_popover(Some(&popover));
         self.syncing.set(false);
     }
 
-    fn mix_row(self: &Rc<Self>, mix: &MixConfig, state: ChainState) -> gtk::Widget {
+    fn app_row(self: &Rc<Self>, key: &str, running_as: Option<String>) -> gtk::Widget {
         let (card, inner) = widgets::list_card();
-        let (top, _) = widgets::card_title(&mix.name);
+        let (top, title) = widgets::card_title(running_as.as_deref().unwrap_or(key));
+        title.set_tooltip_text(Some(key));
+
+        let state = gtk::Label::new(Some(if running_as.is_some() {
+            "Playing"
+        } else {
+            "Not running"
+        }));
+        state.add_css_class("caption");
+        state.add_css_class("dim-label");
+        top.append(&state);
 
         let remove = gtk::Button::from_icon_name("list-remove-symbolic");
         remove.add_css_class("flat");
-        remove.set_tooltip_text(Some("Stop sending this channel to this mix"));
+        remove.set_tooltip_text(Some("Hand this application back to the system"));
         remove.connect_clicked({
             let this = self.clone();
-            let mix = mix.id;
+            let key = key.to_owned();
             move |_| {
-                this.engine.send(Command::SetLink {
-                    source: this.id,
-                    mix,
-                    linked: false,
+                this.engine.send(Command::ReleaseApp {
+                    id: this.id,
+                    app: key.clone(),
                 })
             }
         });
         top.append(&remove);
         inner.append(&top);
 
-        let mute = widgets::mute_button(state.muted, "Mute this channel in this mix");
-        mute.connect_toggled({
-            let this = self.clone();
-            let mix = mix.id;
-            move |button| {
-                if this.syncing.get() {
-                    return;
-                }
-                this.engine.send(Command::SetLinkMute {
-                    source: this.id,
-                    mix,
-                    muted: button.is_active(),
-                });
-            }
-        });
-        let fader = widgets::fader(state.gain);
-        fader.connect_value_changed({
-            let this = self.clone();
-            let mix = mix.id;
-            move |scale| {
-                if this.syncing.get() {
-                    return;
-                }
-                this.engine.send(Command::SetLinkGain {
-                    source: this.id,
-                    mix,
-                    gain: (scale.value() / widgets::FADER_MAX) as f32,
-                });
-            }
-        });
-        inner.append(&widgets::level_row(&mute, &fader));
-
         card.upcast()
     }
 
-    /// The mixes this channel does not feed yet.
-    fn mix_popover(self: &Rc<Self>, mixes: &[MixConfig], fed: &[&LinkConfig]) -> gtk::Popover {
+    /// The applications playing right now that this channel does not hold.
+    fn app_popover(self: &Rc<Self>, source: &SourceConfig, running: &[App]) -> gtk::Popover {
         let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let popover = gtk::Popover::new();
         popover.set_child(Some(&list));
 
         let mut offered = 0;
-        for mix in mixes {
-            if fed.iter().any(|l| l.mix == mix.id) {
+        for app in running {
+            if source.apps.contains(&app.key) {
                 continue;
             }
             offered += 1;
@@ -360,7 +337,7 @@ impl ChannelDialog {
             button.add_css_class("flat");
             button.set_child(Some(
                 &gtk::Label::builder()
-                    .label(&mix.name)
+                    .label(&app.name)
                     .xalign(0.0)
                     .ellipsize(gtk::pango::EllipsizeMode::End)
                     .max_width_chars(32)
@@ -369,12 +346,11 @@ impl ChannelDialog {
             button.connect_clicked({
                 let this = self.clone();
                 let popover = popover.clone();
-                let mix = mix.id;
+                let key = app.key.clone();
                 move |_| {
-                    this.engine.send(Command::SetLink {
-                        source: this.id,
-                        mix,
-                        linked: true,
+                    this.engine.send(Command::AssignApp {
+                        id: this.id,
+                        app: key.clone(),
                     });
                     popover.popdown();
                 }
@@ -382,7 +358,7 @@ impl ChannelDialog {
             list.append(&button);
         }
         if offered == 0 {
-            let empty = gtk::Label::new(Some("This channel is already in every mix."));
+            let empty = gtk::Label::new(Some("No other application is playing."));
             empty.add_css_class("dim-label");
             empty.set_margin_top(6);
             empty.set_margin_bottom(6);

@@ -111,6 +111,50 @@ fn check(ok: bool, what: &str, failures: &mut u32) {
     }
 }
 
+/// A few seconds of silence, so the test can own a playback stream without
+/// making a sound on the machine it runs on.
+fn silent_wav(path: &std::path::Path) {
+    const RATE: u32 = 48_000;
+    const SECONDS: u32 = 30;
+    let data = RATE * SECONDS * 4;
+    let mut wav = Vec::with_capacity(44 + data as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&RATE.to_le_bytes());
+    wav.extend_from_slice(&(RATE * 4).to_le_bytes());
+    wav.extend_from_slice(&4u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data.to_le_bytes());
+    wav.resize(44 + data as usize, 0);
+    std::fs::write(path, wav).expect("cannot write the silent file");
+}
+
+/// Ids of the nodes on both ends of every link on the graph.
+fn links(dump: &[serde_json::Value]) -> Vec<(i64, i64)> {
+    dump.iter()
+        .filter(|o| o["type"].as_str().is_some_and(|t| t.ends_with("Link")))
+        .filter_map(|o| {
+            Some((
+                o["info"]["output-node-id"].as_i64()?,
+                o["info"]["input-node-id"].as_i64()?,
+            ))
+        })
+        .collect()
+}
+
+/// The id of a node by `node.name`, whoever owns it.
+fn node_id(dump: &[serde_json::Value], name: &str) -> Option<i64> {
+    dump.iter()
+        .filter(|o| o["type"].as_str().is_some_and(|t| t.ends_with("Node")))
+        .find(|o| props(o)["node.name"].as_str() == Some(name))
+        .and_then(|o| o["id"].as_i64())
+}
+
 fn settle() {
     std::thread::sleep(Duration::from_millis(900));
 }
@@ -286,6 +330,66 @@ fn main() -> ExitCode {
         &format!("the channel sink carries its trim: {trim:?}"),
         &mut failures,
     );
+
+    // An application assigned to a channel plays into it, and goes back to
+    // the session manager when released. The stream is silence, so nothing
+    // is heard on the machine running the test.
+    let silence = dir.join("silence.wav");
+    silent_wav(&silence);
+    let mut player = Process::new("pw-play")
+        .arg(&silence)
+        .spawn()
+        .expect("pw-play must be installed");
+    let app = match wait_for(
+        &rx,
+        "an application",
+        |e| matches!(e, Event::Apps { running } if running.iter().any(|a| a.name.contains("pw-play") || a.key.contains("pw-play"))),
+    ) {
+        Event::Apps { running } => running
+            .into_iter()
+            .find(|a| a.name.contains("pw-play") || a.key.contains("pw-play"))
+            .expect("the player was just seen"),
+        _ => unreachable!(),
+    };
+    engine
+        .send(Command::AssignApp {
+            id: source,
+            app: app.key.clone(),
+        })
+        .unwrap();
+    settle();
+    let dump = pw_dump();
+    let player_node = node_id(&dump, "pw-play");
+    let sink_node = node_id(&dump, &format!("pipedeck.src.{source}"));
+    let plugged = match (player_node, sink_node) {
+        (Some(player), Some(sink)) => links(&dump).contains(&(player, sink)),
+        _ => false,
+    };
+    check(
+        plugged,
+        &format!("the assigned application plays into the channel: {app:?}"),
+        &mut failures,
+    );
+
+    engine
+        .send(Command::ReleaseApp {
+            id: source,
+            app: app.key.clone(),
+        })
+        .unwrap();
+    settle();
+    let dump = pw_dump();
+    let released = match (node_id(&dump, "pw-play"), sink_node) {
+        (Some(player), Some(sink)) => !links(&dump).contains(&(player, sink)),
+        _ => true,
+    };
+    check(
+        released,
+        "releasing the application takes it out of the channel",
+        &mut failures,
+    );
+    let _ = player.kill();
+    let _ = player.wait();
 
     let cfg = std::fs::read_to_string(&config_path).unwrap_or_default();
     check(

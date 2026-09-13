@@ -27,6 +27,7 @@ use libspa::pod::Pod;
 use libspa::utils::dict::DictRef;
 use pipewire::context::ContextRc;
 use pipewire::core::CoreRc;
+use pipewire::metadata::Metadata;
 use pipewire::node::Node;
 use pipewire::properties::properties;
 use pipewire::registry::{GlobalObject, RegistryRc};
@@ -36,7 +37,7 @@ use crate::config::Config;
 use crate::engine::{Event, StateSnapshot};
 use crate::error::EngineError;
 use crate::types::{
-    ChainState, Device, LinkConfig, MixConfig, MixId, MixOutput, SourceConfig, SourceId,
+    App, ChainState, Device, LinkConfig, MixConfig, MixId, MixOutput, SourceConfig, SourceId,
 };
 
 use loopback::{LoopbackSpec, AUDIO_POSITION, CHANNELS};
@@ -115,6 +116,30 @@ struct DeviceEntry {
     is_output: bool,
 }
 
+/// A playback stream belonging to some application.
+struct AppStream {
+    app: App,
+}
+
+/// The key an assignment matches on: the binary when the server knows it,
+/// the application name otherwise, and the node name as a last resort.
+fn app_key(props: &DictRef) -> Option<String> {
+    props
+        .get("application.process.binary")
+        .or_else(|| props.get("application.name"))
+        .or_else(|| props.get("node.name"))
+        .map(str::to_owned)
+}
+
+fn app_name(props: &DictRef) -> String {
+    props
+        .get("application.name")
+        .or_else(|| props.get("application.process.binary"))
+        .or_else(|| props.get("node.name"))
+        .unwrap_or("Unknown application")
+        .to_owned()
+}
+
 pub struct Graph {
     // Drop order: cells first (their modules capture the sinks below), then
     // the mixes and sources, while context, core and registry are still
@@ -127,6 +152,12 @@ pub struct Graph {
     stage_index: HashMap<String, StageRef>,
     devices: HashMap<u32, DeviceEntry>,
     devices_dirty: bool,
+    /// Application playback streams currently on the graph.
+    streams: HashMap<u32, AppStream>,
+    streams_dirty: bool,
+    /// The server's `default` metadata, which is how a stream is moved from
+    /// one sink to another. Bound when the registry announces it.
+    metadata: Option<Metadata>,
     registry: RegistryRc,
     core: CoreRc,
     context: ContextRc,
@@ -154,6 +185,9 @@ impl Graph {
             stage_index: HashMap::new(),
             devices: HashMap::new(),
             devices_dirty: false,
+            streams: HashMap::new(),
+            streams_dirty: false,
+            metadata: None,
             registry,
             core,
             context,
@@ -527,6 +561,22 @@ impl Graph {
     /// it is announced, and keep the device list up to date. Must not destroy
     /// anything.
     pub fn on_global(&mut self, global: &GlobalObject<&DictRef>) {
+        if global.type_ == ObjectType::Metadata {
+            let is_default = global
+                .props
+                .and_then(|p| p.get("metadata.name"))
+                .is_some_and(|name| name == "default");
+            if is_default && self.metadata.is_none() {
+                match self.registry.bind::<Metadata, _>(global) {
+                    Ok(metadata) => {
+                        log::debug!("bound the default metadata");
+                        self.metadata = Some(metadata);
+                    }
+                    Err(e) => log::error!("cannot bind the default metadata: {e}"),
+                }
+            }
+            return;
+        }
         if global.type_ != ObjectType::Node {
             return;
         }
@@ -544,6 +594,28 @@ impl Graph {
         if name.starts_with(NODE_PREFIX) {
             return;
         }
+
+        if props
+            .get("media.class")
+            .is_some_and(|class| class.starts_with("Stream/Output/Audio"))
+        {
+            let Some(key) = app_key(props) else {
+                return;
+            };
+            let app = App {
+                key,
+                name: app_name(props),
+            };
+            // An application the user has assigned lands on its row's sink as
+            // soon as it starts playing.
+            if let Some(source) = self.source_for_app(&app.key) {
+                self.move_stream(global.id, &app.name, Some(source));
+            }
+            self.streams.insert(global.id, AppStream { app });
+            self.streams_dirty = true;
+            return;
+        }
+
         let is_output = match props.get("media.class") {
             Some("Audio/Sink") => true,
             Some("Audio/Source") => false,
@@ -598,6 +670,9 @@ impl Graph {
         if self.devices.remove(&global_id).is_some() {
             self.devices_dirty = true;
         }
+        if self.streams.remove(&global_id).is_some() {
+            self.streams_dirty = true;
+        }
         let outputs = self
             .mixes
             .values_mut()
@@ -612,6 +687,94 @@ impl Graph {
                 stage.node = None;
             }
         }
+    }
+
+    /// The row an application is assigned to, if any.
+    fn source_for_app(&self, key: &str) -> Option<SourceId> {
+        self.config
+            .sources
+            .iter()
+            .find(|source| source.apps.iter().any(|app| app == key))
+            .map(|source| source.id)
+    }
+
+    /// Point a stream at a row's sink, the way a session manager does it.
+    ///
+    /// Passing no value clears the property instead, which hands the stream
+    /// back to the session manager's own policy.
+    fn move_stream(&self, stream: u32, name: &str, source: Option<SourceId>) {
+        let Some(metadata) = &self.metadata else {
+            log::warn!("cannot move {name}: the default metadata is not bound yet");
+            return;
+        };
+        let target = source.map(|id| id.sink_node_name());
+        metadata.set_property(
+            stream,
+            "target.object",
+            target.as_deref().map(|_| "Spa:String"),
+            target.as_deref(),
+        );
+        match &target {
+            Some(sink) => log::info!("{name} now plays into {sink}"),
+            None => log::info!("{name} handed back to the session manager"),
+        }
+    }
+
+    /// Move every running stream of an application, or release them.
+    fn move_app(&self, key: &str, source: Option<SourceId>) {
+        for (id, stream) in &self.streams {
+            if stream.app.key == key {
+                self.move_stream(*id, &stream.app.name, source);
+            }
+        }
+    }
+
+    /// Assign an application to a row, taking it from whichever row had it.
+    pub fn assign_app(&mut self, id: SourceId, key: String) -> Result<(), EngineError> {
+        if self.config.source(id).is_none() {
+            return Err(EngineError::UnknownSource(id));
+        }
+        for source in &mut self.config.sources {
+            source.apps.retain(|app| app != &key);
+        }
+        let source = self
+            .config
+            .source_mut(id)
+            .ok_or(EngineError::UnknownSource(id))?;
+        source.apps.push(key.clone());
+        self.dirty = true;
+        self.move_app(&key, Some(id));
+        Ok(())
+    }
+
+    pub fn release_app(&mut self, id: SourceId, key: &str) -> Result<(), EngineError> {
+        let source = self
+            .config
+            .source_mut(id)
+            .ok_or(EngineError::UnknownSource(id))?;
+        source.apps.retain(|app| app != key);
+        self.dirty = true;
+        self.move_app(key, None);
+        Ok(())
+    }
+
+    /// Applications currently playing, deduplicated by key.
+    fn app_list(&self) -> Vec<App> {
+        let mut apps: Vec<App> = Vec::new();
+        for stream in self.streams.values() {
+            if !apps.iter().any(|app| app.key == stream.app.key) {
+                apps.push(stream.app.clone());
+            }
+        }
+        apps.sort_by(|a, b| a.name.cmp(&b.name));
+        apps
+    }
+
+    pub fn emit_apps(&mut self) {
+        self.streams_dirty = false;
+        self.emit(Event::Apps {
+            running: self.app_list(),
+        });
     }
 
     fn device_lists(&self) -> (Vec<Device>, Vec<Device>) {
@@ -640,6 +803,9 @@ impl Graph {
     pub fn tick(&mut self) {
         if self.devices_dirty {
             self.emit_devices();
+        }
+        if self.streams_dirty {
+            self.emit_apps();
         }
         self.flush_config();
     }

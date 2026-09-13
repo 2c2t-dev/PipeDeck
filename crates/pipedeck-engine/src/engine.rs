@@ -24,7 +24,7 @@ use crate::config::Config;
 use crate::error::EngineError;
 use crate::pw::Graph;
 use crate::types::{
-    ChainState, Device, LinkConfig, MixConfig, MixId, SourceConfig, SourceId, MAX_MIXES,
+    App, ChainState, Device, LinkConfig, MixConfig, MixId, SourceConfig, SourceId, MAX_MIXES,
 };
 
 /// Requests from a client to the engine.
@@ -90,6 +90,18 @@ pub enum Command {
         id: SourceId,
         muted: bool,
     },
+    /// Send an application's audio to a row, taking it from whichever row
+    /// held it. Its running streams move at once, and so do the ones it
+    /// opens later.
+    AssignApp {
+        id: SourceId,
+        app: String,
+    },
+    /// Hand an application back to the session manager's own policy.
+    ReleaseApp {
+        id: SourceId,
+        app: String,
+    },
     /// Create or destroy one cell of the matrix.
     SetLink {
         source: SourceId,
@@ -124,6 +136,8 @@ pub enum Event {
     /// The whole matrix, sent once the graph is up and after every
     /// structural change. Clients rebuild their grid from it.
     State(StateSnapshot),
+    /// The applications currently playing audio, whatever they play into.
+    Apps { running: Vec<App> },
     /// The audio devices currently on the system.
     Devices {
         outputs: Vec<Device>,
@@ -323,6 +337,7 @@ fn run(
         }
         g.emit_state();
         g.emit_devices();
+        g.emit_apps();
     }
 
     let _receiver = {
@@ -409,6 +424,8 @@ fn handle_command(
             structural = false;
             g.update_source(id, |c| c.muted = muted)
         }
+        Command::AssignApp { id, app } => g.assign_app(id, app),
+        Command::ReleaseApp { id, app } => g.release_app(id, &app),
         Command::SetLink {
             source,
             mix,

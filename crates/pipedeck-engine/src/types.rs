@@ -67,6 +67,11 @@ pub struct SourceConfig {
     /// `node.name` of the capture device, for an input row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+    /// Applications whose audio belongs to this row. An application is
+    /// matched by [`App::key`], and its streams are moved onto the row's sink
+    /// as they appear. An input row has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apps: Vec<String>,
 }
 
 impl SourceConfig {
@@ -77,6 +82,7 @@ impl SourceConfig {
             gain: 1.0,
             muted: false,
             device: None,
+            apps: Vec::new(),
         }
     }
 
@@ -87,6 +93,7 @@ impl SourceConfig {
             gain: 1.0,
             muted: false,
             device: Some(device.into()),
+            apps: Vec::new(),
         }
     }
 
@@ -275,6 +282,16 @@ impl LinkConfig {
         self.gain = state.gain;
         self.muted = state.muted;
     }
+}
+
+/// An application playing audio, as offered to the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct App {
+    /// What an assignment matches on, stable across runs of the application:
+    /// its binary when the server knows it, its name otherwise.
+    pub key: String,
+    /// What to show.
+    pub name: String,
 }
 
 /// An audio device the user can attach to a mix or turn into a source.

@@ -18,5 +18,6 @@ pub use config::Config;
 pub use engine::{spawn, Command, EngineHandle, Event, StateSnapshot};
 pub use error::EngineError;
 pub use types::{
-    ChainState, Device, LinkConfig, MixConfig, MixId, SourceConfig, SourceId, MAX_MIXES,
+    App, ChainState, Device, LinkConfig, MixConfig, MixId, MixOutput, SourceConfig, SourceId,
+    MAX_MIXES,
 };

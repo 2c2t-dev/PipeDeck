@@ -10,7 +10,7 @@ use adw::prelude::*;
 use libadwaita as adw;
 
 use pipedeck_engine::{
-    Device, Event, MixConfig, MixId, SourceConfig, SourceId, StateSnapshot, MAX_MIXES,
+    App, Device, Event, MixConfig, MixId, SourceConfig, SourceId, StateSnapshot, MAX_MIXES,
 };
 
 use crate::cell::{link_button, Cell};
@@ -37,6 +37,8 @@ pub struct Window {
     state: RefCell<StateSnapshot>,
     outputs: RefCell<Vec<Device>>,
     inputs: RefCell<Vec<Device>>,
+    /// Applications currently playing, for the channel windows.
+    apps: RefCell<Vec<App>>,
     cells: RefCell<HashMap<(SourceId, MixId), Cell>>,
     /// The object windows, while they are open, so engine changes reach them.
     mix_dialog: RefCell<Option<Rc<MixDialog>>>,
@@ -96,6 +98,7 @@ impl Window {
             }),
             outputs: RefCell::new(Vec::new()),
             inputs: RefCell::new(Vec::new()),
+            apps: RefCell::new(Vec::new()),
             cells: RefCell::new(HashMap::new()),
             mix_dialog: RefCell::new(None),
             channel_dialog: RefCell::new(None),
@@ -114,6 +117,10 @@ impl Window {
             Event::State(state) => {
                 *self.state.borrow_mut() = state;
                 self.rebuild();
+                self.refresh_dialogs();
+            }
+            Event::Apps { running } => {
+                *self.apps.borrow_mut() = running;
                 self.refresh_dialogs();
             }
             Event::Devices { outputs, inputs } => {
@@ -231,9 +238,8 @@ impl Window {
             &self.window,
             &self.engine,
             source,
-            &state.mixes,
-            &state.links,
             &self.inputs.borrow(),
+            &self.apps.borrow(),
         );
         drop(state);
         *self.channel_dialog.borrow_mut() = Some(dialog);
@@ -258,9 +264,7 @@ impl Window {
         if let Some(dialog) = open_channel {
             let state = self.state.borrow();
             match state.sources.iter().find(|s| s.id == dialog.id()) {
-                Some(source) => {
-                    dialog.refresh(source, &state.mixes, &state.links, &self.inputs.borrow())
-                }
+                Some(source) => dialog.refresh(source, &self.inputs.borrow(), &self.apps.borrow()),
                 None => {
                     drop(state);
                     dialog.close();

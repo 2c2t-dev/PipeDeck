@@ -6,8 +6,10 @@ The mixer is a **matrix**. Sources are rows, mixes are columns, and each cell
 is an independent fader and mute. What you hear is not what goes to the
 stream, because they are different columns.
 
-- A **source**, called a channel in the interface, is either a virtual output any application can select in its
-  audio settings, or a capture device such as a microphone.
+- A **source**, called a channel in the interface, is either a virtual output
+  any application can select in its audio settings, or a capture device such
+  as a microphone. A channel can also hold applications: their audio is moved
+  onto it as they start playing, so you pick them once instead of every time.
 - A **mix** collects the sources you send to it into a sink a capture client
   such as OBS can read, and plays to any number of output devices you attach
   to it, each with its own level. It has a master level of its own. Up to
@@ -41,8 +43,9 @@ instead of handing over to the running instance.
 
 Clicking a card opens the window of that object. A mix window holds its
 name, its master level and the devices it plays to, each with a level of
-its own. A channel window holds its name, its trim and the mixes it feeds,
-each with the fader that pair has in the grid. Both are where you rename or
+its own. A channel window holds its name, its trim and the applications it carries.
+A channel bound to a capture device shows that device instead, since
+applications play into virtual outputs, not into a microphone. Both are where you rename or
 remove the object.
 
 ## Using it with OBS
