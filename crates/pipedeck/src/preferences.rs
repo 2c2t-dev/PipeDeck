@@ -241,7 +241,11 @@ fn stereotool_state(status: &Status) -> (String, String) {
         Status::Ready(info) => (
             format!("Stereo Tool {}", info.version),
             match (&info.licensed, &info.unlicensed) {
-                (true, _) => format!("Licensed. {}", info.path.display()),
+                // Not "licensed": the library answers for what it is running,
+                // and an unregistered copy running nothing that needs a key
+                // answers yes. Saying so plainly beats a word the window's
+                // own title bar would contradict.
+                (true, _) => format!("Nothing it runs needs a key. {}", info.path.display()),
                 (false, Some(features)) => {
                     format!("No licence for: {features}. It adds speech and beeps to the audio.")
                 }

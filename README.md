@@ -124,12 +124,18 @@ keeps its state in `~/.libStereoTool_*.so.rc`.
 
 **Open** on the effect brings up Stereo Tool's own interface — every band and
 every curve it has — on the processor the mixer is running, so what you change
-is heard at once and stays in its own settings file. It is a window of its
-own, not one embedded in Pipedeck: the library draws it in X11, which is also
-why the X11 build is the one loaded first. The builds for a machine without
-X11 carry no window, and then the button is not offered. A preset exported
-from Stereo Tool can be loaded on the effect instead, which is what a machine
-with no display has.
+is heard at once and stays in its own settings file. It is a window of its own
+next to Pipedeck's, drawn by the library in X11, which is why the X11 build is
+the one loaded first. The builds for a machine without X11 carry no window,
+and then the button is not offered; a preset exported from Stereo Tool can be
+loaded on the effect instead, which is what a machine with no display has.
+
+Its interface has to be asked for the way a plug-in's is. `GUI_Show` takes the
+X11 id of a host window, as a plug-in is handed the window its host drew for
+it, and given none it does nothing at all — no error, no window. So Pipedeck
+makes one X11 window, never maps it, and holds it out to be pointed at;
+Stereo Tool then opens its real window beside it. Nothing of ours is on the
+screen.
 
 The licence key is a field on the settings page, passed to the library and to
 nothing else. Without one Stereo Tool still runs and puts speech and beeps in

@@ -12,7 +12,7 @@
 //! Every call here is unsafe by nature — it is the library's own code that
 //! runs — and the symbols are exactly those the API exposes.
 
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -176,6 +176,11 @@ pub enum Status {
 /// The entry points the library exports, as Liquidsoap's binding names them.
 struct Api {
     create: unsafe extern "C" fn(*const c_char) -> *mut c_void,
+    /// The same, told outright whether the processor is to carry its own
+    /// interface. Plain `create` decides for itself, and what it decides is
+    /// not documented, so this is what the mixer asks for when the build has
+    /// a window to give.
+    create2: Option<unsafe extern "C" fn(bool, *const c_char) -> *mut c_void>,
     delete: unsafe extern "C" fn(*mut c_void),
     process: unsafe extern "C" fn(*mut c_void, *mut f32, c_int, c_int, c_int),
     latency: unsafe extern "C" fn(*mut c_void, c_int, bool) -> c_int,
@@ -259,6 +264,12 @@ unsafe fn load(path: &Path) -> Result<Api, String> {
             *mut c_void,
             unsafe extern "C" fn(*const c_char) -> *mut c_void,
         >(symbol(b"stereoTool_Create\0")?),
+        create2: symbol(b"stereoTool_Create2\0").ok().map(|create2| {
+            std::mem::transmute::<
+                *mut c_void,
+                unsafe extern "C" fn(bool, *const c_char) -> *mut c_void,
+            >(create2)
+        }),
         delete: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut c_void)>(symbol(
             b"stereoTool_Delete\0",
         )?),
@@ -437,6 +448,133 @@ impl Drop for Handle {
     }
 }
 
+/// The handful of X11 calls it takes to hold out a window.
+struct X11 {
+    init_threads: unsafe extern "C" fn() -> c_int,
+    open_display: unsafe extern "C" fn(*const c_char) -> *mut c_void,
+    close_display: unsafe extern "C" fn(*mut c_void),
+    default_root: unsafe extern "C" fn(*mut c_void) -> c_ulong,
+    create_window: unsafe extern "C" fn(
+        *mut c_void,
+        c_ulong,
+        c_int,
+        c_int,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_ulong,
+        c_ulong,
+    ) -> c_ulong,
+    destroy_window: unsafe extern "C" fn(*mut c_void, c_ulong),
+    flush: unsafe extern "C" fn(*mut c_void),
+}
+
+/// X11, if this machine has it. Loaded once, for the same reasons as the
+/// library itself.
+static X11: OnceLock<Option<&'static X11>> = OnceLock::new();
+
+fn x11() -> Option<&'static X11> {
+    *X11.get_or_init(|| {
+        // SAFETY: the library is the system's own, kept for the life of the
+        // process, and each signature is the one Xlib publishes.
+        let loaded = unsafe {
+            let library = libloading::Library::new("libX11.so.6").ok()?;
+            let symbol = |name: &[u8]| -> Option<*mut c_void> {
+                library.get::<*mut c_void>(name).ok().map(|s| *s)
+            };
+            let x11 = X11 {
+                init_threads: std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> c_int>(
+                    symbol(b"XInitThreads\0")?,
+                ),
+                open_display: std::mem::transmute::<
+                    *mut c_void,
+                    unsafe extern "C" fn(*const c_char) -> *mut c_void,
+                >(symbol(b"XOpenDisplay\0")?),
+                close_display: std::mem::transmute::<
+                    *mut c_void,
+                    unsafe extern "C" fn(*mut c_void),
+                >(symbol(b"XCloseDisplay\0")?),
+                default_root: std::mem::transmute::<
+                    *mut c_void,
+                    unsafe extern "C" fn(*mut c_void) -> c_ulong,
+                >(symbol(b"XDefaultRootWindow\0")?),
+                create_window: std::mem::transmute::<
+                    *mut c_void,
+                    unsafe extern "C" fn(
+                        *mut c_void,
+                        c_ulong,
+                        c_int,
+                        c_int,
+                        c_uint,
+                        c_uint,
+                        c_uint,
+                        c_ulong,
+                        c_ulong,
+                    ) -> c_ulong,
+                >(symbol(b"XCreateSimpleWindow\0")?),
+                destroy_window: std::mem::transmute::<
+                    *mut c_void,
+                    unsafe extern "C" fn(*mut c_void, c_ulong),
+                >(symbol(b"XDestroyWindow\0")?),
+                flush: std::mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut c_void)>(
+                    symbol(b"XFlush\0")?,
+                ),
+            };
+            // Stereo Tool draws from threads of its own. Xlib wants to be
+            // told before that happens.
+            (x11.init_threads)();
+            std::mem::forget(library);
+            Some(x11)
+        }?;
+        Some(Box::leak(Box::new(loaded)))
+    })
+}
+
+/// A window of ours, made only to be named.
+///
+/// Stereo Tool's Linux interface does not open on its own: `GUI_Show` wants
+/// the X11 id of a host window — the way a plug-in is handed the window its
+/// host drew for it — and does nothing whatever when given none. Told about
+/// one, it opens a window of its own beside it, so ours is never mapped and
+/// nothing of it is ever on the screen. It exists to be pointed at.
+struct Host {
+    x11: &'static X11,
+    display: *mut c_void,
+    window: c_ulong,
+}
+
+impl Host {
+    fn new() -> Result<Self, String> {
+        let x11 = x11().ok_or("no X11 on this machine, and its window needs it")?;
+        // SAFETY: the display is ours until `close_display`, and the window
+        // is made on its own root with sizes the API accepts.
+        unsafe {
+            let display = (x11.open_display)(std::ptr::null());
+            if display.is_null() {
+                return Err("no display to open its window on".into());
+            }
+            let root = (x11.default_root)(display);
+            let window = (x11.create_window)(display, root, 0, 0, 1, 1, 0, 0, 0);
+            (x11.flush)(display);
+            Ok(Self {
+                x11,
+                display,
+                window,
+            })
+        }
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        // SAFETY: both came from the calls above and are released once.
+        unsafe {
+            (self.x11.destroy_window)(self.display, self.window);
+            (self.x11.close_display)(self.display);
+        }
+    }
+}
+
 /// Stereo Tool's own window, on the processor it belongs to.
 ///
 /// It is the whole application's interface — every band, every curve — and
@@ -445,9 +583,12 @@ impl Drop for Handle {
 ///
 /// Dropping it takes the window away; the processor keeps running.
 pub struct Window {
+    // Field order matters: the interface goes before the window it was
+    // given to point at.
+    ptr: *mut c_void,
+    host: Host,
     /// Held so the processor outlives the window that draws it.
     handle: Arc<Handle>,
-    ptr: *mut c_void,
 }
 
 impl Window {
@@ -458,30 +599,29 @@ impl Window {
             .gui
             .as_ref()
             .ok_or("this build of Stereo Tool has no window; install the X11 one")?;
+        let host = Host::new()?;
         let _quiet = Hushed::new();
         // SAFETY: the processor is alive, this handle holds it.
         let ptr = unsafe { (gui.create)(handle.ptr) };
         if ptr.is_null() {
             return Err("Stereo Tool would not make its window".into());
         }
-        // SAFETY: the window is ours and alive. A null host window is what
-        // the header asks for everywhere but Windows, and means a window of
-        // its own rather than one sitting inside another.
+        // SAFETY: the interface is ours, and the host window outlives it.
         //
         // Its size is left alone: `GUI_SetSize` reaches XResizeWindow with
         // nothing to resize and takes the process down with it, before or
         // after showing alike, on this build. The window opens at the size
         // Stereo Tool remembers, and the user can drag it like any other.
-        unsafe { (gui.show)(ptr, std::ptr::null_mut()) };
-        Ok(Self { handle, ptr })
+        unsafe { (gui.show)(ptr, host.window as *mut c_void) };
+        Ok(Self { ptr, host, handle })
     }
 
     /// Put it back on the screen, having been hidden.
     pub fn show(&self) {
         if let Some(gui) = self.handle.api.gui.as_ref() {
             let _quiet = Hushed::new();
-            // SAFETY: the window is ours and alive.
-            unsafe { (gui.show)(self.ptr, std::ptr::null_mut()) };
+            // SAFETY: the interface is ours and the host window is alive.
+            unsafe { (gui.show)(self.ptr, self.host.window as *mut c_void) };
         }
     }
 
@@ -546,7 +686,13 @@ impl Instance {
         // API takes for "no licence".
         let handle = {
             let _quiet = Hushed::new();
-            unsafe { (api.create)(key.as_ref().map_or(std::ptr::null(), |key| key.as_ptr())) }
+            let key = key.as_ref().map_or(std::ptr::null(), |key| key.as_ptr());
+            match (api.create2, api.gui.is_some()) {
+                // Ask for the interface outright when the build has one: a
+                // processor made without it has no window to show later.
+                (Some(create2), wanted) => unsafe { create2(wanted, key) },
+                (None, _) => unsafe { (api.create)(key) },
+            }
         };
         if handle.is_null() {
             return Err("Stereo Tool refused to start".into());
