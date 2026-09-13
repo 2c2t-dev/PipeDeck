@@ -9,6 +9,7 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
+use pipedeck_engine::stereotool::Status;
 use pipedeck_engine::{
     vst3::Plugin, App, Command, Device, Event, MixConfig, MixId, SourceConfig, SourceId,
     StateSnapshot, MAX_MIXES,
@@ -45,6 +46,8 @@ pub struct Window {
     apps: RefCell<Vec<App>>,
     /// The plug-ins installed on the machine, as the engine found them.
     plugins: RefCell<Vec<Plugin>>,
+    /// Where Stereo Tool stands, so a window knows whether to offer it.
+    stereotool: RefCell<Status>,
     /// Last peak of every channel, so a cell can draw what it passes on.
     channel_levels: RefCell<HashMap<SourceId, f32>>,
     cells: RefCell<HashMap<(SourceId, MixId), Cell>>,
@@ -109,6 +112,7 @@ impl Window {
             stopped: StdCell::new(false),
             state: RefCell::new(StateSnapshot {
                 latency: String::new(),
+                stereotool_license: None,
                 mixes: Vec::new(),
                 sources: Vec::new(),
                 links: Vec::new(),
@@ -117,6 +121,7 @@ impl Window {
             inputs: RefCell::new(Vec::new()),
             apps: RefCell::new(Vec::new()),
             plugins: RefCell::new(Vec::new()),
+            stereotool: RefCell::new(Status::Absent),
             channel_levels: RefCell::new(HashMap::new()),
             cells: RefCell::new(HashMap::new()),
             mix_dialog: RefCell::new(None),
@@ -126,9 +131,16 @@ impl Window {
         settings.connect_clicked({
             let this = this.clone();
             move |_| {
-                let latency = this.state.borrow().latency.clone();
-                let plugins = this.plugins.borrow().len();
-                preferences::present(&this.window, &this.engine, &latency, plugins)
+                let state = this.state.borrow();
+                let latency = state.latency.clone();
+                let license = state.stereotool_license.clone();
+                drop(state);
+                let plugins = preferences::PluginState {
+                    installed: this.plugins.borrow().len(),
+                    stereotool: &this.stereotool.borrow(),
+                    license: license.as_deref(),
+                };
+                preferences::present(&this.window, &this.engine, &latency, &plugins)
             }
         });
 
@@ -149,6 +161,10 @@ impl Window {
             }
             Event::Plugins { available } => {
                 *self.plugins.borrow_mut() = available;
+                self.refresh_dialogs();
+            }
+            Event::StereoTool(status) => {
+                *self.stereotool.borrow_mut() = status;
                 self.refresh_dialogs();
             }
             Event::Apps { running } => {
@@ -329,7 +345,14 @@ impl Window {
         if let Some(open) = self.mix_dialog.borrow_mut().take() {
             open.close();
         }
-        let dialog = MixDialog::present(&self.window, &self.engine, mix, &self.outputs.borrow());
+        let dialog = MixDialog::present(
+            &self.window,
+            &self.engine,
+            mix,
+            &self.outputs.borrow(),
+            &self.plugins.borrow(),
+            &self.stereotool.borrow(),
+        );
         *self.mix_dialog.borrow_mut() = Some(dialog);
     }
 
@@ -349,6 +372,7 @@ impl Window {
             &self.inputs.borrow(),
             &self.apps.borrow(),
             &self.plugins.borrow(),
+            &self.stereotool.borrow(),
         );
         drop(state);
         *self.channel_dialog.borrow_mut() = Some(dialog);
@@ -365,7 +389,12 @@ impl Window {
         if let Some(dialog) = open_mix {
             let state = self.state.borrow();
             match state.mixes.iter().find(|m| m.id == dialog.id()) {
-                Some(mix) => dialog.refresh(mix, &self.outputs.borrow()),
+                Some(mix) => dialog.refresh(
+                    mix,
+                    &self.outputs.borrow(),
+                    &self.plugins.borrow(),
+                    &self.stereotool.borrow(),
+                ),
                 None => {
                     drop(state);
                     dialog.close();
@@ -382,6 +411,7 @@ impl Window {
                     &self.inputs.borrow(),
                     &self.apps.borrow(),
                     &self.plugins.borrow(),
+                    &self.stereotool.borrow(),
                 ),
                 None => {
                     drop(state);

@@ -69,9 +69,24 @@ impl SourceId {
 
 impl MixId {
     /// `node.name` of the sink this mix collects into. This is the node a
-    /// capture client such as OBS picks.
+    /// capture client such as OBS picks, and the last of the column: what
+    /// the mix runs happens before it, so a capture client hears the treated
+    /// signal and not the raw one.
     pub fn sink_node_name(self) -> String {
         format!("pipedeck.mix.{}", self.0)
+    }
+
+    /// `node.name` of the sink the cells play into when the mix runs effects
+    /// of PipeWire's own. The chain reads it and hands the result on.
+    pub fn effects_node_name(self) -> String {
+        format!("pipedeck.mixfx.{}", self.0)
+    }
+
+    /// `node.name` of the sink the mixer's own plug-ins read. Unlike a
+    /// channel's, this one is their input: a column is treated on its way
+    /// into the sink everything else reads.
+    pub fn plugins_node_name(self) -> String {
+        format!("pipedeck.mixvst.{}", self.0)
     }
 }
 
@@ -122,7 +137,13 @@ pub struct SourceConfig {
 impl Effect {
     /// Is this one hosted by the mixer rather than by PipeWire?
     pub fn is_plugin(&self) -> bool {
-        self.kind == EffectKind::Vst3
+        matches!(self.kind, EffectKind::Vst3 | EffectKind::StereoTool)
+    }
+
+    /// The preset file a Stereo Tool stage was given, if it has one. It is
+    /// kept in `plugin`, which is where a filter's library would go.
+    pub fn preset(&self) -> Option<&str> {
+        (self.kind == EffectKind::StereoTool).then_some(self.plugin.as_deref())?
     }
 }
 
@@ -286,6 +307,14 @@ pub struct MixConfig {
     pub muted: bool,
     #[serde(default)]
     pub outputs: Vec<MixOutput>,
+    /// Effects the whole mix runs, in order, between the cells and the sink.
+    ///
+    /// A column is the right place for a processor meant for one destination
+    /// — a broadcast chain on the stream, nothing on the headphones — and it
+    /// is also where the delay such a processor adds stays out of the way of
+    /// monitoring.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<Effect>,
 }
 
 impl MixConfig {
@@ -297,6 +326,7 @@ impl MixConfig {
             gain: 1.0,
             muted: false,
             outputs: Vec::new(),
+            effects: Vec::new(),
         }
     }
 
@@ -368,6 +398,9 @@ pub enum EffectKind {
     Ladspa,
     /// A VST3 plug-in installed on the machine, hosted by the mixer itself.
     Vst3,
+    /// Thimeo's Stereo Tool, hosted by the mixer through the shared library
+    /// the vendor ships for exactly that.
+    StereoTool,
 }
 
 impl EffectKind {
@@ -377,6 +410,7 @@ impl EffectKind {
             EffectKind::Lv2 => "lv2",
             EffectKind::Ladspa => "ladspa",
             EffectKind::Vst3 => "vst3",
+            EffectKind::StereoTool => "stereotool",
         }
     }
 }
@@ -455,6 +489,31 @@ mod tests {
     fn node_names_derive_from_ids() {
         assert_eq!(SourceId(7).sink_node_name(), "pipedeck.src.7");
         assert_eq!(MixId(2).sink_node_name(), "pipedeck.mix.2");
+        assert_eq!(MixId(2).effects_node_name(), "pipedeck.mixfx.2");
+        assert_eq!(MixId(2).plugins_node_name(), "pipedeck.mixvst.2");
+    }
+
+    #[test]
+    fn a_stereo_tool_stage_is_hosted_and_carries_its_preset() {
+        let mut effect = Effect {
+            name: "Stereo Tool".into(),
+            kind: EffectKind::StereoTool,
+            plugin: None,
+            label: "stereotool".into(),
+            controls: Vec::new(),
+        };
+        assert!(effect.is_plugin());
+        assert_eq!(effect.preset(), None);
+        effect.plugin = Some("/home/someone/fm.sts".into());
+        assert_eq!(effect.preset(), Some("/home/someone/fm.sts"));
+
+        let builtin = Effect {
+            kind: EffectKind::Builtin,
+            plugin: Some("not a preset".into()),
+            ..effect
+        };
+        assert!(!builtin.is_plugin());
+        assert_eq!(builtin.preset(), None);
     }
 
     #[test]

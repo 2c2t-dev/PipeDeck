@@ -43,15 +43,16 @@ use crate::config::Config;
 use crate::engine::{Event, StateSnapshot};
 use crate::error::EngineError;
 use crate::types::{
-    App, ChainState, Device, Effect, LinkConfig, MixConfig, MixId, MixOutput, SourceConfig,
-    SourceId,
+    App, ChainState, Device, Effect, EffectKind, LinkConfig, MixConfig, MixId, MixOutput,
+    SourceConfig, SourceId,
 };
 use crate::vst3::Plugin;
 
+use filter_chain::ChainSpec;
 use loopback::{LoopbackSpec, AUDIO_POSITION, CHANNELS};
 use meter::Meter;
 use module::LoadedModule;
-use plugin_chain::PluginChain;
+use plugin_chain::{PluginChain, Request};
 
 const NODE_PREFIX: &str = "pipedeck.";
 /// Marks the nodes of this mixer. Node names come from ids that are private
@@ -85,6 +86,22 @@ pub fn channel_output(source: &SourceConfig) -> String {
         source.id.effects_node_name()
     } else {
         source.id.sink_node_name()
+    }
+}
+
+/// The node a column starts on: its own effects if it runs any, the
+/// mixer's plug-ins if that is all it runs, else the sink itself.
+///
+/// This is the node the cells play into. A column is treated on the way in,
+/// the other way round from a channel, so that what a capture client reads
+/// on the mix sink is the treated signal.
+pub fn mix_input(mix: &MixConfig) -> String {
+    if mix.effects.iter().any(|effect| !effect.is_plugin()) {
+        mix.id.effects_node_name()
+    } else if !mix.effects.is_empty() {
+        mix.id.plugins_node_name()
+    } else {
+        mix.id.sink_node_name()
     }
 }
 
@@ -135,11 +152,19 @@ enum StageRef {
     Output(MixId, usize),
 }
 
-/// A column: the sink a capture client reads, plus one loopback per device.
+/// A column: the sink a capture client reads, plus one loopback per device,
+/// and whatever the mix runs between its cells and that sink.
 struct Mix {
     // Field order matters: the outputs are destroyed before the sink they
-    // capture from.
+    // capture from, and each chain before the sinks at either end of it.
     outputs: Vec<Stage>,
+    /// The plug-ins the mixer hosts itself, last before the sink.
+    plugins: Option<PluginChain>,
+    /// The sink they read, which the cells or the filter chain play into.
+    plugins_sink: Option<Node>,
+    _plugins_bound: Option<ProxyListener>,
+    /// What PipeWire runs for this column, first of the chain.
+    effects: Option<Effects>,
     _sink_listener: NodeListener,
     _sink_bound: ProxyListener,
     /// Also carries the master level of the mix, which the sink applies to
@@ -315,6 +340,7 @@ impl Graph {
     pub fn snapshot(&self) -> StateSnapshot {
         StateSnapshot {
             latency: self.config.latency.clone(),
+            stereotool_license: self.config.stereotool_license.clone(),
             mixes: self.config.mixes.clone(),
             sources: self.config.sources.clone(),
             links: self.config.links.clone(),
@@ -542,11 +568,25 @@ impl Graph {
         // registry announces it, which is also how we tell our sink from the
         // one another mixer gave the same name.
         let bound = self.watch_sink_id(&sink, cfg.id.sink_node_name());
+        // The plug-ins read a sink of their own, made before the chain that
+        // may play into it. The filter chain comes first in the column and
+        // hands the result to whichever of the two follows it.
+        let (plugins_sink, plugins_bound) = self.load_plugins_sink(
+            cfg.effects.iter().any(|effect| effect.is_plugin()),
+            cfg.id.plugins_node_name(),
+            format!("Pipedeck: {} plug-ins", cfg.name),
+            &cfg.name,
+        );
+        let effects = self.load_effects(&ChainSpec::for_mix(cfg));
         let outputs = self.load_outputs(cfg);
         self.mixes.insert(
             cfg.id,
             Mix {
                 outputs,
+                plugins: None,
+                plugins_sink,
+                _plugins_bound: plugins_bound,
+                effects,
                 _sink_listener: listener,
                 _sink_bound: bound,
                 sink,
@@ -562,6 +602,8 @@ impl Graph {
         let mut mix = self.mixes.remove(&id).ok_or(EngineError::UnknownMix(id))?;
         self.mix_meters.remove(&id);
         self.sink_ids.remove(&id.sink_node_name());
+        self.sink_ids.remove(&id.effects_node_name());
+        self.sink_ids.remove(&id.plugins_node_name());
         for stage in &mut mix.outputs {
             self.retire(stage);
         }
@@ -685,8 +727,13 @@ impl Graph {
         // The effects chain reads the row's sink and offers a sink of its
         // own, which is what the cells capture from then on. The plug-ins
         // the mixer hosts come after it, on a sink of their own again.
-        let effects = self.load_effects(cfg);
-        let (plugins_sink, plugins_bound) = self.load_plugins(cfg);
+        let effects = self.load_effects(&ChainSpec::for_source(cfg));
+        let (plugins_sink, plugins_bound) = self.load_plugins_sink(
+            cfg.effects.iter().any(|effect| effect.is_plugin()),
+            cfg.id.plugins_node_name(),
+            format!("Pipedeck: {} plug-ins", cfg.name),
+            &cfg.name,
+        );
 
         // A virtual row is measured on its sink's monitor, an input row on
         // the device it captures, which is the same signal every cell gets.
@@ -733,87 +780,87 @@ impl Graph {
         Ok(())
     }
 
-    /// Load a row's effects, if it has any.
+    /// Load the effects PipeWire runs for a channel or a mix, if there are
+    /// any.
     ///
     /// The chain plays into a sink of ours rather than being one itself:
-    /// asking a filter chain to be a sink crashes PipeWire 1.6, and the
-    /// cells want a monitor to capture in any case.
-    fn load_effects(&self, cfg: &SourceConfig) -> Option<Effects> {
-        // Plug-ins are hosted by the mixer, so a row that has only those
+    /// asking a filter chain to be a sink crashes PipeWire 1.6, and whoever
+    /// reads it wants a monitor to capture in any case.
+    fn load_effects(&self, spec: &ChainSpec<'_>) -> Option<Effects> {
+        // Plug-ins are hosted by the mixer, so an object that has only those
         // needs nothing from PipeWire and no sink to put it in.
-        if !cfg.effects.iter().any(|effect| !effect.is_plugin()) {
+        if !spec.effects.iter().any(|effect| !effect.is_plugin()) {
             return None;
         }
         let sink = match self.create_sink(
-            cfg.id.effects_node_name(),
-            format!("Pipedeck: {} effects", cfg.name),
+            spec.node.clone(),
+            format!("Pipedeck: {} effects", spec.owner),
         ) {
             Ok(sink) => sink,
             Err(e) => {
                 log::error!("{e}");
                 self.emit(Event::Error(format!(
                     "cannot run the effects of {}: {e}",
-                    cfg.name
+                    spec.owner
                 )));
                 return None;
             }
         };
-        let bound = self.watch_sink_id(&sink, cfg.id.effects_node_name());
+        let bound = self.watch_sink_id(&sink, spec.node.clone());
         Some(Effects {
-            module: self.load_chain(cfg),
+            module: self.load_chain(spec),
             _bound: bound,
             sink,
         })
     }
 
-    /// Make the sink a row's plug-ins will play into.
+    /// Make the sink the hosted plug-ins hang on: the one a channel's play
+    /// into, the one a mix's read.
     ///
     /// The chain itself waits: it has to be told the ids of the nodes it
     /// sits between, and the server names them only once the loop runs
     /// again. [`Graph::hook_up_plugins`] finishes the job.
-    fn load_plugins(&self, cfg: &SourceConfig) -> (Option<Node>, Option<ProxyListener>) {
-        if !cfg.effects.iter().any(|effect| effect.is_plugin()) {
+    fn load_plugins_sink(
+        &self,
+        wanted: bool,
+        node_name: String,
+        description: String,
+        owner: &str,
+    ) -> (Option<Node>, Option<ProxyListener>) {
+        if !wanted {
             return (None, None);
         }
-        match self.create_sink(
-            cfg.id.plugins_node_name(),
-            format!("Pipedeck: {} plug-ins", cfg.name),
-        ) {
+        match self.create_sink(node_name.clone(), description) {
             Ok(sink) => {
-                let bound = self.watch_sink_id(&sink, cfg.id.plugins_node_name());
+                let bound = self.watch_sink_id(&sink, node_name);
                 (Some(sink), Some(bound))
             }
             Err(e) => {
                 log::error!("{e}");
                 self.emit(Event::Error(format!(
-                    "cannot run the plug-ins of {}: {e}",
-                    cfg.name
+                    "cannot run the plug-ins of {owner}: {e}"
                 )));
                 (None, None)
             }
         }
     }
 
-    /// The plug-ins a row asks for, as the scanner knows them.
-    fn wanted_plugins(&self, cfg: &SourceConfig) -> Vec<Plugin> {
-        let installed = &self.plugins;
-        cfg.effects
+    /// The plug-ins an object asks for, resolved against what is installed.
+    fn wanted_plugins(&self, effects: &[Effect]) -> Vec<Request> {
+        let license = self.config.stereotool_license.as_deref();
+        effects
             .iter()
             .filter(|effect| effect.is_plugin())
-            .filter_map(|effect| {
-                let found = installed
-                    .iter()
-                    .find(|plugin| plugin.class_id == effect.label)
-                    .cloned();
-                if found.is_none() {
-                    log::error!("{} is not installed any more", effect.name);
-                }
-                found
-            })
+            .filter_map(|effect| Request::resolve(effect, &self.plugins, license))
             .collect()
     }
 
     /// Open the chains whose two ends the server has now named.
+    ///
+    /// A channel's plug-ins come last, so they read what the channel ends on
+    /// and play into a sink of their own; a mix's come just before its sink,
+    /// so they read a sink of their own and play into the mix. Both are the
+    /// same pair of streams between two node ids.
     fn hook_up_plugins(&mut self) {
         let sources: Vec<SourceConfig> = self.config.sources.clone();
         for cfg in sources {
@@ -840,11 +887,20 @@ impl Graph {
                 continue;
             };
 
-            let plugins = self.wanted_plugins(&cfg);
+            let plugins = self.wanted_plugins(&cfg.effects);
             if plugins.is_empty() {
                 continue;
             }
-            match PluginChain::new(&self.core, &cfg, &plugins, from, into, &self.config.latency) {
+            let chain = PluginChain::new(
+                &self.core,
+                &cfg.id.plugins_node_name(),
+                &cfg.name,
+                &plugins,
+                from,
+                into,
+                &self.config.latency,
+            );
+            match chain {
                 Ok(chain) => {
                     if let Some(source) = self.sources.get_mut(&cfg.id) {
                         source.plugins = Some(chain);
@@ -865,21 +921,72 @@ impl Graph {
                 }
             }
         }
+
+        let mixes: Vec<MixConfig> = self.config.mixes.clone();
+        for cfg in mixes {
+            let wants = cfg.effects.iter().any(|effect| effect.is_plugin());
+            let running = self
+                .mixes
+                .get(&cfg.id)
+                .is_some_and(|mix| mix.plugins.is_some());
+            if !wants || running {
+                continue;
+            }
+
+            let (Some(from), Some(into)) = (
+                self.sink_ids.get(&cfg.id.plugins_node_name()).copied(),
+                self.sink_ids.get(&cfg.id.sink_node_name()).copied(),
+            ) else {
+                continue;
+            };
+
+            let plugins = self.wanted_plugins(&cfg.effects);
+            if plugins.is_empty() {
+                continue;
+            }
+            let chain = PluginChain::new(
+                &self.core,
+                &cfg.id.plugins_node_name(),
+                &cfg.name,
+                &plugins,
+                from,
+                into,
+                &self.config.latency,
+            );
+            match chain {
+                Ok(chain) => {
+                    if let Some(mix) = self.mixes.get_mut(&cfg.id) {
+                        mix.plugins = Some(chain);
+                    }
+                }
+                Err(e) => {
+                    log::error!("{e}");
+                    self.emit(Event::Error(format!(
+                        "cannot run the plug-ins of {}: {e}",
+                        cfg.name
+                    )));
+                    if let Some(mix) = self.mixes.get_mut(&cfg.id) {
+                        mix.plugins_sink = None;
+                    }
+                    self.sink_ids.remove(&cfg.id.plugins_node_name());
+                }
+            }
+        }
     }
 
     /// Load the chain itself, against a sink that already exists.
-    fn load_chain(&self, cfg: &SourceConfig) -> Option<LoadedModule> {
-        let args = filter_chain::args(cfg, &self.config.latency)?;
+    fn load_chain(&self, spec: &ChainSpec<'_>) -> Option<LoadedModule> {
+        let args = filter_chain::args(spec, &self.config.latency)?;
         match LoadedModule::load(&self.context, FILTER_CHAIN_MODULE, &args) {
             Ok(module) => {
-                log::info!("{} runs {} effect(s)", cfg.name, cfg.effects.len());
+                log::info!("{} runs {} effect(s)", spec.owner, spec.effects.len());
                 Some(module)
             }
             Err(e) => {
                 log::error!("{e}");
                 self.emit(Event::Error(format!(
                     "cannot run the effects of {}: {e}",
-                    cfg.name
+                    spec.owner
                 )));
                 None
             }
@@ -925,7 +1032,7 @@ impl Graph {
             {
                 fx.module = None;
             }
-            let module = self.load_chain(&cfg);
+            let module = self.load_chain(&ChainSpec::for_source(&cfg));
             if let Some(fx) = self
                 .sources
                 .get_mut(&id)
@@ -954,8 +1061,13 @@ impl Graph {
         }
         self.sink_ids.remove(&id.effects_node_name());
         self.sink_ids.remove(&id.plugins_node_name());
-        let loaded = self.load_effects(&cfg);
-        let (plugins_sink, plugins_bound) = self.load_plugins(&cfg);
+        let loaded = self.load_effects(&ChainSpec::for_source(&cfg));
+        let (plugins_sink, plugins_bound) = self.load_plugins_sink(
+            cfg.effects.iter().any(|effect| effect.is_plugin()),
+            cfg.id.plugins_node_name(),
+            format!("Pipedeck: {} plug-ins", cfg.name),
+            &cfg.name,
+        );
         if let Some(source) = self.sources.get_mut(&id) {
             source.effects = loaded;
             source.plugins = None;
@@ -969,6 +1081,128 @@ impl Graph {
             }
         }
         Ok(())
+    }
+
+    /// Replace what a mix runs, and point its cells at whatever now starts
+    /// the column.
+    ///
+    /// Same trade-off as a channel's: the chain is a module, fixed when it
+    /// is loaded, so a change reloads it and the cells feeding it. The mix
+    /// sink stays in place throughout, so a capture client such as OBS keeps
+    /// its connection.
+    pub fn set_mix_effects(&mut self, id: MixId, effects: Vec<Effect>) -> Result<(), EngineError> {
+        let cfg = self.config.mix_mut(id).ok_or(EngineError::UnknownMix(id))?;
+        cfg.effects = effects;
+        let cfg = cfg.clone();
+        self.dirty = true;
+
+        let had_chain = self.mixes.get(&id).is_some_and(|mix| mix.effects.is_some());
+        let has_chain = !cfg.effects.is_empty();
+        let had_plugins = self.mixes.get(&id).is_some_and(|mix| mix.plugins.is_some());
+        let has_plugins = cfg.effects.iter().any(|effect| effect.is_plugin());
+
+        // Changing what a chain runs keeps its sink, for the same reason a
+        // channel's does: recreating it would put a second node behind the
+        // same name for a moment, and the cells would as likely feed the old
+        // one as the new.
+        if had_chain && has_chain && !had_plugins && !has_plugins {
+            if let Some(fx) = self.mixes.get_mut(&id).and_then(|mix| mix.effects.as_mut()) {
+                fx.module = None;
+            }
+            let module = self.load_chain(&ChainSpec::for_mix(&cfg));
+            if let Some(fx) = self.mixes.get_mut(&id).and_then(|mix| mix.effects.as_mut()) {
+                fx.module = module;
+            }
+            return Ok(());
+        }
+
+        // The chain appears or goes, so the cells change what they feed.
+        let cells: Vec<LinkConfig> = self
+            .config
+            .links
+            .iter()
+            .filter(|link| link.mix == id)
+            .copied()
+            .collect();
+        for link in &cells {
+            self.drop_link((link.source, link.mix));
+        }
+        if let Some(mix) = self.mixes.get_mut(&id) {
+            mix.plugins = None;
+            mix.plugins_sink = None;
+            mix.effects = None;
+        }
+        self.sink_ids.remove(&id.effects_node_name());
+        self.sink_ids.remove(&id.plugins_node_name());
+        let (plugins_sink, plugins_bound) = self.load_plugins_sink(
+            has_plugins,
+            id.plugins_node_name(),
+            format!("Pipedeck: {} plug-ins", cfg.name),
+            &cfg.name,
+        );
+        let loaded = self.load_effects(&ChainSpec::for_mix(&cfg));
+        if let Some(mix) = self.mixes.get_mut(&id) {
+            mix.effects = loaded;
+            mix.plugins = None;
+            mix.plugins_sink = plugins_sink;
+            mix._plugins_bound = plugins_bound;
+        }
+        for link in &cells {
+            if let Err(e) = self.create_link(link) {
+                log::error!("{e}");
+                self.emit(Event::Error(e.to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Take the Stereo Tool licence key, and open again whatever runs on it:
+    /// a processor is told its key when it is created and not after.
+    pub fn set_stereotool_license(&mut self, key: Option<String>) -> Result<(), EngineError> {
+        let key = key
+            .map(|key| key.trim().to_owned())
+            .filter(|k| !k.is_empty());
+        if self.config.stereotool_license == key {
+            return Ok(());
+        }
+        self.config.stereotool_license = key;
+        self.dirty = true;
+        self.reopen_stereotool();
+        Ok(())
+    }
+
+    /// Drop the chains holding a Stereo Tool stage; the next tick opens them
+    /// again, with whatever the settings now hold.
+    fn reopen_stereotool(&mut self) {
+        let uses = |effects: &[Effect]| {
+            effects
+                .iter()
+                .any(|effect| effect.kind == EffectKind::StereoTool)
+        };
+        let sources: Vec<SourceId> = self
+            .config
+            .sources
+            .iter()
+            .filter(|cfg| uses(&cfg.effects))
+            .map(|cfg| cfg.id)
+            .collect();
+        for id in sources {
+            if let Some(source) = self.sources.get_mut(&id) {
+                source.plugins = None;
+            }
+        }
+        let mixes: Vec<MixId> = self
+            .config
+            .mixes
+            .iter()
+            .filter(|cfg| uses(&cfg.effects))
+            .map(|cfg| cfg.id)
+            .collect();
+        for id in mixes {
+            if let Some(mix) = self.mixes.get_mut(&id) {
+                mix.plugins = None;
+            }
+        }
     }
 
     /// Trim of a row, applied to its sink. An input row has no sink, so it
@@ -1392,6 +1626,7 @@ impl Graph {
         self.plugins = crate::vst3::installed();
         log::info!("{} plug-in(s) installed", self.plugins.len());
         self.emit_plugins();
+        self.emit_stereotool();
     }
 
     /// What the interface can offer to put on a channel.
@@ -1399,6 +1634,15 @@ impl Graph {
         self.emit(Event::Plugins {
             available: self.plugins.clone(),
         });
+    }
+
+    /// Say where Stereo Tool stands. Asking the library means loading it and
+    /// opening one processor, so this is sent when something changed rather
+    /// than on a timer.
+    pub fn emit_stereotool(&self) {
+        self.emit(Event::StereoTool(crate::stereotool::status(
+            self.config.stereotool_license.as_deref(),
+        )));
     }
 
     pub fn emit_devices(&mut self) {

@@ -12,6 +12,7 @@ pub mod config;
 pub mod engine;
 pub mod error;
 mod pw;
+pub mod stereotool;
 pub mod types;
 pub mod vst3;
 

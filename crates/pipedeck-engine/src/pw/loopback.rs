@@ -137,7 +137,9 @@ impl LoopbackSpec {
             "node.description",
             Val::from(format!("Pipedeck: {} to {}", source.name, mix.name)),
         ));
-        playback.push(("target.object", Val::from(mix.id.sink_node_name())));
+        // A column may be treated on the way in, so a cell ends on the node
+        // the column starts with rather than on its sink.
+        playback.push(("target.object", Val::from(crate::pw::mix_input(mix))));
 
         Self { capture, playback }
     }
@@ -211,6 +213,22 @@ mod tests {
         assert!(args.contains("node.description = \"Pipedeck: Ga\\\"me to Stream Mix\""));
         assert_eq!(args.matches("state.restore-props = false").count(), 2);
         assert!(args.ends_with("} }"));
+    }
+
+    #[test]
+    fn a_cell_ends_on_what_the_mix_starts_with() {
+        let source = SourceConfig::virtual_sink(SourceId(3), "Game");
+        let mut treated = mix();
+        treated.effects = vec![crate::types::Effect {
+            name: "Low cut".into(),
+            kind: crate::types::EffectKind::Builtin,
+            plugin: None,
+            label: "bq_highpass".into(),
+            controls: Vec::new(),
+        }];
+        let args = LoopbackSpec::for_link(&source, &treated, "512/48000").to_args();
+        assert!(args.contains("target.object = \"pipedeck.mixfx.2\""));
+        assert!(!args.contains("target.object = \"pipedeck.mix.2\""));
     }
 
     #[test]

@@ -10,7 +10,7 @@
 //! stream and the channels are wired in parallel: a filter node has one input
 //! and one output, and stereo needs two of them.
 
-use crate::types::{Effect, SourceConfig};
+use crate::types::{Effect, MixConfig, SourceConfig};
 
 use super::args::{render, Val};
 use super::loopback::{AUDIO_POSITION, CHANNELS};
@@ -42,14 +42,64 @@ fn node(name: String, effect: &Effect) -> Val {
     Val::Dict(entries)
 }
 
-/// The arguments loading a channel's effects.
+/// What one chain has to know: which effects, under which name, and which
+/// node it reads and which it plays into.
 ///
-/// Returns nothing when the channel has no effect: a chain of none would be
-/// a node, a quantum and a name for nothing.
-pub fn args(source: &SourceConfig, latency: &str) -> Option<String> {
+/// A channel and a mix run the same kind of chain in opposite places — a
+/// channel is treated before the cells read it, a mix after they have
+/// written into it — so both ends are said outright rather than derived.
+pub struct ChainSpec<'a> {
+    pub effects: &'a [Effect],
+    /// What the window calls the object, for the node descriptions.
+    pub owner: &'a str,
+    /// Base `node.name` of the chain's own streams, which get `.in`/`.out`.
+    pub node: String,
+    /// `node.name` of the sink the chain captures the monitor of.
+    pub capture_from: String,
+    /// `node.name` of the sink the chain plays into.
+    pub playback_into: String,
+}
+
+impl<'a> ChainSpec<'a> {
+    /// A channel's chain: it reads the channel's own sink and offers the
+    /// sink named after it, which the cells capture instead.
+    pub fn for_source(source: &'a SourceConfig) -> Self {
+        Self {
+            effects: &source.effects,
+            owner: &source.name,
+            node: source.id.effects_node_name(),
+            capture_from: source.id.sink_node_name(),
+            playback_into: source.id.effects_node_name(),
+        }
+    }
+
+    /// A mix's chain: the cells play into the sink named after it, and the
+    /// chain hands the result to whatever comes next — the mixer's own
+    /// plug-ins, or the mix sink everything else reads.
+    pub fn for_mix(mix: &'a MixConfig) -> Self {
+        let into = if mix.effects.iter().any(|effect| effect.is_plugin()) {
+            mix.id.plugins_node_name()
+        } else {
+            mix.id.sink_node_name()
+        };
+        Self {
+            effects: &mix.effects,
+            owner: &mix.name,
+            node: mix.id.effects_node_name(),
+            capture_from: mix.id.effects_node_name(),
+            playback_into: into,
+        }
+    }
+}
+
+/// The arguments loading one chain.
+///
+/// Returns nothing when there is no effect for PipeWire to run: a chain of
+/// none would be a node, a quantum and a name for nothing.
+pub fn args(spec: &ChainSpec<'_>, latency: &str) -> Option<String> {
     // Plug-ins are hosted by the mixer, not by PipeWire, so they are not
     // part of this graph.
-    let effects: Vec<&Effect> = source
+    let effects: Vec<&Effect> = spec
         .effects
         .iter()
         .filter(|effect| !effect.is_plugin())
@@ -97,10 +147,9 @@ pub fn args(source: &SourceConfig, latency: &str) -> Option<String> {
         ])
     };
 
-    let capture_name = format!("{}.in", source.id.effects_node_name());
     let mut capture = stream(
-        capture_name,
-        format!("Pipedeck: {} effects in", source.name),
+        format!("{}.in", spec.node),
+        format!("Pipedeck: {} effects in", spec.owner),
     );
     if let Val::Dict(entries) = &mut capture {
         entries.push((
@@ -110,13 +159,13 @@ pub fn args(source: &SourceConfig, latency: &str) -> Option<String> {
         entries.push(("stream.capture.sink".to_owned(), Val::from(true)));
         entries.push((
             "target.object".to_owned(),
-            Val::from(source.id.sink_node_name()),
+            Val::from(spec.capture_from.clone()),
         ));
     }
 
     let mut playback = stream(
-        format!("{}.out", source.id.effects_node_name()),
-        format!("Pipedeck: {} effects out", source.name),
+        format!("{}.out", spec.node),
+        format!("Pipedeck: {} effects out", spec.owner),
     );
     if let Val::Dict(entries) = &mut playback {
         // The chain plays into a sink of ours rather than being one: asking
@@ -124,14 +173,14 @@ pub fn args(source: &SourceConfig, latency: &str) -> Option<String> {
         // need a monitor to capture anyway.
         entries.push((
             "target.object".to_owned(),
-            Val::from(source.id.effects_node_name()),
+            Val::from(spec.playback_into.clone()),
         ));
     }
 
     Some(render(vec![
         (
             "node.description",
-            Val::from(format!("Pipedeck: {} effects", source.name)),
+            Val::from(format!("Pipedeck: {} effects", spec.owner)),
         ),
         ("capture.props", capture),
         ("playback.props", playback),
@@ -150,7 +199,7 @@ pub fn args(source: &SourceConfig, latency: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Control, EffectKind, SourceId};
+    use crate::types::{Control, EffectKind, MixId, SourceId};
 
     fn low_cut() -> Effect {
         Effect {
@@ -168,14 +217,14 @@ mod tests {
     #[test]
     fn a_channel_without_effects_loads_nothing() {
         let source = SourceConfig::virtual_sink(SourceId(1), "Game");
-        assert!(args(&source, "512/48000").is_none());
+        assert!(args(&ChainSpec::for_source(&source), "512/48000").is_none());
     }
 
     #[test]
     fn every_channel_of_the_stream_gets_the_chain() {
         let mut source = SourceConfig::virtual_sink(SourceId(3), "Mic");
         source.effects = vec![low_cut(), low_cut()];
-        let rendered = args(&source, "512/48000").expect("a chain");
+        let rendered = args(&ChainSpec::for_source(&source), "512/48000").expect("a chain");
 
         // Two effects across two channels, wired in series within each.
         assert_eq!(rendered.matches("label = \"bq_highpass\"").count(), 4);
@@ -191,5 +240,32 @@ mod tests {
         assert!(rendered.contains("node.name = \"pipedeck.fx.3.out\""));
         assert!(rendered.contains("target.object = \"pipedeck.fx.3\""));
         assert!(!rendered.contains("Audio/Sink"));
+    }
+
+    #[test]
+    fn a_mix_is_treated_between_its_cells_and_its_sink() {
+        let mut mix = MixConfig::new(MixId(2), "Stream Mix");
+        mix.effects = vec![low_cut()];
+        let rendered = args(&ChainSpec::for_mix(&mix), "512/48000").expect("a chain");
+
+        // The cells play into the chain's own sink, and the chain hands the
+        // result to the sink OBS reads.
+        assert!(rendered.contains("node.name = \"pipedeck.mixfx.2.in\""));
+        assert!(rendered.contains("target.object = \"pipedeck.mixfx.2\""));
+        assert!(rendered.contains("target.object = \"pipedeck.mix.2\""));
+
+        // With plug-ins after it, they come between the two.
+        mix.effects.push(Effect {
+            name: "Stereo Tool".into(),
+            kind: EffectKind::StereoTool,
+            plugin: None,
+            label: "stereotool".into(),
+            controls: Vec::new(),
+        });
+        let rendered = args(&ChainSpec::for_mix(&mix), "512/48000").expect("a chain");
+        assert!(rendered.contains("target.object = \"pipedeck.mixvst.2\""));
+        assert!(!rendered.contains("target.object = \"pipedeck.mix.2\""));
+        // The plug-in is not part of the PipeWire graph.
+        assert_eq!(rendered.matches("label = ").count(), 2);
     }
 }

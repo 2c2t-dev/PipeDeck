@@ -801,6 +801,169 @@ fn main() -> ExitCode {
         println!("[skip] no VST3 effect installed, so nothing to host");
     }
 
+    // A mix is treated the other way round from a channel: its cells play
+    // into the chain and the chain into the sink, so that what OBS reads on
+    // the mix is the treated signal.
+    engine
+        .send(Command::SetMixEffects {
+            id: mix,
+            effects: vec![pipedeck_engine::Effect {
+                name: "Low cut".into(),
+                kind: pipedeck_engine::EffectKind::Builtin,
+                plugin: None,
+                label: "bq_highpass".into(),
+                controls: vec![pipedeck_engine::Control {
+                    name: "Freq".into(),
+                    value: 90.0,
+                }],
+            }],
+        })
+        .unwrap();
+    wait_state(&rx, "the mix effect", |s| {
+        s.mixes.iter().any(|column| !column.effects.is_empty())
+    });
+    settle();
+    let dump = pw_dump();
+    let names = node_names(&dump);
+    check(
+        names.contains(&format!("pipedeck.mixfx.{mix}"))
+            && names.contains(&format!("pipedeck.mix.{mix}")),
+        &format!("the mix chain has its own sink and keeps the one OBS reads: {names:?}"),
+        &mut failures,
+    );
+    let into = our_node(&dump, &format!("pipedeck.link.{source}.{mix}")).map(|node| {
+        props(node)["target.object"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    });
+    check(
+        into.as_deref() == Some(format!("pipedeck.mixfx.{mix}").as_str()),
+        &format!("the cell plays into the chain rather than the mix sink: {into:?}"),
+        &mut failures,
+    );
+
+    let mut player = Process::new("pw-play")
+        .arg(format!("--target={sink_serial}"))
+        .arg(&tone)
+        .spawn()
+        .expect("pw-play must be installed");
+    let through = wait_levels(&rx, source, mix, Duration::from_secs(5));
+    let _ = player.kill();
+    let _ = player.wait();
+    // Same caveat as a channel's chain: it names the nodes it sits between,
+    // and another mixer answers to those names.
+    let what = format!("the mix is still heard through its chain: {:.3}", through.1);
+    if alone {
+        check(through.1 > 0.01, &what, &mut failures);
+    } else {
+        println!("[skip] {what}");
+    }
+
+    // Stereo Tool is the reason a mix runs anything at all: a broadcast
+    // processor belongs on the stream, not on the channel every mix hears.
+    // It is proprietary, so this runs only where it has been imported.
+    if pipedeck_engine::stereotool::installed() {
+        engine
+            .send(Command::SetMixEffects {
+                id: mix,
+                effects: vec![pipedeck_engine::Effect {
+                    name: "Stereo Tool".into(),
+                    kind: pipedeck_engine::EffectKind::StereoTool,
+                    plugin: None,
+                    label: "stereotool".into(),
+                    controls: Vec::new(),
+                }],
+            })
+            .unwrap();
+        wait_state(&rx, "Stereo Tool on the mix", |s| {
+            s.mixes.iter().any(|column| {
+                column
+                    .effects
+                    .iter()
+                    .any(|effect| effect.kind == pipedeck_engine::EffectKind::StereoTool)
+            })
+        });
+        std::thread::sleep(Duration::from_secs(2));
+        let dump = pw_dump();
+        let names = node_names(&dump);
+        check(
+            names.contains(&format!("pipedeck.mixvst.{mix}")),
+            &format!("Stereo Tool reads a sink of its own: {names:?}"),
+            &mut failures,
+        );
+        let into = our_node(&dump, &format!("pipedeck.link.{source}.{mix}")).map(|node| {
+            props(node)["target.object"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned()
+        });
+        check(
+            into.as_deref() == Some(format!("pipedeck.mixvst.{mix}").as_str()),
+            &format!("the cell plays into Stereo Tool: {into:?}"),
+            &mut failures,
+        );
+
+        // Fed straight into the chain's own sink rather than through the
+        // cell: the chain and the meter both name ids, so this holds whether
+        // or not another mixer answers to our node names.
+        let into_chain = node_serial(&dump, &format!("pipedeck.mixvst.{mix}"));
+        match into_chain {
+            Some(serial) => {
+                let mut player = Process::new("pw-play")
+                    .arg(format!("--target={serial}"))
+                    .arg(&tone)
+                    .spawn()
+                    .expect("pw-play must be installed");
+                let heard = wait_levels(&rx, source, mix, Duration::from_secs(6));
+                let _ = player.kill();
+                let _ = player.wait();
+                check(
+                    heard.1 > 0.005,
+                    &format!("the mix hears the tone through Stereo Tool: {:.3}", heard.1),
+                    &mut failures,
+                );
+            }
+            None => check(
+                false,
+                "the chain sink has no serial to play into",
+                &mut failures,
+            ),
+        }
+    } else {
+        println!("[skip] Stereo Tool is not installed, so nothing to run on the mix");
+    }
+
+    engine
+        .send(Command::SetMixEffects {
+            id: mix,
+            effects: Vec::new(),
+        })
+        .unwrap();
+    wait_state(&rx, "the mix effect removed", |s| {
+        s.mixes.iter().all(|column| column.effects.is_empty())
+    });
+    settle();
+    let dump = pw_dump();
+    let names = node_names(&dump);
+    check(
+        !names.contains(&format!("pipedeck.mixfx.{mix}"))
+            && !names.contains(&format!("pipedeck.mixvst.{mix}")),
+        &format!("removing them takes both sinks with them: {names:?}"),
+        &mut failures,
+    );
+    let into = our_node(&dump, &format!("pipedeck.link.{source}.{mix}")).map(|node| {
+        props(node)["target.object"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    });
+    check(
+        into.as_deref() == Some(format!("pipedeck.mix.{mix}").as_str()),
+        &format!("the cell plays into the mix sink again: {into:?}"),
+        &mut failures,
+    );
+
     // The quantum is a setting, not a fader: changing it reloads every
     // loopback, and the new value has to show on the nodes that come back.
     engine

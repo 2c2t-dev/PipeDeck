@@ -4,6 +4,7 @@ mod cell;
 mod channel_dialog;
 mod desktop;
 mod dialogs;
+mod effect_panel;
 mod effects;
 mod engine_link;
 mod mix_dialog;

@@ -108,6 +108,19 @@ pub enum Command {
         id: SourceId,
         effects: Vec<Effect>,
     },
+    /// Replace the effects a column runs, in order. A mix is treated between
+    /// its cells and its sink, so this reloads the cells feeding it while
+    /// the sink a capture client reads stays put.
+    SetMixEffects {
+        id: MixId,
+        effects: Vec<Effect>,
+    },
+    /// The Stereo Tool licence key, which the mixer only hands to the
+    /// library. Whatever runs on it is opened again, because a processor is
+    /// told its key when it is created.
+    SetStereoToolLicense {
+        key: Option<String>,
+    },
     /// Send an application's audio to a row, taking it from whichever row
     /// held it. Its running streams move at once, and so do the ones it
     /// opens later.
@@ -152,6 +165,9 @@ pub enum Command {
 pub struct StateSnapshot {
     /// Quantum asked of our nodes, so the settings window can show it.
     pub latency: String,
+    /// The Stereo Tool licence key the settings hold, so the window can show
+    /// what is in use.
+    pub stereotool_license: Option<String>,
     pub mixes: Vec<MixConfig>,
     pub sources: Vec<SourceConfig>,
     pub links: Vec<LinkConfig>,
@@ -165,6 +181,8 @@ pub enum Event {
     State(StateSnapshot),
     /// The plug-ins installed on the machine, read once at startup.
     Plugins { available: Vec<crate::vst3::Plugin> },
+    /// Where Stereo Tool stands: installed or not, licensed or not.
+    StereoTool(crate::stereotool::Status),
     /// The applications currently playing audio, whatever they play into.
     Apps { running: Vec<App> },
     /// The audio devices currently on the system.
@@ -374,6 +392,7 @@ fn run(
         g.emit_devices();
         g.emit_apps();
         g.emit_plugins();
+        g.emit_stereotool();
     }
 
     let _receiver = {
@@ -482,6 +501,13 @@ fn handle_command(
             g.update_source(id, |c| c.muted = muted)
         }
         Command::SetEffects { id, effects } => g.set_effects(id, effects),
+        Command::SetMixEffects { id, effects } => g.set_mix_effects(id, effects),
+        Command::SetStereoToolLicense { key } => {
+            structural = false;
+            let result = g.set_stereotool_license(key);
+            g.emit_stereotool();
+            result
+        }
         Command::AssignApp { id, app } => g.assign_app(id, app),
         Command::ReleaseApp { id, app } => g.release_app(id, &app),
         Command::SetLink {

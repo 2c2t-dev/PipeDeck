@@ -71,11 +71,18 @@ a band and a gain, each with its own controls. They are filters PipeWire
 ships, so nothing has to be installed, and they run in one filter chain
 between the channel and the cells that read it.
 
-A channel can also run **VST3 plug-ins**, which the mixer hosts itself. It
-reads the bundles installed under the usual paths, plus `VST3_PATH`, and
-offers their effects alongside the filters above. A plug-in runs between two
-streams of its own, after whatever PipeWire runs for the channel, and every
-mix hears the result.
+**A mix runs the same effects**, in its own tab, and only that mix hears
+them. A column is treated the other way round from a channel: its cells play
+into the chain and the chain into the mix sink, so a capture client such as
+OBS reads the treated signal. That is where a processor belongs when it is
+meant for one destination — and where the delay one adds stays out of the way
+of the mix you monitor on.
+
+A channel or a mix can also run **VST3 plug-ins**, which the mixer hosts
+itself. It reads the bundles installed under the usual paths, plus
+`VST3_PATH`, and offers their effects alongside the filters above. A plug-in
+runs between two streams of its own, after whatever PipeWire runs for the
+object it belongs to.
 
 Their windows are not implemented: a plug-in's own editor is an X11 surface
 to embed, and GTK4 has no socket for one. Parameters are at their defaults.
@@ -87,12 +94,37 @@ is copied whole, or at a bare `.so` and the directory is built around it. It
 then reads the paths again, so the effect is offered right away. Plug-ins are
 read once per run, because opening one runs its own code.
 
+## Stereo Tool
+
+Thimeo's broadcast processor runs as an effect like any other, on a channel
+or on a mix. Pipedeck hosts `libStereoTool`, the shared library the vendor
+ships for exactly this and the one Liquidsoap calls, rather than the VST3
+build: the library takes its settings from a preset file through the API,
+where the plug-in would need an editor window Pipedeck has no way to embed.
+
+It is proprietary and nothing of it is bundled. Download it from
+[thimeo.com](https://www.thimeo.com/stereo-tool/download/) and import the
+archive from the **Plug-ins** page: the `libStereoTool_*.so` it holds land in
+`~/.local/share/pipedeck/stereotool/` and the build for this machine is the
+one loaded. `PIPEDECK_STEREOTOOL` points at a copy kept elsewhere.
+
+The licence key is a field on the same page, passed to the library and to
+nothing else. Without one Stereo Tool still runs and puts speech and beeps in
+the audio, which is the vendor's doing; the settings say so rather than let it
+be discovered on air. Settings come from a preset exported from Stereo Tool
+itself, chosen on the effect. It adds 50 to 100 ms of delay depending on what
+it runs, which is the reason to put it on the mix that goes out and not on a
+channel every mix hears.
+
+`cargo run -p pipedeck-engine --example stereotool_check [preset.sts]` runs a
+tone through it with no PipeWire in the way, and says what the licence covers.
+
 ## Settings
 
 The gear in the header bar opens them: the colour theme, whether Pipedeck
-starts with the session, the quantum asked of its nodes, and the VST3 plug-ins
-it found. Changing the quantum reloads every route, so the audio stops for a
-moment.
+starts with the session, the quantum asked of its nodes, the VST3 plug-ins it
+found and where Stereo Tool stands. Changing the quantum reloads every route,
+so the audio stops for a moment.
 
 ## Using it with OBS
 
@@ -106,6 +138,18 @@ different mix to hear a different balance.
  apps ──▶ [pipedeck.src.N] ──monitor──┐
                                       ├─ loopback (cell fader) ──▶ [pipedeck.mix.M] ──┬─ loopback ──▶ device
  mic  ────────────────────────────────┘                            (captured by OBS)  └─ loopback ──▶ device
+```
+
+With effects, each side grows a stage. A channel is treated before the cells
+read it, a mix after they have written into it, so the sink at the end of the
+column is the treated one:
+
+```
+ [pipedeck.src.N] ─▶ [pipedeck.fx.N] ─▶ [pipedeck.vst.N] ─▶ cells
+   channel            PipeWire filters    hosted plug-ins
+
+ cells ─▶ [pipedeck.mixfx.M] ─▶ [pipedeck.mixvst.M] ─▶ [pipedeck.mix.M]
+            PipeWire filters      hosted plug-ins        read by OBS
 ```
 
 Audio crosses two of our nodes on its way to a device, one for the cell and

@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use pipedeck_engine::stereotool;
 use serde::{Deserialize, Serialize};
 
 /// How the window follows the desktop's light or dark setting.
@@ -215,9 +216,90 @@ pub fn import_plugin_into(source: &Path, directory: &Path) -> Result<PathBuf, St
     Ok(bundle)
 }
 
+/// Put Stereo Tool where the mixer will find it.
+///
+/// Thimeo ships it as an archive holding one shared library per machine, and
+/// nothing of it is redistributable, so the user downloads it and points at
+/// what they got: the `.zip` as it came, or a `libStereoTool*.so` taken out
+/// of it. Only the libraries are kept, under the names they came with, and
+/// the engine picks the one for this machine.
+pub fn import_stereotool(source: &Path) -> Result<Vec<PathBuf>, String> {
+    let directory = stereotool::library_dir().ok_or("no home directory to install into")?;
+    import_stereotool_into(source, &directory)
+}
+
+/// The same, into a directory of the caller's choosing.
+pub fn import_stereotool_into(source: &Path, directory: &Path) -> Result<Vec<PathBuf>, String> {
+    std::fs::create_dir_all(directory)
+        .map_err(|e| format!("cannot make {}: {e}", directory.display()))?;
+
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("that file has no usable name")?;
+
+    if stereotool::is_library(name) {
+        let target = directory.join(name);
+        replace(
+            &target,
+            &std::fs::read(source).map_err(|e| format!("cannot read it: {e}"))?,
+        )?;
+        return Ok(vec![target]);
+    }
+    if source.extension().and_then(|e| e.to_str()) != Some("zip") {
+        return Err("that is neither the Stereo Tool archive nor a libStereoTool .so".into());
+    }
+
+    let file = std::fs::File::open(source).map_err(|e| format!("cannot read it: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("cannot read the archive: {e}"))?;
+    let mut installed = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| format!("cannot read the archive: {e}"))?;
+        if !entry.is_file() {
+            continue;
+        }
+        // Only the base name is used, so nothing in the archive can name a
+        // path of its own choosing.
+        let Some(name) = entry.enclosed_name().and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        }) else {
+            continue;
+        };
+        if !stereotool::is_library(&name) {
+            continue;
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        std::io::copy(&mut entry, &mut bytes).map_err(|e| format!("cannot unpack {name}: {e}"))?;
+        let target = directory.join(&name);
+        replace(&target, &bytes)?;
+        installed.push(target);
+    }
+    if installed.is_empty() {
+        return Err("that archive holds no libStereoTool library".into());
+    }
+    installed.sort();
+    Ok(installed)
+}
+
+/// Write a library, taking the old one out of the way first.
+///
+/// A file that is already loaded must not be written over: the copy in
+/// memory is that very file. Unlinking it leaves whoever loaded it with the
+/// old one and puts a new file in its place, which is what an upgrade while
+/// the mixer runs needs.
+fn replace(target: &Path, bytes: &[u8]) -> Result<(), String> {
+    let _ = std::fs::remove_file(target);
+    std::fs::write(target, bytes).map_err(|e| format!("cannot write {}: {e}", target.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     /// A directory of our own, so a test installs nothing on the machine.
     fn scratch(name: &str) -> PathBuf {
@@ -296,6 +378,73 @@ mod tests {
 
         assert!(import_plugin_into(&source, &into).is_err());
         assert!(!into.join("Foreign.vst3").exists(), "nothing left behind");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_stereo_tool_archive_gives_up_its_libraries() {
+        let home = scratch("import-stereotool");
+        let archive = home.join("stereo_tool.zip");
+        {
+            let file = std::fs::File::create(&archive).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            zip.start_file("linux/libStereoTool_intel64.so", options)
+                .unwrap();
+            zip.write_all(b"not really a library").unwrap();
+            zip.start_file("linux/libStereoTool_arm64.so", options)
+                .unwrap();
+            zip.write_all(b"not really a library either").unwrap();
+            zip.start_file("readme.txt", options).unwrap();
+            zip.write_all(b"hello").unwrap();
+            zip.finish().unwrap();
+        }
+        let into = home.join("stereotool");
+
+        let installed = import_stereotool_into(&archive, &into).expect("it installs");
+        assert_eq!(installed.len(), 2, "the libraries and nothing else");
+        assert!(into.join("libStereoTool_intel64.so").exists());
+        assert!(!into.join("readme.txt").exists());
+        // The archive nests them, and they land flat.
+        assert!(!into.join("linux").exists());
+
+        // Again is an upgrade, not a refusal.
+        assert!(import_stereotool_into(&archive, &into).is_ok());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_bare_stereo_tool_library_is_taken_as_it_is() {
+        let home = scratch("import-stereotool-so");
+        let loose = home.join("libStereoTool_intel64.so");
+        std::fs::write(&loose, b"not really a library").unwrap();
+        let into = home.join("stereotool");
+
+        let installed = import_stereotool_into(&loose, &into).expect("it installs");
+        assert_eq!(installed, vec![into.join("libStereoTool_intel64.so")]);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_archive_without_the_library_is_refused() {
+        let home = scratch("import-stereotool-junk");
+        let archive = home.join("holiday.zip");
+        {
+            let file = std::fs::File::create(&archive).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            zip.start_file("photo.jpg", options).unwrap();
+            zip.write_all(b"not audio software").unwrap();
+            zip.finish().unwrap();
+        }
+        let into = home.join("stereotool");
+
+        assert!(import_stereotool_into(&archive, &into).is_err());
+        assert!(std::fs::read_dir(&into).unwrap().next().is_none());
+
+        let text = home.join("notes.txt");
+        std::fs::write(&text, b"hello").unwrap();
+        assert!(import_stereotool_into(&text, &into).is_err());
         let _ = std::fs::remove_dir_all(&home);
     }
 }

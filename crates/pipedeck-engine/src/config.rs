@@ -53,6 +53,11 @@ pub struct Config {
     /// Quantum requested on our nodes, see [`DEFAULT_LATENCY`].
     #[serde(default = "default_latency")]
     pub latency: String,
+    /// Licence key for Stereo Tool, which the mixer only passes on to the
+    /// library. Without one it still runs, and puts speech and beeps in the
+    /// audio, which is the vendor's doing and not something to work around.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stereotool_license: Option<String>,
     #[serde(default, rename = "mix")]
     pub mixes: Vec<MixConfig>,
     #[serde(default, rename = "source")]
@@ -73,6 +78,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             latency: default_latency(),
+            stereotool_license: None,
             mixes: Vec::new(),
             sources: Vec::new(),
             links: Vec::new(),
@@ -166,6 +172,7 @@ impl Config {
             sources.push(SourceConfig::virtual_sink(source.id, source.name));
         }
         Self {
+            stereotool_license: None,
             latency,
             mixes: vec![
                 MixConfig::new(stream, "Stream Mix"),

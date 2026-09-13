@@ -11,6 +11,7 @@
 //! ever touched there.
 
 use std::cell::UnsafeCell;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -24,7 +25,8 @@ use pipewire::properties::properties;
 use pipewire::stream::{StreamFlags, StreamListener, StreamRc};
 
 use crate::error::EngineError;
-use crate::types::SourceConfig;
+use crate::stereotool;
+use crate::types::{Effect, EffectKind};
 use crate::vst3::{host::CHANNELS, Instance, Plugin};
 
 use super::loopback::AUDIO_POSITION;
@@ -102,9 +104,82 @@ impl Ring {
     }
 }
 
+/// One plug-in the mixer was asked to run, resolved against what is
+/// installed.
+#[derive(Debug, Clone)]
+pub enum Request {
+    Vst3(Plugin),
+    /// Thimeo's Stereo Tool, with the preset it was given and the licence
+    /// key the settings hold.
+    StereoTool {
+        preset: Option<PathBuf>,
+        license: Option<String>,
+    },
+}
+
+impl Request {
+    /// What the user asked for, when it is something the mixer hosts.
+    ///
+    /// `installed` is the VST3 scan; a plug-in that has been uninstalled
+    /// since it was chosen resolves to nothing and is reported.
+    pub fn resolve(effect: &Effect, installed: &[Plugin], license: Option<&str>) -> Option<Self> {
+        match effect.kind {
+            EffectKind::Vst3 => {
+                let found = installed
+                    .iter()
+                    .find(|plugin| plugin.class_id == effect.label)
+                    .cloned();
+                if found.is_none() {
+                    log::error!("{} is not installed any more", effect.name);
+                }
+                found.map(Request::Vst3)
+            }
+            EffectKind::StereoTool => Some(Request::StereoTool {
+                preset: effect.preset().map(PathBuf::from),
+                license: license.map(str::to_owned),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// One stage of the chain, whatever hosts it.
+enum Processor {
+    Vst3(Instance),
+    StereoTool(stereotool::Instance),
+}
+
+impl Processor {
+    fn open(request: &Request, rate: f64, max_block: usize) -> Result<Self, String> {
+        match request {
+            Request::Vst3(plugin) => Instance::open(plugin, rate, max_block).map(Processor::Vst3),
+            Request::StereoTool { preset, license } => {
+                stereotool::Instance::with_block(preset.as_deref(), license.as_deref(), max_block)
+                    .map(Processor::StereoTool)
+            }
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Processor::Vst3(instance) => instance.name(),
+            Processor::StereoTool(instance) => instance.name(),
+        }
+    }
+
+    /// Run one block, in place. An error means the block did not go through,
+    /// and the chain drops it rather than passing something half treated on.
+    fn process(&mut self, channels: &mut [&mut [f32]]) -> Result<(), ()> {
+        match self {
+            Processor::Vst3(instance) => instance.process(channels).map_err(|_| ()),
+            Processor::StereoTool(instance) => instance.process(channels).map_err(|_| ()),
+        }
+    }
+}
+
 /// What the capture side needs while it runs.
 struct Processing {
-    plugins: Vec<Instance>,
+    plugins: Vec<Processor>,
     ring: Arc<Ring>,
     /// One buffer per channel, allocated once: the real-time thread must not
     /// ask for memory.
@@ -128,12 +203,17 @@ pub struct PluginChain {
 impl PluginChain {
     /// Open the plug-ins and put them between two nodes of the graph.
     ///
-    /// `from` is the node the channel ends on before the plug-ins, `into`
-    /// the sink they play into.
+    /// `node` is the base `node.name` of the pair of streams, `owner` what
+    /// the window calls the object they belong to, `from` the node the
+    /// plug-ins read and `into` the sink they play into. Both ends are node
+    /// ids rather than names, which is what makes a channel and a mix the
+    /// same object here although the audio runs through them the other way
+    /// round.
     pub fn new(
         core: &CoreRc,
-        source: &SourceConfig,
-        plugins: &[Plugin],
+        node: &str,
+        owner: &str,
+        plugins: &[Request],
         from: u32,
         into: u32,
         latency: &str,
@@ -142,12 +222,12 @@ impl PluginChain {
         let mut opened = Vec::new();
         let mut names = Vec::new();
         for plugin in plugins {
-            match Instance::open(plugin, rate, MAX_BLOCK) {
+            match Processor::open(plugin, rate, MAX_BLOCK) {
                 Ok(instance) => {
                     names.push(instance.name().to_owned());
                     opened.push(instance);
                 }
-                Err(e) => log::error!("cannot open {}: {e}", plugin.name),
+                Err(e) => log::error!("cannot open a plug-in of {owner}: {e}"),
             }
         }
         if opened.is_empty() {
@@ -170,16 +250,16 @@ impl PluginChain {
         };
 
         let mut capture_props = common(
-            format!("{}.in", source.id.plugins_node_name()),
-            format!("Pipedeck: {} plug-ins in", source.name),
+            format!("{node}.in"),
+            format!("Pipedeck: {owner} plug-ins in"),
         );
         capture_props.insert(*pipewire::keys::MEDIA_CATEGORY, "Capture");
         capture_props.insert(*pipewire::keys::MEDIA_CLASS, "Stream/Input/Audio/Internal");
         capture_props.insert(*pipewire::keys::STREAM_CAPTURE_SINK, "true");
 
         let mut playback_props = common(
-            format!("{}.out", source.id.plugins_node_name()),
-            format!("Pipedeck: {} plug-ins out", source.name),
+            format!("{node}.out"),
+            format!("Pipedeck: {owner} plug-ins out"),
         );
         playback_props.insert(*pipewire::keys::MEDIA_CATEGORY, "Playback");
 
@@ -226,7 +306,7 @@ impl PluginChain {
                 for plane in rest.iter_mut().take(CHANNELS - 1) {
                     block.push(&mut plane[..frames]);
                 }
-                for plugin in &state.plugins {
+                for plugin in &mut state.plugins {
                     if plugin.process(&mut block).is_err() {
                         return;
                     }
@@ -296,8 +376,7 @@ impl PluginChain {
         )?;
 
         log::info!(
-            "{} runs {} plug-in(s): {}",
-            source.name,
+            "{owner} runs {} plug-in(s): {}",
             names.len(),
             names.join(", ")
         );

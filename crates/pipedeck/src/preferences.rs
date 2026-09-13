@@ -8,10 +8,19 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
+use pipedeck_engine::stereotool::Status;
 use pipedeck_engine::Command;
 
 use crate::engine_link::EngineLink;
 use crate::settings::{self, Settings, Theme};
+
+/// What the Plug-ins page has to show: how many VST3 effects were found,
+/// where Stereo Tool stands, and the licence key it was given.
+pub struct PluginState<'a> {
+    pub installed: usize,
+    pub stereotool: &'a Status,
+    pub license: Option<&'a str>,
+}
 
 /// The quanta offered, as `frames/rate`, with what to call them and what
 /// they mean.
@@ -49,12 +58,18 @@ struct Latency {
 }
 
 /// Show the settings window.
-pub fn present(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, latency: &str, plugins: usize) {
+pub fn present(
+    parent: &impl IsA<gtk::Widget>,
+    engine: &EngineLink,
+    latency: &str,
+    plugins: &PluginState<'_>,
+) {
     let dialog = adw::PreferencesDialog::new();
     dialog.set_title("Settings");
     dialog.add(&general_page());
     dialog.add(&audio_page(engine, latency));
     dialog.add(&plugins_page(parent, engine, plugins));
+
     dialog.add(&about_page());
     dialog.present(Some(parent));
 }
@@ -63,8 +78,9 @@ pub fn present(parent: &impl IsA<gtk::Widget>, engine: &EngineLink, latency: &st
 fn plugins_page(
     parent: &impl IsA<gtk::Widget>,
     engine: &EngineLink,
-    installed: usize,
+    state: &PluginState<'_>,
 ) -> adw::PreferencesPage {
+    let installed = state.installed;
     let page = adw::PreferencesPage::new();
     page.set_title("Plug-ins");
     page.set_icon_name(Some("pd-sfx-symbolic"));
@@ -141,7 +157,139 @@ fn plugins_page(
     install.add(&status);
     page.add(&install);
 
+    page.add(&stereotool_group(parent, engine, state));
     page
+}
+
+/// Stereo Tool: what the mixer found, the licence key it passes on, and the
+/// way to install it.
+fn stereotool_group(
+    parent: &impl IsA<gtk::Widget>,
+    engine: &EngineLink,
+    state: &PluginState<'_>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Stereo Tool");
+    group.set_description(Some(
+        "Thimeo's broadcast processor. It is not ours to ship, so download it          from thimeo.com and import the archive here; Pipedeck runs the          library it holds, on a preset you export from Stereo Tool itself.",
+    ));
+
+    let found = adw::ActionRow::new();
+    match state.stereotool {
+        Status::Absent => {
+            found.set_title("Not installed");
+            found.set_subtitle(&pipedeck_engine::stereotool::library_dir().map_or_else(
+                || "Nowhere to install it: no home directory".to_owned(),
+                |path| format!("It goes in {}", path.display()),
+            ));
+        }
+        Status::Broken(reason) => {
+            found.set_title("Installed, but it will not run");
+            found.set_subtitle(reason);
+        }
+        Status::Ready(info) => {
+            found.set_title(&format!("Stereo Tool {}", info.version));
+            found.set_subtitle(&match (&info.licensed, &info.unlicensed) {
+                (true, _) => format!("Licensed. {}", info.path.display()),
+                (false, Some(features)) => {
+                    format!("No licence for: {features}. It adds speech and beeps to the audio.")
+                }
+                (false, None) => {
+                    "No licence key. It adds speech and beeps to the audio.".to_owned()
+                }
+            });
+        }
+    }
+    group.add(&found);
+
+    let key = adw::EntryRow::new();
+    key.set_title("Licence key");
+    key.set_show_apply_button(true);
+    key.set_text(state.license.unwrap_or_default());
+    key.connect_apply({
+        let engine = engine.clone();
+        move |row| {
+            let typed = row.text().trim().to_owned();
+            engine.send(Command::SetStereoToolLicense {
+                key: (!typed.is_empty()).then_some(typed),
+            });
+        }
+    });
+    group.add(&key);
+
+    let status = gtk::Label::new(None);
+    status.add_css_class("caption");
+    status.set_wrap(true);
+    status.set_xalign(0.0);
+    status.set_visible(false);
+
+    let import = adw::ActionRow::new();
+    import.set_title("Import Stereo Tool");
+    import.set_subtitle("The .zip as downloaded, or a libStereoTool .so out of it");
+    let choose = gtk::Button::with_label("Choose…");
+    choose.set_valign(gtk::Align::Center);
+    choose.connect_clicked({
+        let parent = parent.as_ref().clone();
+        let engine = engine.clone();
+        let status = status.clone();
+        move |_| pick_stereotool(&parent, &engine, &status)
+    });
+    import.add_suffix(&choose);
+    group.add(&import);
+    group.add(&status);
+
+    group
+}
+
+/// Ask for the archive and install what comes back.
+fn pick_stereotool(parent: &gtk::Widget, engine: &EngineLink, status: &gtk::Label) {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Stereo Tool"));
+    filter.add_pattern("*.zip");
+    filter.add_pattern("libStereoTool*.so");
+    let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+
+    let dialog = gtk::FileDialog::new();
+    dialog.set_title("Choose the Stereo Tool download");
+    dialog.set_filters(Some(&filters));
+    let window = parent.root().and_downcast::<gtk::Window>();
+    dialog.open(window.as_ref(), None::<&gtk::gio::Cancellable>, {
+        let engine = engine.clone();
+        let status = status.clone();
+        move |answer| {
+            let Ok(file) = answer else {
+                return;
+            };
+            let Some(path) = file.path() else {
+                return;
+            };
+            status.set_visible(true);
+            status.remove_css_class("error");
+            status.remove_css_class("success");
+            match settings::import_stereotool(&path) {
+                Ok(installed) => {
+                    status.add_css_class("success");
+                    status.set_label(&format!(
+                        "Installed {}. It is in the effects list now.",
+                        installed
+                            .iter()
+                            .filter_map(|path| path.file_name())
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                    // The engine looks again, which is also what tells it to
+                    // load the library and report on the licence.
+                    engine.send(Command::RescanPlugins);
+                }
+                Err(e) => {
+                    status.add_css_class("error");
+                    status.set_label(&e);
+                }
+            }
+        }
+    });
 }
 
 /// Ask for a bundle directory and install what comes back.
