@@ -35,7 +35,7 @@ use pipewire::context::ContextRc;
 use pipewire::core::CoreRc;
 use pipewire::link::Link;
 use pipewire::metadata::Metadata;
-use pipewire::node::{Node, NodeListener};
+use pipewire::node::{Node, NodeChangeMask, NodeListener};
 use pipewire::properties::properties;
 use pipewire::proxy::{ProxyListener, ProxyT};
 use pipewire::registry::{GlobalObject, RegistryRc};
@@ -1962,6 +1962,12 @@ impl Graph {
         let listener = node
             .add_listener_local()
             .info(move |info| {
+                // A node says what it is again on every change of state,
+                // with its properties only when they changed: an empty set
+                // otherwise, which says nothing about where it goes.
+                if !info.change_mask().contains(NodeChangeMask::PROPS) {
+                    return;
+                }
                 let Some(props) = info.props() else {
                     return;
                 };

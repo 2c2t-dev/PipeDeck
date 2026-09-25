@@ -128,9 +128,15 @@ function owners(sdp: string | undefined) {
 /** The labels already said to be missing, so the log says it once. */
 const missing = new Set<string>();
 
+/** The last label each person's sink had, kept while Pipedeck is away for
+ * a moment: its sink outlives it by a while, and a voice sent back and
+ * forth in the meantime is a voice that drops. */
+const lastLabel = new Map<string, string>();
+
 /** The output Chromium knows a Pipedeck sink by, from its label. */
 async function deviceFor(user: string) {
-    const label = labels[user];
+    if (labels[user]) lastLabel.set(user, labels[user]);
+    const label = labels[user] ?? lastLabel.get(user);
     if (!label) return null;
     const devices = await navigator.mediaDevices.enumerateDevices();
     const found = devices.find(device => device.kind === "audiooutput" && device.label === label);
