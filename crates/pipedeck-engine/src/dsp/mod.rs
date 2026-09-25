@@ -66,7 +66,8 @@ const fn param(
 }
 
 pub use dynamics::{
-    compressor_output, learn_compressor, learn_deesser, CompressorPreset, COMPRESSOR_PRESETS,
+    compressor_output, deesser_gain, learn_compressor, learn_deesser, CompressorPreset,
+    DeEsserPreset, COMPRESSOR_PRESETS, DEESSER_PRESETS,
 };
 
 /// Whether an effect can be set from a voice it listens to.

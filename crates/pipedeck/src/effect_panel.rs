@@ -21,6 +21,7 @@ use pipedeck_engine::stereotool::Status;
 use pipedeck_engine::{vst3::Plugin, Command, Effect, EffectKind, Learning, SourceId};
 
 use crate::comp_graph::CompGraph;
+use crate::deesser_graph::DeEsserGraph;
 use crate::effects;
 use crate::engine_link::EngineLink;
 use crate::eq_graph::EqGraph;
@@ -232,7 +233,7 @@ impl EffectPanel {
             .title(spec.name)
             .default_width(match spec.id {
                 "eq" => 720,
-                "compressor" => 540,
+                "compressor" | "deesser" => 540,
                 _ => 420,
             })
             // As tall as its controls: without a height asked for, a
@@ -311,8 +312,8 @@ impl EffectPanel {
     ) {
         if spec.id == "eq" {
             self.equaliser_body(position, effect, body);
-        } else if spec.id == "compressor" {
-            self.compressor_body(position, effect, spec, body);
+        } else if spec.id == "compressor" || spec.id == "deesser" {
+            self.graph_body(position, effect, spec, body);
         } else {
             self.controls_body(position, effect, spec, body);
         }
@@ -558,9 +559,9 @@ impl EffectPanel {
         row.upcast()
     }
 
-    /// The compressor, as its curve with a handle on each control, under
-    /// the button that sets it from a voice.
-    fn compressor_body(
+    /// The compressor or the de-esser, as what it does with a handle to
+    /// drag, under the button that sets it from a voice.
+    fn graph_body(
         self: &Rc<Self>,
         position: usize,
         effect: &Effect,
@@ -573,10 +574,9 @@ impl EffectPanel {
             .iter()
             .map(|param| effects::value_of(effect, param))
             .collect();
-        let graph = CompGraph::new(&values);
-        graph.connect_changed({
+        let changed = {
             let this = self.clone();
-            move |values| {
+            move |values: &[f32]| {
                 let mut shown = this.shown.borrow_mut();
                 let Some(effect) = shown.get_mut(position) else {
                     return;
@@ -588,8 +588,16 @@ impl EffectPanel {
                 drop(shown);
                 this.send_params(position, &effect);
             }
-        });
-        inner.append(&graph.root);
+        };
+        if spec.id == "compressor" {
+            let graph = CompGraph::new(&values);
+            graph.connect_changed(changed);
+            inner.append(&graph.root);
+        } else {
+            let graph = DeEsserGraph::new(&values);
+            graph.connect_changed(changed);
+            inner.append(&graph.root);
+        }
     }
 
     /// The equaliser, as a curve with a handle on each band.

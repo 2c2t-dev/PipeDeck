@@ -9,6 +9,8 @@
 
 #[path = "../src/comp_graph.rs"]
 mod comp_graph;
+#[path = "../src/deesser_graph.rs"]
+mod deesser_graph;
 #[path = "../src/effect_panel.rs"]
 #[allow(dead_code)]
 mod effect_panel;

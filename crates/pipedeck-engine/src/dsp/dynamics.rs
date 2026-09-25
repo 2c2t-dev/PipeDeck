@@ -69,6 +69,71 @@ pub fn compressor_output(input: f32, threshold: f32, ratio: f32, makeup: f32) ->
     input - reduction(input - threshold, ratio) + makeup
 }
 
+/// How hard the de-esser turns its upper band down once over its
+/// threshold.
+const DEESSER_RATIO: f32 = 6.0;
+
+/// Where the de-esser starts, in decibels of the band it listens to, for a
+/// strength: at nothing, only the harshest hiss is touched; at full, most
+/// of it is.
+fn deesser_threshold(strength: f32) -> f32 {
+    -10.0 - strength.clamp(0.0, 100.0) * 0.4
+}
+
+/// The strength that puts the de-esser's threshold at `threshold`.
+fn strength_for(threshold: f32) -> f32 {
+    ((-10.0 - threshold) / 0.4).clamp(0.0, 100.0)
+}
+
+/// What the de-esser does to what is over its frequency when an s reaches
+/// `level` decibels in the band it listens to: the gain it applies there,
+/// in decibels, never over zero. This is what its window draws.
+pub fn deesser_gain(strength: f32, level: f32) -> f32 {
+    -reduction(level - deesser_threshold(strength), DEESSER_RATIO)
+}
+
+/// A starting point for the de-esser: its frequency and strength.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeEsserPreset {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub values: [f32; 2],
+}
+
+/// The starting points offered.
+pub const DEESSER_PRESETS: &[DeEsserPreset] = &[
+    DeEsserPreset {
+        name: "Light",
+        description: "Only the sharpest s, barely heard doing it",
+        values: [7000.0, 30.0],
+    },
+    DeEsserPreset {
+        name: "Normal",
+        description: "The usual for a voice",
+        values: [6500.0, 50.0],
+    },
+    DeEsserPreset {
+        name: "Strong",
+        description: "For a voice or a microphone that hisses a lot",
+        values: [6000.0, 75.0],
+    },
+    DeEsserPreset {
+        name: "Deep voice",
+        description: "Its s sit lower",
+        values: [5000.0, 50.0],
+    },
+    DeEsserPreset {
+        name: "High voice",
+        description: "Its s sit higher",
+        values: [8000.0, 50.0],
+    },
+    DeEsserPreset {
+        name: "Very sibilant",
+        description: "Takes the s well down, lower in the range",
+        values: [5500.0, 90.0],
+    },
+];
+
 /// A starting point for the compressor: its threshold, ratio and makeup.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompressorPreset {
@@ -263,7 +328,7 @@ pub fn learn_deesser(counts: &[u32]) -> Result<Vec<Control>, String> {
     // part of speech, so the middle of what was heard is the rest of it.
     let voice = at(row, 0.50);
     let threshold = (hiss - 6.0).max(voice + 3.0);
-    let strength = ((-10.0 - threshold) / 0.4).clamp(0.0, 100.0);
+    let strength = strength_for(threshold);
     Ok(vec![
         Control {
             name: "freq".into(),
@@ -354,10 +419,7 @@ impl super::Native for DeEsser {
             self.high = Coeffs::highpass(freq);
             self.listen = Coeffs::bandpass(freq, 1.5);
         }
-        // Strength is where it starts: at nothing, only the harshest hiss is
-        // touched; at full, most of it is.
-        let threshold = -10.0 - strength.clamp(0.0, 100.0) * 0.4;
-        const RATIO: f32 = 6.0;
+        let threshold = deesser_threshold(strength);
         let listening = self.params.heard.is_listening();
 
         let frames = channels.first().map_or(0, |c| c.len());
@@ -391,7 +453,7 @@ impl super::Native for DeEsser {
                 hiss = hiss.max(state.run(&self.listen, channel[frame]).abs());
             }
             let level = to_db(self.envelope.follow(hiss));
-            let gain = from_db(-reduction(level - threshold, RATIO));
+            let gain = from_db(-reduction(level - threshold, DEESSER_RATIO));
             let sides = self.lows.iter_mut().zip(self.highs.iter_mut());
             for (channel, (low, high)) in channels.iter_mut().zip(sides) {
                 let x = channel[frame];
@@ -463,6 +525,24 @@ mod tests {
         for input in [-60.0, -20.0, 0.0] {
             assert_eq!(compressor_output(input, 0.0, 1.0, 0.0), input);
         }
+    }
+
+    #[test]
+    fn every_deesser_preset_is_within_range_and_stronger_goes_deeper() {
+        let spec = spec("deesser").expect("the de-esser");
+        for preset in DEESSER_PRESETS {
+            for (value, param) in preset.values.iter().zip(spec.params) {
+                assert!(
+                    (param.min..=param.max).contains(value),
+                    "{} sets {} to {value}",
+                    preset.name,
+                    param.label
+                );
+            }
+        }
+        assert!(deesser_gain(100.0, -12.0) < deesser_gain(20.0, -12.0));
+        assert!(deesser_gain(0.0, -40.0) == 0.0);
+        assert!((strength_for(deesser_threshold(42.0)) - 42.0).abs() < 1e-3);
     }
 
     #[test]

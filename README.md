@@ -86,7 +86,10 @@ of its own, written in Rust, so nothing has to be installed:
   sibilance, air — and pointing at one says what to do there. Presets give
   a starting point: clear, warm, podcast, less boom, less mud, and more.
 - **De-esser**: splits the sound at a frequency, listens for s and sh there,
-  and turns only the part above down when they are too loud. *Learn from my
+  and turns only the part above down when they are too loud. Its window
+  draws what it does to a loud s across the top of the range; one handle
+  sets both controls, sideways for where the s start and down to take them
+  further, and presets suit a light touch, a deep voice or a high one. *Learn from my
   voice* listens for five seconds of speech with s in it, finds where they
   are loudest, splits just under, and sets the strength so the s go over
   its threshold and the rest of the voice does not.
