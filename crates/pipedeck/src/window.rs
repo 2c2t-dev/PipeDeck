@@ -2,7 +2,7 @@
 //! left, one fader per cell.
 
 use std::cell::{Cell as StdCell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use adw::gtk;
@@ -12,7 +12,7 @@ use libadwaita as adw;
 use pipedeck_engine::stereotool::Status;
 use pipedeck_engine::{
     vst3::Plugin, App, Command, Device, Event, MixConfig, MixId, SourceConfig, SourceId,
-    StateSnapshot, MAX_MIXES,
+    StateSnapshot, VoiceConfig, MAX_MIXES,
 };
 
 use crate::cell::{link_button, Cell};
@@ -28,6 +28,8 @@ use crate::widgets;
 const MIX_COLUMN_WIDTH: i32 = 240;
 const SOURCE_COLUMN_WIDTH: i32 = 180;
 const ROW_HEIGHT: i32 = 56;
+/// A sub-track is a person of a call: a lighter row under its channel.
+const VOICE_ROW_HEIGHT: i32 = 44;
 const MIX_HEADER_HEIGHT: i32 = 72;
 const BADGE_ICON_SIZE: i32 = 16;
 const ADD_MIX_WIDTH: i32 = 56;
@@ -60,6 +62,8 @@ pub struct Window {
     /// The object windows, while they are open, so engine changes reach them.
     mix_dialog: RefCell<Option<Rc<MixDialog>>>,
     channel_dialog: RefCell<Option<Rc<ChannelDialog>>>,
+    /// The channels unfolded into their sub-tracks.
+    expanded: RefCell<HashSet<SourceId>>,
 }
 
 impl Window {
@@ -139,6 +143,7 @@ impl Window {
             cells: RefCell::new(HashMap::new()),
             mix_dialog: RefCell::new(None),
             channel_dialog: RefCell::new(None),
+            expanded: RefCell::new(HashSet::new()),
         });
 
         settings.connect_clicked({
@@ -312,13 +317,12 @@ impl Window {
             self.grid
                 .attach(&add, state.mixes.len() as i32 + 1, 0, 1, 1);
         }
-        let add = self.add_source_button();
-        self.grid
-            .attach(&add, 0, state.sources.len() as i32 + 1, 1, 1);
-
-        for (row, source) in state.sources.iter().enumerate() {
-            let header = self.source_header(source, row);
-            self.grid.attach(&header, 0, row as i32 + 1, 1, 1);
+        // Rows are counted as they go: a channel unfolded into its people
+        // takes one more for each.
+        let mut row = 1;
+        for (index, source) in state.sources.iter().enumerate() {
+            let header = self.source_header(source, index);
+            self.grid.attach(&header, 0, row, 1, 1);
 
             for (column, mix) in state.mixes.iter().enumerate() {
                 let linked = state
@@ -344,10 +348,24 @@ impl Window {
                 holder.set_hexpand(false);
                 holder.append(&widget);
                 widget.set_hexpand(true);
-                self.grid
-                    .attach(&holder, column as i32 + 1, row as i32 + 1, 1, 1);
+                self.grid.attach(&holder, column as i32 + 1, row, 1, 1);
+            }
+            row += 1;
+
+            // A sub-track has one level, on its way into the channel: it
+            // spans the mixes rather than having a cell in each.
+            if self.expanded.borrow().contains(&source.id) {
+                for voice in source.voices.iter().filter(|voice| voice.present) {
+                    self.grid.attach(&voice_header(voice), 0, row, 1, 1);
+                    let span = state.mixes.len().max(1) as i32;
+                    self.grid
+                        .attach(&self.voice_level(source.id, voice), 1, row, span, 1);
+                    row += 1;
+                }
             }
         }
+        let add = self.add_source_button();
+        self.grid.attach(&add, 0, row, 1, 1);
 
         self.hint.set_visible(state.sources.is_empty());
         self.hint.set_label(
@@ -633,8 +651,135 @@ impl Window {
                 })
             }
         });
-        card.upcast()
+
+        // A channel carrying a call unfolds into the people in it.
+        let people = source.voices.iter().filter(|voice| voice.present).count();
+        if people == 0 {
+            return card.upcast();
+        }
+        let open = self.expanded.borrow().contains(&source.id);
+        let unfold = gtk::Button::new();
+        unfold.set_child(Some(
+            &adw::ButtonContent::builder()
+                .icon_name(if open {
+                    "pan-down-symbolic"
+                } else {
+                    "pan-end-symbolic"
+                })
+                .label(people.to_string())
+                .build(),
+        ));
+        unfold.add_css_class("flat");
+        unfold.add_css_class("caption");
+        unfold.set_halign(gtk::Align::End);
+        unfold.set_valign(gtk::Align::Center);
+        unfold.set_margin_end(6);
+        unfold.set_tooltip_text(Some(if open {
+            "Fold the people of the call away"
+        } else {
+            "Show each person of the call on a sub-track of their own"
+        }));
+        unfold.connect_clicked({
+            let this = self.clone();
+            let id = source.id;
+            move |_| {
+                {
+                    let mut expanded = this.expanded.borrow_mut();
+                    if !expanded.remove(&id) {
+                        expanded.insert(id);
+                    }
+                }
+                this.rebuild();
+            }
+        });
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&card));
+        overlay.add_overlay(&unfold);
+        overlay.upcast()
     }
+
+    /// Change one person as the window last heard of them.
+    fn with_voice(&self, id: SourceId, user: &str, f: impl FnOnce(&mut VoiceConfig)) {
+        let mut state = self.state.borrow_mut();
+        let voice = state
+            .sources
+            .iter_mut()
+            .find(|source| source.id == id)
+            .and_then(|source| source.voices.iter_mut().find(|voice| voice.id == user));
+        if let Some(voice) = voice {
+            f(voice);
+        }
+    }
+
+    /// One person's level on their way into the channel, and their mute.
+    fn voice_level(self: &Rc<Self>, id: SourceId, voice: &VoiceConfig) -> gtk::Widget {
+        let fader = widgets::MeterFader::new(voice.gain);
+        let mute = widgets::mute_button(voice.muted, "Mute this person");
+        // The engine does not send the state back for a level, so the one
+        // drawn from is kept in step here, for the next time the grid is.
+        fader.scale.connect_value_changed({
+            let this = self.clone();
+            let user = voice.id.clone();
+            move |scale| {
+                let gain = (scale.value() / widgets::FADER_MAX) as f32;
+                this.with_voice(id, &user, |voice| voice.gain = gain);
+                this.engine.send(Command::SetVoiceGain {
+                    id,
+                    user: user.clone(),
+                    gain,
+                })
+            }
+        });
+        mute.connect_toggled({
+            let this = self.clone();
+            let user = voice.id.clone();
+            move |button| {
+                let muted = button.is_active();
+                this.with_voice(id, &user, |voice| voice.muted = muted);
+                this.engine.send(Command::SetVoiceMute {
+                    id,
+                    user: user.clone(),
+                    muted,
+                })
+            }
+        });
+        let row = widgets::level_row(&mute, &fader.root);
+        fader.root.set_hexpand(true);
+        row.set_margin_start(10);
+        row.set_margin_end(10);
+        let holder = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        holder.add_css_class("card");
+        holder.add_css_class("pd-voice");
+        holder.set_height_request(VOICE_ROW_HEIGHT);
+        holder.append(&row);
+        row.set_hexpand(true);
+        row.set_valign(gtk::Align::Center);
+        holder.upcast()
+    }
+}
+
+/// The name of a person of a call, set in from its channel's.
+fn voice_header(voice: &VoiceConfig) -> gtk::Widget {
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    content.set_margin_start(26);
+    content.set_margin_end(10);
+    let icon = gtk::Image::from_icon_name("avatar-default-symbolic");
+    icon.add_css_class("dim-label");
+    content.append(&icon);
+    let name = gtk::Label::new(Some(&voice.name));
+    name.set_xalign(0.0);
+    name.set_hexpand(true);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    content.append(&name);
+    content.set_valign(gtk::Align::Center);
+
+    let card = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    card.add_css_class("card");
+    card.add_css_class("pd-voice");
+    card.set_size_request(SOURCE_COLUMN_WIDTH, VOICE_ROW_HEIGHT);
+    card.set_tooltip_text(Some(&voice.name));
+    card.append(&content);
+    card.upcast()
 }
 
 /// A card whose whole surface acts as a button, showing a pencil on hover to
@@ -768,6 +913,7 @@ pub fn load_css() {
         .pd-card:hover .pd-badge-face,
         .pd-card:focus-visible .pd-badge-face { opacity: 0; }
         .pd-card.pd-dragging { opacity: 0.35; }
+        .card.pd-voice { background-color: alpha(@card_bg_color, 0.55); }
         .pd-drop:drop(active) {
             box-shadow: inset 0 0 0 2px @accent_color;
             border-radius: 12px;

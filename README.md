@@ -69,6 +69,16 @@ A channel bound to a capture device shows that device instead, since
 applications play into virtual outputs, not into a microphone. Both are where you rename or
 remove the object.
 
+## Discord calls
+
+With Vesktop and Pipedeck's plugin for it (see
+[integrations/vencord](integrations/vencord/README.md)), the channel Vesktop
+is assigned to unfolds into the people of the call you are in: each has a
+sub-track of their own, with a level and a mute, on its way into the
+channel, whose effects and cells they then go through. A person's level is
+remembered for the next call. Discord's own mix of them is not played, so
+each voice is heard once.
+
 ## Effects
 
 A channel can run effects, which every mix then hears. The mixer runs four

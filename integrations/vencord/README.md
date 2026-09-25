@@ -5,12 +5,18 @@ track of their own, so a Discord channel can unfold into one sub-track per
 participant.
 
 Vesktop plays Discord's voice through Chromium's WebRTC, where every person
-arrives as a separate audio track; Discord's own client mixes them in native
+arrives as a stream of their own, named after their user id, and is played
+through an element of its own; Discord's own client mixes them in native
 code, out of reach, which is why this is for Vesktop only.
 
-**For now it only looks.** It writes down what Discord's web voice does
-with each person's audio to `~/.cache/pipedeck/vencord-voices.log`, and
-changes nothing in what is heard.
+The plugin tells Pipedeck who is in the voice channel you are in, over
+Pipedeck's control socket (`$XDG_RUNTIME_DIR/pipedeck/control.sock`).
+Pipedeck makes a sink for each of them on the channel Vesktop is assigned
+to, and the plugin sends each person's element to theirs rather than to the
+output Discord chose. Their volume and mute in Discord still apply; when
+Pipedeck is not running, or has no sink for someone, their voice goes where
+Discord sends it. What it does is written down in
+`~/.cache/pipedeck/vencord-voices.log`.
 
 ## Build and load
 
