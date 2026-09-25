@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use super::biquad::{Coeffs, State};
-use super::{from_db, to_db, Params, HEARD_FLOOR, SAMPLE_RATE};
+use super::{from_db, to_db, Params, HEARD_FLOOR, HEARD_LEVELS, SAMPLE_RATE};
 use crate::types::Control;
 
 /// How much of the envelope is kept from one sample to the next, for a
@@ -167,6 +167,61 @@ pub fn learn_compressor(counts: &[u32]) -> Result<Vec<Control>, String> {
     ])
 }
 
+/// The frequencies a listening de-esser tries, where the s and sh of a
+/// voice can be.
+pub(super) const PROBES: [f32; 12] = [
+    3000.0, 3500.0, 4000.0, 4500.0, 5000.0, 5600.0, 6300.0, 7100.0, 8000.0, 9000.0, 10000.0,
+    11200.0,
+];
+
+/// Settings for the de-esser from a few seconds of a voice, as it heard
+/// them at each of its [`PROBES`].
+///
+/// Its frequency goes where the s is loudest, a step under so the split
+/// leaves the whole of it above; its strength puts the threshold under the
+/// loudest s but over the rest of the voice there, so the hiss is turned
+/// down and the words are not.
+pub fn learn_deesser(counts: &[u32]) -> Result<Vec<Control>, String> {
+    let level = |at: usize| (at as i32 + HEARD_FLOOR) as f32 + 0.5;
+    let rows: Vec<&[u32]> = counts.chunks(HEARD_LEVELS).take(PROBES.len()).collect();
+    if rows.len() < PROBES.len() {
+        return Err("Nothing was heard. Check the microphone and speak through the count.".into());
+    }
+    let at = |row: &[u32], fraction: f32| {
+        let total = row.iter().sum();
+        percentile(row, 0, total, fraction).map_or(HEARD_FLOOR as f32, level)
+    };
+    // Where the hiss peaks, among the probes a voice's s can be at.
+    let (loudest, peak) = rows
+        .iter()
+        .enumerate()
+        .skip(2)
+        .map(|(probe, row)| (probe, at(row, 0.98)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("there are probes");
+    if peak < -60.0 {
+        return Err("Nothing was heard. Check the microphone and speak through the count.".into());
+    }
+    let split = loudest - 1;
+    let row = rows[split];
+    let hiss = at(row, 0.98);
+    // What the rest of the voice usually reaches there: an s is a small
+    // part of speech, so the middle of what was heard is the rest of it.
+    let voice = at(row, 0.50);
+    let threshold = (hiss - 6.0).max(voice + 3.0);
+    let strength = ((-10.0 - threshold) / 0.4).clamp(0.0, 100.0);
+    Ok(vec![
+        Control {
+            name: "freq".into(),
+            value: PROBES[split],
+        },
+        Control {
+            name: "strength".into(),
+            value: strength.round(),
+        },
+    ])
+}
+
 /// The bucket under which `fraction` of the `total` counts from `from` on
 /// lie.
 fn percentile(counts: &[u32], from: usize, total: u32, fraction: f32) -> Option<usize> {
@@ -206,6 +261,12 @@ pub(super) struct DeEsser {
     highs: Vec<[State; 2]>,
     listens: Vec<State>,
     envelope: Envelope,
+    /// While listening: a band-pass at each of the [`PROBES`], per channel,
+    /// and how loud each one is.
+    probes: Vec<Coeffs>,
+    probe_states: Vec<Vec<State>>,
+    probe_envelopes: Vec<Envelope>,
+    since_heard: usize,
 }
 
 impl DeEsser {
@@ -221,6 +282,10 @@ impl DeEsser {
             highs: vec![[State::default(); 2]; channels],
             listens: vec![State::default(); channels],
             envelope: Envelope::new(0.001, 0.060),
+            probes: PROBES.iter().map(|f| Coeffs::bandpass(*f, 1.5)).collect(),
+            probe_states: vec![vec![State::default(); PROBES.len()]; channels],
+            probe_envelopes: PROBES.iter().map(|_| Envelope::new(0.001, 0.060)).collect(),
+            since_heard: 0,
         }
     }
 }
@@ -239,9 +304,34 @@ impl super::Native for DeEsser {
         // touched; at full, most of it is.
         let threshold = -10.0 - strength.clamp(0.0, 100.0) * 0.4;
         const RATIO: f32 = 6.0;
+        let listening = self.params.heard.is_listening();
 
         let frames = channels.first().map_or(0, |c| c.len());
         for frame in 0..frames {
+            // Listening, each probe hears the band it is at the way the
+            // de-esser would there: the same filter, the same envelope.
+            if listening {
+                self.since_heard += 1;
+                let tick = self.since_heard >= HEARD_EVERY;
+                if tick {
+                    self.since_heard = 0;
+                }
+                for (probe, (coeffs, envelope)) in self
+                    .probes
+                    .iter()
+                    .zip(self.probe_envelopes.iter_mut())
+                    .enumerate()
+                {
+                    let mut loudest = 0.0f32;
+                    for (channel, states) in channels.iter().zip(self.probe_states.iter_mut()) {
+                        loudest = loudest.max(states[probe].run(coeffs, channel[frame]).abs());
+                    }
+                    let level = envelope.follow(loudest);
+                    if tick {
+                        self.params.heard.count_in(probe, to_db(level));
+                    }
+                }
+            }
             let mut hiss = 0.0f32;
             for (channel, state) in channels.iter().zip(self.listens.iter_mut()) {
                 hiss = hiss.max(state.run(&self.listen, channel[frame]).abs());
@@ -366,6 +456,56 @@ mod tests {
         run(&mut compressor, &vec![0.0; SAMPLE_RATE as usize * 3]);
         assert!(learn_compressor(&params.heard.counts()).is_err());
         assert!(learn_compressor(&[]).is_err());
+    }
+
+    /// A voice at 300 Hz, with an s at `hiss` hertz for a tenth of every
+    /// half second.
+    fn sibilant_voice(hiss: f32, seconds: f32) -> Vec<f32> {
+        let voice = sine(300.0, from_db(-12.0), seconds);
+        let s = sine(hiss, from_db(-10.0), seconds);
+        let half = SAMPLE_RATE as usize / 2;
+        voice
+            .iter()
+            .zip(&s)
+            .enumerate()
+            .map(|(i, (v, s))| if i % half < half / 5 { v + s } else { *v })
+            .collect()
+    }
+
+    #[test]
+    fn a_voice_heard_sets_the_deesser_on_its_s() {
+        let spec = spec("deesser").expect("the de-esser");
+        let params = Params::new(spec, &[]);
+        params.heard.listen(true);
+        let mut deesser = DeEsser::new(params.clone(), 2);
+        run(&mut deesser, &sibilant_voice(7100.0, 5.0));
+        params.heard.listen(false);
+
+        let learnt = learn_deesser(&params.heard.counts()).expect("a voice was heard");
+        let freq = value(&learnt, "freq");
+        assert!((5000.0..7100.0).contains(&freq), "split at {freq}");
+
+        // Set that way, it takes the s down and leaves the voice.
+        let learnt_params = Params::new(spec, &learnt);
+        let mut deesser = DeEsser::new(learnt_params.clone(), 2);
+        let hiss = sine(7100.0, from_db(-10.0), 1.0);
+        let turned = db(&run(&mut deesser, &hiss), &hiss);
+        assert!(turned < -3.0, "the s only went down {turned} dB");
+        let mut deesser = DeEsser::new(learnt_params, 2);
+        let voice = sine(300.0, from_db(-12.0), 1.0);
+        let left = db(&run(&mut deesser, &voice), &voice);
+        assert!(left.abs() < 0.5, "the voice moved {left} dB");
+    }
+
+    #[test]
+    fn a_deesser_that_heard_nothing_learns_nothing() {
+        let spec = spec("deesser").expect("the de-esser");
+        let params = Params::new(spec, &[]);
+        params.heard.listen(true);
+        let mut deesser = DeEsser::new(params.clone(), 2);
+        run(&mut deesser, &vec![0.0; SAMPLE_RATE as usize]);
+        assert!(learn_deesser(&params.heard.counts()).is_err());
+        assert!(learn_deesser(&[]).is_err());
     }
 
     #[test]

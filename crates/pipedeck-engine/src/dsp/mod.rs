@@ -65,7 +65,21 @@ const fn param(
     }
 }
 
-pub use dynamics::learn_compressor;
+pub use dynamics::{learn_compressor, learn_deesser};
+
+/// Whether an effect can be set from a voice it listens to.
+pub fn learns(id: &str) -> bool {
+    matches!(id, "compressor" | "deesser")
+}
+
+/// The settings an effect that listened calls for, from what it heard.
+pub fn learn(id: &str, counts: &[u32]) -> Result<Vec<Control>, String> {
+    match id {
+        "compressor" => learn_compressor(counts),
+        "deesser" => learn_deesser(counts),
+        _ => Err(format!("{id} does not learn")),
+    }
+}
 
 /// Every effect the mixer runs itself, in the order they are offered.
 pub const EFFECTS: &[EffectSpec] = &[
@@ -133,23 +147,29 @@ pub struct Params {
 /// counted there.
 pub const HEARD_FLOOR: i32 = -90;
 
+/// How many levels [`Heard`] tells apart, a decibel apart.
+pub const HEARD_LEVELS: usize = (1 - HEARD_FLOOR) as usize;
+
 /// How often an effect that listens has stood at each level: one count
-/// for every hundredth of a second, a decibel apart from
-/// [`HEARD_FLOOR`] up to 0 dB.
+/// for every hundredth of a second, a decibel apart from [`HEARD_FLOOR`] up
+/// to 0 dB, in as many rows as it has things to listen to.
 ///
-/// Only the compressor listens, so it can be set from a voice rather than
-/// by hand. It is written on the audio thread and read by the engine, and
-/// neither waits on the other.
+/// The compressor and the de-esser listen, so they can be set from a voice
+/// rather than by hand: the compressor to its level, the de-esser to each
+/// of the frequencies it could work at. It is written on the audio thread
+/// and read by the engine, and neither waits on the other.
 pub struct Heard {
     listening: AtomicBool,
     counts: Box<[AtomicU32]>,
 }
 
 impl Heard {
-    fn new() -> Self {
+    fn new(rows: usize) -> Self {
         Self {
             listening: AtomicBool::new(false),
-            counts: (HEARD_FLOOR..=0).map(|_| AtomicU32::new(0)).collect(),
+            counts: (0..rows * HEARD_LEVELS)
+                .map(|_| AtomicU32::new(0))
+                .collect(),
         }
     }
 
@@ -167,13 +187,20 @@ impl Heard {
         self.listening.load(Ordering::Acquire)
     }
 
-    /// Count one moment at `db`.
+    /// Count one moment at `db`, in the first row.
     pub fn count(&self, db: f32) {
-        let at = (db.floor() as i32).clamp(HEARD_FLOOR, 0) - HEARD_FLOOR;
-        self.counts[at as usize].fetch_add(1, Ordering::Relaxed);
+        self.count_in(0, db);
     }
 
-    /// Every count, quietest first.
+    /// Count one moment at `db`, in a row of its own.
+    pub fn count_in(&self, row: usize, db: f32) {
+        let at = (db.floor() as i32).clamp(HEARD_FLOOR, 0) - HEARD_FLOOR;
+        if let Some(count) = self.counts.get(row * HEARD_LEVELS + at as usize) {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Every count, row after row, quietest first in each.
     pub fn counts(&self) -> Vec<u32> {
         self.counts
             .iter()
@@ -200,7 +227,11 @@ impl Params {
                 .iter()
                 .map(|param| AtomicU32::new(param.default.to_bits()))
                 .collect(),
-            heard: Heard::new(),
+            heard: Heard::new(match spec.id {
+                "compressor" => 1,
+                "deesser" => dynamics::PROBES.len(),
+                _ => 0,
+            }),
         };
         params.set(spec, controls);
         Arc::new(params)

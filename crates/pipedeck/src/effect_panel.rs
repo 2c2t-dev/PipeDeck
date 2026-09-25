@@ -413,8 +413,8 @@ impl EffectPanel {
         spec: &'static pipedeck_engine::dsp::EffectSpec,
         inner: &gtk::Box,
     ) {
-        if spec.id == "compressor" {
-            inner.append(&self.learn_row(position));
+        if pipedeck_engine::dsp::learns(spec.id) {
+            inner.append(&self.learn_row(position, spec.id));
         }
         for param in spec.params {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -454,10 +454,15 @@ impl EffectPanel {
         }
     }
 
-    /// A button that has the compressor listen to a voice for a few
-    /// seconds and set itself from it, which the sliders under it can then
-    /// adjust.
-    fn learn_row(self: &Rc<Self>, position: usize) -> gtk::Widget {
+    /// A button that has an effect listen to a voice for a few seconds and
+    /// set itself from it, which the sliders under it can then adjust.
+    fn learn_row(self: &Rc<Self>, position: usize, id: &str) -> gtk::Widget {
+        // The de-esser needs to hear s to find them.
+        let ask = if id == "deesser" {
+            "Say a few sentences with s and sh in them while it listens."
+        } else {
+            "Speak as you do on air while it listens."
+        };
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         row.set_margin_bottom(6);
 
@@ -469,7 +474,7 @@ impl EffectPanel {
             self.learnt.set(None);
             "Set from your voice. The sliders can take it from there."
         } else {
-            "Speak as you do on air while it listens."
+            ask
         }));
         said.add_css_class("caption");
         said.add_css_class("dim-label");

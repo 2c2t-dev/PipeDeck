@@ -1459,8 +1459,9 @@ impl Graph {
         Ok(())
     }
 
-    /// Have the compressor at `index` of a row listen, then set it from
-    /// what it heard.
+    /// Have the effect at `index` of a row listen, then set it from what it
+    /// heard: the compressor to the level of a voice, the de-esser to its
+    /// s.
     ///
     /// The listening happens where it runs, on the audio thread, which
     /// counts how loud the sound going into it is; the settings are worked
@@ -1479,12 +1480,13 @@ impl Graph {
             .source(id)
             .map(|cfg| cfg.effects.clone())
             .ok_or(EngineError::UnknownSource(id))?;
-        let compressor = effects.get(index).is_some_and(|effect| {
-            effect.kind == EffectKind::Native && effect.label == "compressor"
-        });
-        if !compressor {
+        let Some(learner) = effects
+            .get(index)
+            .filter(|effect| effect.kind == EffectKind::Native && crate::dsp::learns(&effect.label))
+            .map(|effect| effect.label.clone())
+        else {
             return Ok(());
-        }
+        };
         let among_plugins = effects
             .iter()
             .take(index)
@@ -1498,7 +1500,7 @@ impl Graph {
             .cloned()
         else {
             if step == Learning::Start {
-                let e = "the compressor is not running yet; give it a moment";
+                let e = "that effect is not running yet; give it a moment";
                 log::error!("{e}");
                 self.emit(Event::Error(e.into()));
             }
@@ -1509,7 +1511,7 @@ impl Graph {
             Learning::Cancel => params.heard.listen(false),
             Learning::Finish => {
                 params.heard.listen(false);
-                match crate::dsp::learn_compressor(&params.heard.counts()) {
+                match crate::dsp::learn(&learner, &params.heard.counts()) {
                     Ok(controls) => self.set_effect_params(id, index, controls)?,
                     Err(e) => {
                         log::error!("{e}");
