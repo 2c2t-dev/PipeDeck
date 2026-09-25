@@ -330,14 +330,14 @@ fn y_to_db(y: f64, height: f64) -> f32 {
 }
 
 /// Where a band's handle sits: at its frequency, and at its gain, or on the
-/// curve for the low cut, which has none.
+/// flat line for the low cut, which has none.
+///
+/// Not on the curve: the curve is every band at once, and a handle riding
+/// it would move whenever a band beside it did.
 fn handle(values: &[f32], band: usize, width: f64, height: f64) -> (f64, f64) {
     let layout = BAND_LAYOUT[band];
     let freq = values[layout.freq];
-    let db = match layout.gain {
-        Some(gain) => values[gain],
-        None => eq::response(values, freq.max(MIN_FREQ)),
-    };
+    let db = layout.gain.map_or(0.0, |gain| values[gain]);
     (freq_to_x(freq, width), db_to_y(db, height))
 }
 

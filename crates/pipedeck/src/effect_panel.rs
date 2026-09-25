@@ -59,6 +59,9 @@ pub struct EffectPanel {
     /// those answers trail behind it: taken as news, they would put the
     /// control back where it was a moment ago, under the pointer.
     touched: StdCell<Option<Instant>>,
+    /// The compressor that has just been told to set itself from what it
+    /// heard, until its window is drawn again with the result.
+    learnt: StdCell<Option<usize>>,
     /// The plug-ins the engine found installed.
     plugins: RefCell<Vec<Plugin>>,
     /// Where Stereo Tool stands, which decides whether it is offered at all.
@@ -91,6 +94,7 @@ impl EffectPanel {
             shown: RefCell::new(Vec::new()),
             drawn: StdCell::new(false),
             touched: StdCell::new(None),
+            learnt: StdCell::new(None),
             plugins: RefCell::new(Vec::new()),
             stereotool: RefCell::new(Status::Absent),
             windows: RefCell::new(Vec::new()),
@@ -142,6 +146,12 @@ impl EffectPanel {
             *self.stereotool.borrow_mut() = stereotool.clone();
             self.add.set_popover(Some(&self.popover()));
         }
+        self.show(effects);
+    }
+
+    /// Show the chain as the engine now has it, a control's setting
+    /// included.
+    pub fn set_effects(self: &Rc<Self>, effects: &[Effect]) {
         self.show(effects);
     }
 
@@ -454,7 +464,13 @@ impl EffectPanel {
         let button = gtk::Button::with_label("Learn from my voice");
         row.append(&button);
 
-        let said = gtk::Label::new(Some("Speak as you do on air while it listens."));
+        // Drawn again with what it learnt: the one sign that it did.
+        let said = gtk::Label::new(Some(if self.learnt.get() == Some(position) {
+            self.learnt.set(None);
+            "Set from your voice. The sliders can take it from there."
+        } else {
+            "Speak as you do on air while it listens."
+        }));
         said.add_css_class("caption");
         said.add_css_class("dim-label");
         said.set_xalign(0.0);
@@ -501,8 +517,27 @@ impl EffectPanel {
                             return gtk::glib::ControlFlow::Continue;
                         }
                         learn(Learning::Finish);
-                        button.set_sensitive(true);
-                        said.set_text("Set from your voice. The sliders can take it from there.");
+                        this.learnt.set(Some(position));
+                        said.set_text("Working it out…");
+                        // The settings come back within a moment, and the
+                        // window is drawn again with them. Still here after
+                        // that, it learnt nothing.
+                        gtk::glib::timeout_add_local_once(Duration::from_millis(1500), {
+                            let this = this.clone();
+                            let button = button.clone();
+                            let said = said.clone();
+                            move || {
+                                if button.root().is_none() {
+                                    return;
+                                }
+                                this.learnt.set(None);
+                                button.set_sensitive(true);
+                                said.set_text(
+                                    "Too little was heard. Try again, speaking through the \
+                                     whole count.",
+                                );
+                            }
+                        });
                         gtk::glib::ControlFlow::Break
                     }
                 });

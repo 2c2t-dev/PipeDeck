@@ -250,8 +250,13 @@ impl Window {
                 // The window that moved it already shows the new value.
             }
             Event::SourceEffects { id, effects } => {
-                // Kept for the next time a window reads it; nothing on the
-                // grid shows a setting, so nothing is drawn again.
+                // Nothing on the grid shows a setting, so only the
+                // channel's window, if it is up, is told.
+                self.channel_dialog.borrow_mut().take_if(|d| !d.is_open());
+                let open = self.channel_dialog.borrow().clone();
+                if let Some(dialog) = open.filter(|dialog| dialog.id() == id) {
+                    dialog.set_effects(&effects);
+                }
                 if let Some(source) = self
                     .state
                     .borrow_mut()

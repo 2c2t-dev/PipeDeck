@@ -8,6 +8,7 @@
 //! once the image is taken; nothing is sent to it.
 
 #[path = "../src/effect_panel.rs"]
+#[allow(dead_code)]
 mod effect_panel;
 #[path = "../src/effects.rs"]
 mod effects;

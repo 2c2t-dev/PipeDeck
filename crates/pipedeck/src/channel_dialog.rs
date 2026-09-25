@@ -9,7 +9,9 @@ use adw::prelude::*;
 use libadwaita as adw;
 
 use pipedeck_engine::stereotool::Status;
-use pipedeck_engine::{vst3::Plugin, App, ChainState, Command, Device, SourceConfig, SourceId};
+use pipedeck_engine::{
+    vst3::Plugin, App, ChainState, Command, Device, Effect, SourceConfig, SourceId,
+};
 
 use crate::desktop::{self, DesktopApp};
 use crate::effect_panel::EffectPanel;
@@ -316,6 +318,12 @@ impl ChannelDialog {
             .set_value(f64::from(state.gain) * widgets::FADER_MAX);
         self.mute.set_active(state.muted);
         self.syncing.set(false);
+    }
+
+    /// Show the channel's effects as the engine now has them, when only
+    /// their settings changed.
+    pub fn set_effects(&self, effects: &[Effect]) {
+        self.effects.set_effects(effects);
     }
 
     /// Move the meter of the object this window is about.
