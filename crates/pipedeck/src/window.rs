@@ -497,12 +497,12 @@ impl Window {
     fn mix_header(self: &Rc<Self>, mix: &MixConfig, index: usize) -> gtk::Widget {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
 
-        content.append(&widgets::badge(
+        content.append(&badge_slot(&widgets::badge(
             mix.icon.as_deref(),
             false,
             widgets::Tone::White,
             BADGE_ICON_SIZE,
-        ));
+        )));
 
         let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
         labels.set_hexpand(true);
@@ -585,12 +585,12 @@ impl Window {
     fn source_header(self: &Rc<Self>, source: &SourceConfig, index: usize) -> gtk::Widget {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
 
-        content.append(&widgets::badge(
+        content.append(&badge_slot(&widgets::badge(
             source.icon.as_deref(),
             source.is_input(),
             widgets::Tone::Colour,
             BADGE_ICON_SIZE,
-        ));
+        )));
 
         let title = gtk::Label::new(Some(&source.name));
         title.add_css_class("heading");
@@ -680,19 +680,33 @@ fn reorderable(
     onto.add_controller(drop);
 }
 
-fn clickable_card(content: &gtk::Box, width: i32, height: i32) -> gtk::Button {
-    let pencil = gtk::Image::from_icon_name("document-edit-symbolic");
-    pencil.add_css_class("pd-pencil");
-    // Always in the layout, so revealing it never shifts the text. It leads
-    // the card rather than ending it, where a mix card keeps its ear.
-    content.prepend(&pencil);
-    // And before it the grip: the whole card can be dragged, and this says
-    // so. It shows with the pencil, on hover.
-    let grip = gtk::Image::from_icon_name("pd-drag-symbolic");
-    grip.add_css_class("pd-pencil");
-    grip.set_tooltip_text(Some("Drag to reorder"));
-    content.prepend(&grip);
+/// A card's icon, with the grip and the pencil laid over it.
+///
+/// On hover the icon fades and the two show in its place: the card can be
+/// dragged, and clicked to edit. They take none of the card's width of their
+/// own, so nothing sits empty beside the icon when they are not shown and
+/// nothing moves when they are.
+fn badge_slot(badge: &gtk::Image) -> gtk::Overlay {
+    badge.add_css_class("pd-badge-face");
 
+    let grip = gtk::Image::from_icon_name("pd-drag-symbolic");
+    grip.set_tooltip_text(Some("Drag to reorder"));
+    let pencil = gtk::Image::from_icon_name("document-edit-symbolic");
+
+    let tools = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    tools.add_css_class("pd-hover-tools");
+    tools.set_halign(gtk::Align::Center);
+    tools.set_valign(gtk::Align::Center);
+    tools.append(&grip);
+    tools.append(&pencil);
+
+    let slot = gtk::Overlay::new();
+    slot.set_child(Some(badge));
+    slot.add_overlay(&tools);
+    slot
+}
+
+fn clickable_card(content: &gtk::Box, width: i32, height: i32) -> gtk::Button {
     content.set_margin_top(8);
     content.set_margin_bottom(8);
     content.set_margin_start(10);
@@ -711,13 +725,16 @@ fn clickable_card(content: &gtk::Box, width: i32, height: i32) -> gtk::Button {
 /// Install the stylesheet. Call once, after GTK is initialised.
 pub fn load_css() {
     const CSS: &str = "
-        .pd-card .pd-pencil { opacity: 0; transition: opacity 120ms ease-out; }
+        .pd-card .pd-hover-tools { opacity: 0; transition: opacity 120ms ease-out; }
+        .pd-card .pd-badge-face { transition: opacity 120ms ease-out; }
+        .pd-card:hover .pd-badge-face,
+        .pd-card:focus-visible .pd-badge-face { opacity: 0; }
         .pd-drop:drop(active) {
             box-shadow: inset 0 0 0 2px @accent_color;
             border-radius: 12px;
         }
-        .pd-card:hover .pd-pencil,
-        .pd-card:focus-visible .pd-pencil { opacity: 1; }
+        .pd-card:hover .pd-hover-tools,
+        .pd-card:focus-visible .pd-hover-tools { opacity: 1; }
         .pd-badge-large {
             background-color: @window_fg_color;
             color: @window_bg_color;

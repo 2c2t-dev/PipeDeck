@@ -57,9 +57,9 @@ looks: a channel picks
 one when it is created, and both a channel and a mix can change it later from
 the menu above their icon.
 
-Every card can be dragged by its grip, which shows on hover beside the
-pencil: a channel along the rows, a mix along the columns, never one among the
-other. A card dropped on another takes its place. The order is only how the
+Every card can be dragged by its grip, which shows on hover with the pencil
+in place of the card's icon: a channel along the rows, a mix along the
+columns, never one among the other. A card dropped on another takes its place. The order is only how the
 matrix is drawn; nothing on the graph moves, and it is saved with the rest.
 
 Clicking a card opens the window of that object. A mix window holds its
