@@ -16,9 +16,9 @@ const FADER_MAX: f64 = 100.0;
 
 pub struct Cell {
     pub root: gtk::Box,
-    scale: gtk::Scale,
+    /// The fader, with the level it passes drawn in its track.
+    fader: crate::widgets::MeterFader,
     mute: gtk::ToggleButton,
-    meter: gtk::LevelBar,
     /// Set while we push engine state into the widgets, so the handlers do
     /// not echo it back to the engine as a command.
     syncing: Rc<StdCell<bool>>,
@@ -41,28 +41,17 @@ impl Cell {
         mute.set_active(state.muted);
         controls.append(&mute);
 
-        let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, FADER_MAX, 1.0);
-        scale.set_hexpand(true);
-        scale.set_draw_value(true);
-        scale.set_value_pos(gtk::PositionType::Right);
-        scale.set_digits(0);
-        scale.set_value(f64::from(state.gain) * FADER_MAX);
+        let fader = crate::widgets::MeterFader::new(state.gain);
+        let scale = fader.scale.clone();
         // The value is drawn at the right edge of the scale, so keep it off
         // the unlink button.
-        scale.set_margin_end(6);
-        controls.append(&scale);
+        fader.root.set_margin_end(6);
+        controls.append(&fader.root);
 
         let unlink = gtk::Button::from_icon_name("list-remove-symbolic");
         unlink.set_tooltip_text(Some("Unlink this channel from this mix"));
         unlink.add_css_class("flat");
         controls.append(&unlink);
-
-        let meter = crate::widgets::meter();
-        // Lines up with the fader rather than the mute button, so the bar
-        // reads as belonging to the level it follows.
-        meter.set_margin_start(38);
-        meter.set_margin_end(34);
-        root.append(&meter);
 
         let syncing = Rc::new(StdCell::new(false));
 
@@ -107,9 +96,8 @@ impl Cell {
 
         Self {
             root,
-            scale,
+            fader,
             mute,
-            meter,
             syncing,
         }
     }
@@ -118,7 +106,7 @@ impl Cell {
     /// the fader in front of it.
     pub fn set_level(&self, channel_peak: f32) {
         let state = ChainState {
-            gain: (self.scale.value() / FADER_MAX) as f32,
+            gain: (self.fader.scale.value() / FADER_MAX) as f32,
             muted: self.mute.is_active(),
         };
         let passed = if state.muted {
@@ -126,13 +114,15 @@ impl Cell {
         } else {
             channel_peak * state.linear_volume()
         };
-        self.meter.set_value(crate::widgets::meter_position(passed));
+        self.fader.set_level(passed);
     }
 
     /// Push engine state into the widgets without sending it back.
     pub fn set_state(&self, state: ChainState) {
         self.syncing.set(true);
-        self.scale.set_value(f64::from(state.gain) * FADER_MAX);
+        self.fader
+            .scale
+            .set_value(f64::from(state.gain) * FADER_MAX);
         self.mute.set_active(state.muted);
         self.syncing.set(false);
     }

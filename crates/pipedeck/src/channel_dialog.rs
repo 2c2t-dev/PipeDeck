@@ -31,7 +31,11 @@ pub struct ChannelDialog {
     trim: gtk::Box,
     /// What an input row captures, named the way the system names it.
     device: gtk::Label,
-    meter: gtk::LevelBar,
+    /// The trim's fader, with the channel's level drawn in its track.
+    fader: widgets::MeterFader,
+    /// The level alone, for a channel bound to a microphone, which has no
+    /// trim to draw it in.
+    meter: widgets::Meter,
     apps: gtk::Box,
     /// The effects tab, which a mix window has too.
     effects: Rc<EffectPanel>,
@@ -60,7 +64,8 @@ impl ChannelDialog {
         dialog.set_content_width(760);
         dialog.set_content_height(480);
 
-        let volume = widgets::fader(source.gain);
+        let fader = widgets::MeterFader::new(source.gain);
+        let volume = fader.scale.clone();
         let mute = widgets::mute_button(source.muted, "Mute this channel everywhere");
 
         let add_app = gtk::MenuButton::new();
@@ -89,11 +94,12 @@ impl ChannelDialog {
                 widgets::Tone::Colour,
             ),
             look: gtk::Box::new(gtk::Orientation::Vertical, 6),
-            trim: widgets::level_row(&mute, &volume),
+            trim: widgets::level_row(&mute, &fader.root),
             device,
             volume,
             mute,
-            meter: widgets::meter(),
+            fader,
+            meter: widgets::Meter::new(),
             apps: gtk::Box::new(gtk::Orientation::Vertical, 8),
             effects: EffectPanel::new(engine, source.id),
             add_app,
@@ -152,11 +158,11 @@ impl ChannelDialog {
         // what it listens to instead of offering a fader.
         if source.is_input() {
             left.append(&self.device);
+            self.meter.root.set_margin_top(6);
+            left.append(&self.meter.root);
         } else {
             left.append(&self.trim);
         }
-        self.meter.set_margin_start(38);
-        left.append(&self.meter);
 
         let filler = gtk::Box::new(gtk::Orientation::Vertical, 0);
         filler.set_vexpand(true);
@@ -310,7 +316,8 @@ impl ChannelDialog {
 
     /// Move the meter of the object this window is about.
     pub fn set_level(&self, peak: f32) {
-        self.meter.set_value(widgets::meter_position(peak));
+        self.fader.set_level(peak);
+        self.meter.set_level(peak);
     }
 
     pub fn id(&self) -> SourceId {

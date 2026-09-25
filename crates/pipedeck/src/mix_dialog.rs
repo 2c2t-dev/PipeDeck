@@ -26,7 +26,8 @@ pub struct MixDialog {
     look: gtk::Box,
     volume: gtk::Scale,
     mute: gtk::ToggleButton,
-    meter: gtk::LevelBar,
+    /// The master fader, with the mix's level drawn in its track.
+    fader: widgets::MeterFader,
     outputs: gtk::Box,
     add_output: gtk::MenuButton,
     /// Devices currently attached, in engine order, so a row knows its index.
@@ -56,11 +57,8 @@ impl MixDialog {
         name.add_css_class("title-4");
         name.set_hexpand(true);
 
-        let volume = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, FADER_MAX, 1.0);
-        volume.set_hexpand(true);
-        volume.set_draw_value(true);
-        volume.set_value_pos(gtk::PositionType::Right);
-        volume.set_digits(0);
+        let fader = widgets::MeterFader::new(mix.gain);
+        let volume = fader.scale.clone();
 
         let mute = gtk::ToggleButton::new();
         mute.set_icon_name("audio-volume-muted-symbolic");
@@ -87,7 +85,7 @@ impl MixDialog {
             look: gtk::Box::new(gtk::Orientation::Vertical, 6),
             volume,
             mute,
-            meter: widgets::meter(),
+            fader,
             outputs,
             add_output,
             attached: RefCell::new(Vec::new()),
@@ -131,9 +129,7 @@ impl MixDialog {
         caption.set_margin_top(12);
         left.append(&caption);
 
-        left.append(&widgets::level_row(&self.mute, &self.volume));
-        self.meter.set_margin_start(38);
-        left.append(&self.meter);
+        left.append(&widgets::level_row(&self.mute, &self.fader.root));
 
         let filler = gtk::Box::new(gtk::Orientation::Vertical, 0);
         filler.set_vexpand(true);
@@ -269,7 +265,7 @@ impl MixDialog {
 
     /// Move the meter of the object this window is about.
     pub fn set_level(&self, peak: f32) {
-        self.meter.set_value(widgets::meter_position(peak));
+        self.fader.set_level(peak);
     }
 
     pub fn id(&self) -> MixId {
