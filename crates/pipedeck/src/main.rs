@@ -8,6 +8,7 @@ mod effect_panel;
 mod effects;
 mod engine_link;
 mod listen;
+mod meter_fader;
 mod mix_dialog;
 mod preferences;
 mod presets;

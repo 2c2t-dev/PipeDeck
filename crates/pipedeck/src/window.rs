@@ -725,11 +725,6 @@ fn clickable_card(content: &gtk::Box, width: i32, height: i32) -> gtk::Button {
 /// Install the stylesheet. Call once, after GTK is initialised.
 pub fn load_css() {
     const CSS: &str = "
-        .pd-meter-fader trough,
-        .pd-meter-fader trough highlight {
-            background: none;
-            box-shadow: none;
-        }
         .pd-card .pd-hover-tools { opacity: 0; transition: opacity 120ms ease-out; }
         .pd-card .pd-badge-face { transition: opacity 120ms ease-out; }
         .pd-card:hover .pd-badge-face,
@@ -756,7 +751,11 @@ pub fn load_css() {
         }
     ";
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(&format!("{CSS}{}", presets::css()));
+    provider.load_from_string(&format!(
+        "{CSS}{}{}",
+        crate::meter_fader::CSS,
+        presets::css()
+    ));
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
