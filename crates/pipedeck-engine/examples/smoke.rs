@@ -902,6 +902,104 @@ fn main() -> ExitCode {
         println!("[skip] no VST3 effect installed, so nothing to host");
     }
 
+    // The mixer's own effects run in the same chain as the plug-ins it
+    // hosts, all four at once. Noise suppression is at no strength here: a
+    // steady tone is exactly what it is made to take out.
+    let native = |id: &str, changes: &[(&str, f32)]| {
+        let spec = pipedeck_engine::dsp::spec(id).expect("an effect the mixer has");
+        let mut controls = pipedeck_engine::dsp::defaults(spec);
+        for (name, value) in changes {
+            if let Some(control) = controls.iter_mut().find(|c| c.name == *name) {
+                control.value = *value;
+            }
+        }
+        pipedeck_engine::Effect {
+            name: spec.name.to_owned(),
+            kind: pipedeck_engine::EffectKind::Native,
+            plugin: None,
+            label: id.to_owned(),
+            controls,
+        }
+    };
+    engine
+        .send(Command::SetEffects {
+            id: source,
+            effects: vec![
+                native("denoise", &[("strength", 0.0)]),
+                native("eq", &[]),
+                native("deesser", &[]),
+                native("compressor", &[]),
+            ],
+        })
+        .unwrap();
+    wait_state(&rx, "the mixer's own effects", |s| {
+        s.sources.iter().any(|row| row.effects.len() == 4)
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    let dump = pw_dump();
+    let chain_in = node_id(&dump, &format!("pipedeck.vst.{source}.in"));
+    check(
+        chain_in.is_some(),
+        &format!(
+            "the four run in the mixer's own chain: {:?}",
+            node_names(&dump)
+                .into_iter()
+                .filter(|n| n.contains(".vst."))
+                .collect::<Vec<_>>()
+        ),
+        &mut failures,
+    );
+    match node_serial(&dump, &format!("pipedeck.vst.{source}")) {
+        Some(serial) => {
+            let mut player = Process::new("pw-play")
+                .arg(format!("--target={serial}"))
+                .arg(&tone)
+                .spawn()
+                .expect("pw-play must be installed");
+            drain(&rx);
+            let heard = wait_levels(&rx, source, mix, Duration::from_secs(5));
+            let _ = player.kill();
+            let _ = player.wait();
+            check(
+                heard.0 > 0.01,
+                &format!("the tone comes out of all four: {:.3}", heard.0),
+                &mut failures,
+            );
+        }
+        None => check(false, "the chain has no sink to play into", &mut failures),
+    }
+
+    // A control moved is a setting written where the effect runs: the chain
+    // is not made again, so its nodes are the same ones after.
+    engine
+        .send(Command::SetEffectParams {
+            id: source,
+            index: 1,
+            controls: native("eq", &[("mid_gain", 9.0)]).controls,
+        })
+        .unwrap();
+    wait_for(&rx, "the setting taken", |e| {
+        matches!(e, Event::SourceEffects { effects, .. }
+            if effects.get(1).is_some_and(|eq| eq.controls.iter().any(|c| c.name == "mid_gain" && c.value == 9.0)))
+    });
+    settle();
+    let after = node_id(&pw_dump(), &format!("pipedeck.vst.{source}.in"));
+    check(
+        chain_in.is_some() && after == chain_in,
+        &format!("a control moved reloads nothing: {chain_in:?} then {after:?}"),
+        &mut failures,
+    );
+    engine
+        .send(Command::SetEffects {
+            id: source,
+            effects: Vec::new(),
+        })
+        .unwrap();
+    wait_state(&rx, "the mixer's own effects removed", |s| {
+        s.sources.iter().all(|row| row.effects.is_empty())
+    });
+    settle();
+
     // Stereo Tool is hosted the same way, and is the one plug-in most likely
     // to be installed. It is proprietary, so this runs only where it is.
     if pipedeck_engine::stereotool::installed() {

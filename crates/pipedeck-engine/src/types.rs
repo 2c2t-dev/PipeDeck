@@ -122,9 +122,19 @@ pub struct SourceConfig {
 }
 
 impl Effect {
+    /// Is the other the same effect, whatever its settings? Two chains that
+    /// are the same effect for effect differ only in settings, which a
+    /// running chain can take without being made again.
+    pub fn same_effect(&self, other: &Effect) -> bool {
+        self.kind == other.kind && self.label == other.label && self.plugin == other.plugin
+    }
+
     /// Is this one hosted by the mixer rather than by PipeWire?
     pub fn is_plugin(&self) -> bool {
-        matches!(self.kind, EffectKind::Vst3 | EffectKind::StereoTool)
+        matches!(
+            self.kind,
+            EffectKind::Vst3 | EffectKind::StereoTool | EffectKind::Native
+        )
     }
 
     /// The preset file a Stereo Tool stage was given, if it has one. It is
@@ -393,6 +403,9 @@ pub enum EffectKind {
     /// Thimeo's Stereo Tool, hosted by the mixer through the shared library
     /// the vendor ships for exactly that.
     StereoTool,
+    /// One of the effects the mixer runs itself, by its id in
+    /// [`crate::dsp::EFFECTS`], which the effect keeps as its `label`.
+    Native,
 }
 
 impl EffectKind {
@@ -403,6 +416,7 @@ impl EffectKind {
             EffectKind::Ladspa => "ladspa",
             EffectKind::Vst3 => "vst3",
             EffectKind::StereoTool => "stereotool",
+            EffectKind::Native => "native",
         }
     }
 }

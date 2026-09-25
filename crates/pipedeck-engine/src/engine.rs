@@ -134,6 +134,14 @@ pub enum Command {
         id: SourceId,
         effects: Vec<Effect>,
     },
+    /// New settings for one effect of a row, by its place in the chain, as
+    /// a control moves. The mixer's own effects take them while they run:
+    /// nothing is reloaded, and the matrix is not sent again.
+    SetEffectParams {
+        id: SourceId,
+        index: usize,
+        controls: Vec<crate::types::Control>,
+    },
     /// Put the interface of one hosted plug-in on the screen, or take it
     /// away, by its place in the chain. Stereo Tool has one; a VST3 does
     /// not, here.
@@ -247,6 +255,9 @@ pub enum Event {
         sources: Vec<(SourceId, f32)>,
         mixes: Vec<(MixId, f32)>,
     },
+    /// One row's effects, settings and all, after a control moved: sent
+    /// instead of the whole matrix, which nothing about a setting changes.
+    SourceEffects { id: SourceId, effects: Vec<Effect> },
     /// Non-fatal problem worth showing to the user.
     Error(String),
     /// Something worth saying that is not a problem: the connection to the
@@ -696,6 +707,14 @@ fn handle_command(
             g.update_source(id, |c| c.muted = muted)
         }
         Command::SetEffects { id, effects } => g.set_effects(id, effects),
+        Command::SetEffectParams {
+            id,
+            index,
+            controls,
+        } => {
+            structural = false;
+            g.set_effect_params(id, index, controls)
+        }
         Command::SetEffectWindow { id, index, open } => {
             structural = false;
             g.set_effect_window(id, index, open)

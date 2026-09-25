@@ -26,6 +26,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use libspa::param::ParamType;
 use libspa::pod::Pod;
@@ -64,6 +65,37 @@ const ADAPTER_FACTORY: &str = "adapter";
 const NULL_SINK_FACTORY: &str = "support.null-audio-sink";
 const LOOPBACK_MODULE: &str = "libpipewire-module-loopback";
 const FILTER_CHAIN_MODULE: &str = "libpipewire-module-filter-chain";
+
+/// Proxies of objects about to go, held a while before they are let go.
+///
+/// Destroying a loopback module takes its nodes with it, and the links to
+/// them, and the server frees the bindings we hold on them at the same
+/// moment — on the module's own connection, which is not ordered with ours.
+/// Dropping such a proxy right away races the notification telling us it is
+/// gone, and the server answers our destroy with "unknown resource". Once
+/// the notification has landed, dropping it says nothing on the wire. One
+/// turn of the loop was usually enough and sometimes not, under load; two
+/// seconds always is.
+struct Quarantine<T> {
+    held: Vec<(Instant, T)>,
+}
+
+impl<T> Quarantine<T> {
+    const HOLD: Duration = Duration::from_secs(2);
+
+    fn new() -> Self {
+        Self { held: Vec::new() }
+    }
+
+    fn hold(&mut self, item: T) {
+        self.held.push((Instant::now(), item));
+    }
+
+    /// Let go of what has been held long enough.
+    fn release(&mut self) {
+        self.held.retain(|(since, _)| since.elapsed() < Self::HOLD);
+    }
+}
 
 /// Where a level read back from the graph belongs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,15 +298,8 @@ pub struct Graph {
     /// hold a number of its own. The listener only queues, because it fires
     /// while the graph is borrowed.
     incoming: Rc<RefCell<Vec<(Owner, ChainState)>>>,
-    /// Proxies of nodes we are about to destroy.
-    ///
-    /// Destroying a loopback module takes its nodes with it, and the server
-    /// frees the bindings we hold on them at the same moment. Dropping such a
-    /// proxy right away races the notification telling us it is gone, and the
-    /// server answers our destroy with an error. Holding them until the next
-    /// turn of the loop lets that notification land first, after which
-    /// dropping them says nothing on the wire.
-    retired: Vec<Node>,
+    /// Proxies of nodes we are about to destroy. See [`Quarantine`].
+    retired: Quarantine<Node>,
     devices: HashMap<u32, DeviceEntry>,
     devices_dirty: bool,
     /// One measurement per row and per column. A cell needs none: it carries
@@ -303,8 +328,8 @@ pub struct Graph {
     metadata_id: Option<u32>,
     /// Proxies of objects the server has just taken away, held until the next
     /// tick for the same reason as `retired`.
-    retired_metadata: Vec<Metadata>,
-    retired_links: Vec<Link>,
+    retired_metadata: Quarantine<Metadata>,
+    retired_links: Quarantine<Link>,
     /// The links we made, by the id the server gave each, and the cell it
     /// joins to its mix. A link can go without us — WirePlumber restarting
     /// renegotiates the streams at either end, and their ports go with it —
@@ -345,7 +370,7 @@ impl Graph {
             port_owner: HashMap::new(),
             meter_targets: HashMap::new(),
             incoming: Rc::new(RefCell::new(Vec::new())),
-            retired: Vec::new(),
+            retired: Quarantine::new(),
             devices: HashMap::new(),
             devices_dirty: false,
             plugins: crate::vst3::installed(),
@@ -357,8 +382,8 @@ impl Graph {
             streams_dirty: false,
             metadata: None,
             metadata_id: None,
-            retired_metadata: Vec::new(),
-            retired_links: Vec::new(),
+            retired_metadata: Quarantine::new(),
+            retired_links: Quarantine::new(),
             link_owner: HashMap::new(),
             own_clients: std::collections::HashSet::new(),
             registry,
@@ -637,11 +662,19 @@ impl Graph {
 
     /// Take a stage's proxy out before the stage, and its module, go.
     fn retire(&mut self, stage: &mut Stage) {
-        // The links go before the node they are attached to, or the server
-        // would hear about a link to something that no longer exists.
-        stage.links.clear();
+        // The links go into quarantine with the node, not straight away. The
+        // node belongs to the loopback module, which talks to the server on a
+        // connection of its own; tearing the module down removes the node,
+        // and the links with it, on that connection, while a destroy for the
+        // links would go on ours. The two are not ordered, so the links were
+        // often gone by the time ours arrived, and the server answered
+        // "unknown resource". Held until the next tick, they learn they are
+        // gone first, and letting them go then says nothing on the wire.
+        for link in stage.links.drain(..) {
+            self.retired_links.hold(link);
+        }
         if let Some(bound) = stage.node.take() {
-            self.retired.push(bound.proxy);
+            self.retired.hold(bound.proxy);
         }
     }
 
@@ -1203,9 +1236,38 @@ impl Graph {
             .config
             .source_mut(id)
             .ok_or(EngineError::UnknownSource(id))?;
-        cfg.effects = effects;
+        let before = std::mem::replace(&mut cfg.effects, effects);
         let cfg = cfg.clone();
         self.dirty = true;
+
+        // The same effects in the same order, some of them set otherwise: the
+        // mixer's own take their settings where they run, and the chain is
+        // left alone. Only PipeWire's own filters, fixed when their module is
+        // loaded, need it made again, and only when one of theirs moved.
+        let same = before.len() == cfg.effects.len()
+            && before
+                .iter()
+                .zip(&cfg.effects)
+                .all(|(old, new)| old.same_effect(new));
+        let running = self
+            .sources
+            .get(&id)
+            .is_some_and(|source| source.plugins.is_some() || source.effects.is_some());
+        if same && running {
+            let hosted = cfg.effects.iter().filter(|effect| effect.is_plugin());
+            if let Some(chain) = self.sources.get(&id).and_then(|s| s.plugins.as_ref()) {
+                for (index, effect) in hosted.enumerate() {
+                    chain.set_params(index, &effect.controls);
+                }
+            }
+            let filters_moved = before
+                .iter()
+                .zip(&cfg.effects)
+                .any(|(old, new)| !new.is_plugin() && old.controls != new.controls);
+            if !filters_moved {
+                return Ok(());
+            }
+        }
 
         let had_chain = self
             .sources
@@ -1368,6 +1430,33 @@ impl Graph {
                 source.plugins = None;
             }
         }
+    }
+
+    /// New settings for one effect of a row, as a control moves.
+    ///
+    /// The chain is the same, so `set_effects` takes the quick way: the
+    /// mixer's own effects are handed the settings where they run. Only the
+    /// row's effects are sent back, not the matrix, which a setting changes
+    /// nothing of.
+    pub fn set_effect_params(
+        &mut self,
+        id: SourceId,
+        index: usize,
+        controls: Vec<crate::types::Control>,
+    ) -> Result<(), EngineError> {
+        let mut effects = self
+            .config
+            .source(id)
+            .ok_or(EngineError::UnknownSource(id))?
+            .effects
+            .clone();
+        let Some(effect) = effects.get_mut(index) else {
+            return Ok(());
+        };
+        effect.controls = controls;
+        self.set_effects(id, effects.clone())?;
+        self.emit(Event::SourceEffects { id, effects });
+        Ok(())
     }
 
     /// Trim of a row, applied to its sink. An input row has no sink, so it
@@ -1822,7 +1911,7 @@ impl Graph {
             log::info!("the default metadata went away; waiting for the next one");
             self.metadata_id = None;
             if let Some(dead) = self.metadata.take() {
-                self.retired_metadata.push(dead);
+                self.retired_metadata.hold(dead);
             }
         }
         if let Some(cell) = self.link_owner.remove(&global_id) {
@@ -1832,7 +1921,9 @@ impl Graph {
             self.link_owner.retain(|_, owner| *owner != cell);
             if let Some(stage) = self.links.get_mut(&cell) {
                 log::info!("cell {}.{} came unlinked; joining it again", cell.0, cell.1);
-                self.retired_links.append(&mut stage.links);
+                for link in stage.links.drain(..) {
+                    self.retired_links.hold(link);
+                }
             }
         }
         if let Some(node) = self.port_owner.remove(&global_id) {
@@ -2065,11 +2156,11 @@ impl Graph {
         self.hook_up_meters();
         self.absorb_levels();
         self.poll_windows();
-        // The server has told us by now that these nodes are gone, so their
-        // proxies leave without a word.
-        self.retired.clear();
-        self.retired_metadata.clear();
-        self.retired_links.clear();
+        // What the server has had time to tell us is gone leaves without a
+        // word.
+        self.retired.release();
+        self.retired_metadata.release();
+        self.retired_links.release();
         if self.devices_dirty {
             self.emit_devices();
         }

@@ -24,6 +24,7 @@ use pipewire::core::CoreRc;
 use pipewire::properties::properties;
 use pipewire::stream::{StreamFlags, StreamListener, StreamRc};
 
+use crate::dsp;
 use crate::error::EngineError;
 use crate::stereotool;
 use crate::types::{Effect, EffectKind};
@@ -115,6 +116,12 @@ pub enum Request {
         preset: Option<PathBuf>,
         license: Option<String>,
     },
+    /// One of the mixer's own effects, with the settings it shares with
+    /// the audio thread.
+    Native {
+        id: String,
+        params: Arc<dsp::Params>,
+    },
 }
 
 impl Request {
@@ -138,6 +145,16 @@ impl Request {
                 preset: effect.preset().map(PathBuf::from),
                 license: license.map(str::to_owned),
             }),
+            EffectKind::Native => {
+                let spec = dsp::spec(&effect.label);
+                if spec.is_none() {
+                    log::error!("{} is not an effect this mixer has", effect.label);
+                }
+                spec.map(|spec| Request::Native {
+                    id: effect.label.clone(),
+                    params: dsp::Params::new(spec, &effect.controls),
+                })
+            }
             _ => None,
         }
     }
@@ -148,6 +165,7 @@ impl Request {
 enum Processor {
     Vst3(Instance),
     StereoTool(stereotool::Instance),
+    Native(String, Box<dyn dsp::Native>),
 }
 
 impl Processor {
@@ -158,6 +176,12 @@ impl Processor {
                 stereotool::Instance::with_block(preset.as_deref(), license.as_deref(), max_block)
                     .map(Processor::StereoTool)
             }
+            Request::Native { id, params } => {
+                let name = dsp::spec(id).map_or(id.as_str(), |spec| spec.name);
+                dsp::open(id, params.clone(), CHANNELS)
+                    .map(|effect| Processor::Native(name.to_owned(), effect))
+                    .ok_or_else(|| format!("{id} is not an effect this mixer has"))
+            }
         }
     }
 
@@ -165,6 +189,7 @@ impl Processor {
         match self {
             Processor::Vst3(instance) => instance.name(),
             Processor::StereoTool(instance) => instance.name(),
+            Processor::Native(name, _) => name,
         }
     }
 
@@ -174,6 +199,10 @@ impl Processor {
         match self {
             Processor::Vst3(instance) => instance.process(channels).map_err(|_| ()),
             Processor::StereoTool(instance) => instance.process(channels).map_err(|_| ()),
+            Processor::Native(_, effect) => {
+                effect.process(channels);
+                Ok(())
+            }
         }
     }
 }
@@ -207,6 +236,10 @@ pub struct PluginChain {
     /// shared rather than owned by either.
     windows: Vec<Option<Arc<stereotool::Handle>>>,
     open: RefCell<Vec<Option<stereotool::Window>>>,
+    /// The settings of the mixer's own effects, one slot per plug-in the
+    /// chain was asked for, shared with the audio thread: writing one here
+    /// is the effect taking it.
+    params: Vec<Option<(String, Arc<dsp::Params>)>>,
 }
 
 impl PluginChain {
@@ -238,6 +271,17 @@ impl PluginChain {
             }
         }
         Ok(())
+    }
+
+    /// Give the plug-in at `index` new settings, while it runs. Only the
+    /// mixer's own effects take settings this way; `index` counts the
+    /// plug-ins of the chain, as for windows.
+    pub fn set_params(&self, index: usize, controls: &[crate::types::Control]) {
+        if let Some(Some((id, params))) = self.params.get(index) {
+            if let Some(spec) = dsp::spec(id) {
+                params.set(spec, controls);
+            }
+        }
     }
 
     /// Close the windows whose close button has been pressed.
@@ -287,7 +331,7 @@ impl PluginChain {
                     names.push(instance.name().to_owned());
                     windows.push(match &instance {
                         Processor::StereoTool(stereotool) => Some(stereotool.handle()),
-                        Processor::Vst3(_) => None,
+                        Processor::Vst3(_) | Processor::Native(..) => None,
                     });
                     opened.push(instance);
                 }
@@ -450,6 +494,13 @@ impl PluginChain {
             names.join(", ")
         );
         let open = RefCell::new((0..windows.len()).map(|_| None).collect());
+        let params = plugins
+            .iter()
+            .map(|request| match request {
+                Request::Native { id, params } => Some((id.clone(), params.clone())),
+                _ => None,
+            })
+            .collect();
         Ok(Self {
             _playback_listener: playback_listener,
             _capture_listener: capture_listener,
@@ -457,6 +508,7 @@ impl PluginChain {
             _capture: capture,
             windows,
             open,
+            params,
         })
     }
 }

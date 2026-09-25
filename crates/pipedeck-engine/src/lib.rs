@@ -9,6 +9,7 @@
 //! the TOML config. It is meant to become a standalone daemon later.
 
 pub mod config;
+pub mod dsp;
 pub mod engine;
 pub mod error;
 mod pw;

@@ -249,6 +249,19 @@ impl Window {
             Event::OutputChanged { .. } => {
                 // The window that moved it already shows the new value.
             }
+            Event::SourceEffects { id, effects } => {
+                // Kept for the next time a window reads it; nothing on the
+                // grid shows a setting, so nothing is drawn again.
+                if let Some(source) = self
+                    .state
+                    .borrow_mut()
+                    .sources
+                    .iter_mut()
+                    .find(|source| source.id == id)
+                {
+                    source.effects = effects;
+                }
+            }
             Event::Error(message) => self.toast(&message),
             Event::Notice(message) => {
                 log::info!("{message}");
