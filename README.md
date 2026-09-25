@@ -173,6 +173,16 @@ handed from one session to the next. A loop with nothing on it but the
 command channel then knocks once a second until a server answers, and the
 whole mixer goes back on the graph.
 
+WirePlumber restarting on its own is quieter and does more damage: PipeWire
+and every node stay, but the metadata applications are routed through is made
+again, empty, and the streams at either end of a cell are renegotiated, taking
+with them the links the mixer made itself. The mixer notices both. It binds
+the new metadata and sends every assigned application back to its channel,
+and it watches the links it made, so one that goes without being asked to is
+made again on the next tick. `examples/relink_check` shows it: a cell and an
+application, a WirePlumber restarted under them, and the two whole again two
+seconds later.
+
 `cargo run -p pipedeck-engine --example reconnect_check` watches that happen.
 Point `PIPEWIRE_REMOTE` at a server you are willing to kill — a private one,
 started with `PIPEWIRE_RUNTIME_DIR=/tmp/pdw PIPEWIRE_CORE=pdtest pipewire`,

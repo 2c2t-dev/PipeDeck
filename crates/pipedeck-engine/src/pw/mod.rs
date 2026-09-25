@@ -295,6 +295,23 @@ pub struct Graph {
     /// The server's `default` metadata, which is how a stream is moved from
     /// one sink to another. Bound when the registry announces it.
     metadata: Option<Metadata>,
+    /// The id the server gave it. WirePlumber makes it again whenever it
+    /// restarts, empty, and the one we hold is then dead: this is how its
+    /// going is noticed.
+    metadata_id: Option<u32>,
+    /// Proxies of objects the server has just taken away, held until the next
+    /// tick for the same reason as `retired`.
+    retired_metadata: Vec<Metadata>,
+    retired_links: Vec<Link>,
+    /// The links we made, by the id the server gave each, and the cell it
+    /// joins to its mix. A link can go without us — WirePlumber restarting
+    /// renegotiates the streams at either end, and their ports go with it —
+    /// and a cell whose link has gone is a cell nobody hears.
+    link_owner: HashMap<u32, (SourceId, MixId)>,
+    /// The clients this process holds on the server. A node's `client.id`
+    /// says whether it is ours, which its name cannot: another mixer's
+    /// nodes answer to the same names.
+    own_clients: std::collections::HashSet<u32>,
     registry: RegistryRc,
     core: CoreRc,
     context: ContextRc,
@@ -337,6 +354,11 @@ impl Graph {
             streams: HashMap::new(),
             streams_dirty: false,
             metadata: None,
+            metadata_id: None,
+            retired_metadata: Vec::new(),
+            retired_links: Vec::new(),
+            link_owner: HashMap::new(),
+            own_clients: std::collections::HashSet::new(),
             registry,
             core,
             context,
@@ -515,11 +537,13 @@ impl Graph {
             let Some(global_id) = self.sink_ids.get(&name).copied() else {
                 continue;
             };
+            // A mix is a source, so its meter reads it straight rather than
+            // through the monitor of a sink.
             if let Some(meter) = self.watch_level(
                 &format!("pipedeck.meter.mix.{id}"),
                 &name,
                 Some(global_id),
-                true,
+                false,
             ) {
                 self.mix_meters.insert(id, meter);
             }
@@ -1263,6 +1287,8 @@ impl Graph {
     }
 
     fn drop_link(&mut self, cell: (SourceId, MixId)) {
+        // Links we take down ourselves are not losses to mend.
+        self.link_owner.retain(|_, owner| *owner != cell);
         if let Some(mut link) = self.links.remove(&cell) {
             self.stage_index.remove(&link.node_name);
             self.retire(&mut link);
@@ -1381,9 +1407,27 @@ impl Graph {
                     Ok(metadata) => {
                         log::debug!("bound the default metadata");
                         self.metadata = Some(metadata);
+                        self.metadata_id = Some(global.id);
+                        // A metadata made again is made empty: every
+                        // application sent to a channel has to be sent
+                        // there again, or it plays wherever it likes.
+                        self.reassign_apps();
                     }
                     Err(e) => log::error!("cannot bind the default metadata: {e}"),
                 }
+            }
+            return;
+        }
+        if global.type_ == ObjectType::Link {
+            self.remember_link(global);
+            return;
+        }
+        if global.type_ == ObjectType::Client {
+            // The server fills this in from the socket, so it cannot be
+            // claimed by anyone else.
+            let pid = global.props.and_then(|p| p.get("pipewire.sec.pid"));
+            if pid == Some(std::process::id().to_string().as_str()) {
+                self.own_clients.insert(global.id);
             }
             return;
         }
@@ -1402,6 +1446,18 @@ impl Graph {
         };
 
         if let Some(&owner) = self.stage_index.get(name) {
+            // Another mixer on the same graph answers to the same names, and a
+            // stage bound to its node would set its levels — and link it —
+            // from here. A node says which client made it, and the server
+            // says which process each client is, so ours are the ones made
+            // by a client of this process.
+            let ours = props
+                .get("client.id")
+                .and_then(|id| id.parse::<u32>().ok())
+                .is_some_and(|client| self.own_clients.contains(&client));
+            if !ours {
+                return;
+            }
             self.bind_stage(owner, global);
             return;
         }
@@ -1503,6 +1559,42 @@ impl Graph {
         });
     }
 
+    /// Send every running application back to the channel it belongs to.
+    fn reassign_apps(&self) {
+        for (id, stream) in &self.streams {
+            if let Some(source) = self.source_for_app(&stream.app.key) {
+                self.move_stream(*id, &stream.app.name, Some(source));
+            }
+        }
+    }
+
+    /// Note a link that joins one of our cells to its mix, so that its going
+    /// can be noticed and the cell joined again.
+    fn remember_link(&mut self, global: &GlobalObject<&DictRef>) {
+        let Some(props) = global.props else {
+            return;
+        };
+        let Some(from) = props
+            .get("link.output.node")
+            .and_then(|id| id.parse::<u32>().ok())
+        else {
+            return;
+        };
+        let owner = self
+            .links
+            .iter()
+            .find(|(_, stage)| {
+                stage
+                    .node
+                    .as_ref()
+                    .is_some_and(|node| node.global_id == from)
+            })
+            .map(|(cell, _)| *cell);
+        if let Some(cell) = owner {
+            self.link_owner.insert(global.id, cell);
+        }
+    }
+
     /// Join two nodes, channel to channel.
     ///
     /// This is what a session manager would do, and will not: it routes into
@@ -1568,6 +1660,26 @@ impl Graph {
     }
 
     pub fn on_global_remove(&mut self, global_id: u32) {
+        self.own_clients.remove(&global_id);
+        if self.metadata_id == Some(global_id) {
+            // WirePlumber has gone, or is making it again. The proxy is dead
+            // either way; the next one announced is bound in its place.
+            log::info!("the default metadata went away; waiting for the next one");
+            self.metadata_id = None;
+            if let Some(dead) = self.metadata.take() {
+                self.retired_metadata.push(dead);
+            }
+        }
+        if let Some(cell) = self.link_owner.remove(&global_id) {
+            // A link of ours went without being asked to. The cell is heard
+            // by nobody until it is joined again, which the next tick does.
+            // Its other channel's link goes too, so the two are made afresh.
+            self.link_owner.retain(|_, owner| *owner != cell);
+            if let Some(stage) = self.links.get_mut(&cell) {
+                log::info!("cell {}.{} came unlinked; joining it again", cell.0, cell.1);
+                self.retired_links.append(&mut stage.links);
+            }
+        }
         if let Some(node) = self.port_owner.remove(&global_id) {
             if let Some(ports) = self.ports.get_mut(&node) {
                 ports.retain(|port| port.global_id != global_id);
@@ -1798,6 +1910,8 @@ impl Graph {
         // The server has told us by now that these nodes are gone, so their
         // proxies leave without a word.
         self.retired.clear();
+        self.retired_metadata.clear();
+        self.retired_links.clear();
         if self.devices_dirty {
             self.emit_devices();
         }
