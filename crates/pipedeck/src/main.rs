@@ -2,6 +2,7 @@
 
 mod cell;
 mod channel_dialog;
+mod comp_graph;
 mod desktop;
 mod dialogs;
 mod effect_panel;

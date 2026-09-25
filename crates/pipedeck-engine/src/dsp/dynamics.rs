@@ -62,6 +62,60 @@ fn reduction(over: f32, ratio: f32) -> f32 {
     }
 }
 
+/// What the compressor makes of a level: `input` in, the result out, both
+/// in decibels. This is the curve its window draws, from the same sums the
+/// audio goes through.
+pub fn compressor_output(input: f32, threshold: f32, ratio: f32, makeup: f32) -> f32 {
+    input - reduction(input - threshold, ratio) + makeup
+}
+
+/// A starting point for the compressor: its threshold, ratio and makeup.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CompressorPreset {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub values: [f32; 3],
+}
+
+/// The starting points offered, gentlest first.
+pub const COMPRESSOR_PRESETS: &[CompressorPreset] = &[
+    CompressorPreset {
+        name: "Off",
+        description: "Changes nothing at all",
+        values: [0.0, 1.0, 0.0],
+    },
+    CompressorPreset {
+        name: "Gentle",
+        description: "Evens a voice out without being heard doing it",
+        values: [-18.0, 2.0, 2.0],
+    },
+    CompressorPreset {
+        name: "Voice",
+        description: "The usual for talking: steady and natural",
+        values: [-20.0, 3.0, 3.0],
+    },
+    CompressorPreset {
+        name: "Podcast",
+        description: "Close and even, for talking at length",
+        values: [-24.0, 4.0, 6.0],
+    },
+    CompressorPreset {
+        name: "Broadcast",
+        description: "Dense and loud, the way radio sounds",
+        values: [-28.0, 6.0, 10.0],
+    },
+    CompressorPreset {
+        name: "Shouts in check",
+        description: "Leaves speech alone and catches the shouts",
+        values: [-14.0, 8.0, 2.0],
+    },
+    CompressorPreset {
+        name: "Music",
+        description: "A light hold on music, to keep it together",
+        values: [-14.0, 2.0, 2.0],
+    },
+];
+
 /// A compressor with the three controls that matter: where it starts, how
 /// hard it pushes, and how much is given back after.
 ///
@@ -390,6 +444,25 @@ mod tests {
         let quiet = sine(440.0, from_db(-40.0), 1.0);
         let left = db(&run(&mut compressor, &quiet), &quiet);
         assert!(left.abs() < 0.3, "a quiet sound moved {left} dB");
+    }
+
+    #[test]
+    fn every_compressor_preset_is_within_range() {
+        let spec = spec("compressor").expect("the compressor");
+        for preset in COMPRESSOR_PRESETS {
+            for (value, param) in preset.values.iter().zip(spec.params) {
+                assert!(
+                    (param.min..=param.max).contains(value),
+                    "{} sets {} to {value}",
+                    preset.name,
+                    param.label
+                );
+            }
+        }
+        // Off is off: the curve is the diagonal.
+        for input in [-60.0, -20.0, 0.0] {
+            assert_eq!(compressor_output(input, 0.0, 1.0, 0.0), input);
+        }
     }
 
     #[test]

@@ -90,8 +90,11 @@ of its own, written in Rust, so nothing has to be installed:
   voice* listens for five seconds of speech with s in it, finds where they
   are loudest, splits just under, and sets the strength so the s go over
   its threshold and the rest of the voice does not.
-- **Compressor**, with only a threshold, a ratio and a makeup gain. Its
-  timing is fixed at what suits a voice. *Learn from my voice* listens for
+- **Compressor**, with only a threshold, a ratio and a makeup gain, set on
+  its curve: the threshold is the bend, dragged sideways; the ratio the top
+  of the curve, dragged down for more; the makeup its foot, dragged up. A
+  line under it says what it does to a shout, and presets go from gentle to
+  broadcast. Its timing is fixed at what suits a voice. *Learn from my voice* listens for
   five seconds while you speak and sets all three from what it heard: the
   threshold where the voice usually is, a ratio as firm as the voice is
   uneven, and the makeup that brings its loud moments to about -10 dB.

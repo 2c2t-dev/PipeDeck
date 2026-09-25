@@ -20,6 +20,7 @@ use libadwaita as adw;
 use pipedeck_engine::stereotool::Status;
 use pipedeck_engine::{vst3::Plugin, Command, Effect, EffectKind, Learning, SourceId};
 
+use crate::comp_graph::CompGraph;
 use crate::effects;
 use crate::engine_link::EngineLink;
 use crate::eq_graph::EqGraph;
@@ -229,7 +230,11 @@ impl EffectPanel {
         // of a window apart is to keep working beside it.
         let window = adw::Window::builder()
             .title(spec.name)
-            .default_width(if spec.id == "eq" { 720 } else { 420 })
+            .default_width(match spec.id {
+                "eq" => 720,
+                "compressor" => 540,
+                _ => 420,
+            })
             // As tall as its controls: without a height asked for, a
             // libadwaita window is never under 200 pixels, and a single
             // slider sits above a gap.
@@ -306,6 +311,8 @@ impl EffectPanel {
     ) {
         if spec.id == "eq" {
             self.equaliser_body(position, effect, body);
+        } else if spec.id == "compressor" {
+            self.compressor_body(position, effect, spec, body);
         } else {
             self.controls_body(position, effect, spec, body);
         }
@@ -549,6 +556,40 @@ impl EffectPanel {
             }
         });
         row.upcast()
+    }
+
+    /// The compressor, as its curve with a handle on each control, under
+    /// the button that sets it from a voice.
+    fn compressor_body(
+        self: &Rc<Self>,
+        position: usize,
+        effect: &Effect,
+        spec: &'static pipedeck_engine::dsp::EffectSpec,
+        inner: &gtk::Box,
+    ) {
+        inner.append(&self.learn_row(position, spec.id));
+        let values: Vec<f32> = spec
+            .params
+            .iter()
+            .map(|param| effects::value_of(effect, param))
+            .collect();
+        let graph = CompGraph::new(&values);
+        graph.connect_changed({
+            let this = self.clone();
+            move |values| {
+                let mut shown = this.shown.borrow_mut();
+                let Some(effect) = shown.get_mut(position) else {
+                    return;
+                };
+                for (param, value) in spec.params.iter().zip(values) {
+                    effects::set_value(effect, param.name, *value);
+                }
+                let effect = effect.clone();
+                drop(shown);
+                this.send_params(position, &effect);
+            }
+        });
+        inner.append(&graph.root);
     }
 
     /// The equaliser, as a curve with a handle on each band.

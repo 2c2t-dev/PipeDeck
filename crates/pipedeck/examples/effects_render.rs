@@ -7,6 +7,8 @@
 //! an engine to talk to, so one is started on a scratch config and stopped
 //! once the image is taken; nothing is sent to it.
 
+#[path = "../src/comp_graph.rs"]
+mod comp_graph;
 #[path = "../src/effect_panel.rs"]
 #[allow(dead_code)]
 mod effect_panel;
