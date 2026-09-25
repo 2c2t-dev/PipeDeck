@@ -13,6 +13,38 @@ use super::Params;
 
 const FRAME: usize = DenoiseState::FRAME_SIZE;
 
+/// A starting point for noise suppression: its strength.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DenoisePreset {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub values: [f32; 1],
+}
+
+/// The starting points offered, lightest first.
+pub const DENOISE_PRESETS: &[DenoisePreset] = &[
+    DenoisePreset {
+        name: "Off",
+        description: "The sound goes through untouched",
+        values: [0.0],
+    },
+    DenoisePreset {
+        name: "Light",
+        description: "Takes the edge off a fan or a hiss, and stays natural",
+        values: [50.0],
+    },
+    DenoisePreset {
+        name: "Medium",
+        description: "Most of the room gone, a trace left so the voice breathes",
+        values: [80.0],
+    },
+    DenoisePreset {
+        name: "Full",
+        description: "Everything but the voice",
+        values: [100.0],
+    },
+];
+
 /// RNNoise takes samples on the scale of 16-bit integers, not of floats.
 const SCALE: f32 = 32768.0;
 

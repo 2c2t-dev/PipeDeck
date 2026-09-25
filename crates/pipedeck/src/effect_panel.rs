@@ -22,6 +22,7 @@ use pipedeck_engine::{vst3::Plugin, Command, Effect, EffectKind, Learning, Sourc
 
 use crate::comp_graph::CompGraph;
 use crate::deesser_graph::DeEsserGraph;
+use crate::denoise_graph::DenoiseGraph;
 use crate::effects;
 use crate::engine_link::EngineLink;
 use crate::eq_graph::EqGraph;
@@ -233,7 +234,7 @@ impl EffectPanel {
             .title(spec.name)
             .default_width(match spec.id {
                 "eq" => 720,
-                "compressor" | "deesser" => 540,
+                "compressor" | "deesser" | "denoise" => 540,
                 _ => 420,
             })
             // As tall as its controls: without a height asked for, a
@@ -312,7 +313,7 @@ impl EffectPanel {
     ) {
         if spec.id == "eq" {
             self.equaliser_body(position, effect, body);
-        } else if spec.id == "compressor" || spec.id == "deesser" {
+        } else if matches!(spec.id, "compressor" | "deesser" | "denoise") {
             self.graph_body(position, effect, spec, body);
         } else {
             self.controls_body(position, effect, spec, body);
@@ -559,8 +560,9 @@ impl EffectPanel {
         row.upcast()
     }
 
-    /// The compressor or the de-esser, as what it does with a handle to
-    /// drag, under the button that sets it from a voice.
+    /// The compressor, the de-esser or noise suppression, as what it does
+    /// with a handle to drag, under the button that sets it from a voice
+    /// for the ones that learn.
     fn graph_body(
         self: &Rc<Self>,
         position: usize,
@@ -568,7 +570,9 @@ impl EffectPanel {
         spec: &'static pipedeck_engine::dsp::EffectSpec,
         inner: &gtk::Box,
     ) {
-        inner.append(&self.learn_row(position, spec.id));
+        if pipedeck_engine::dsp::learns(spec.id) {
+            inner.append(&self.learn_row(position, spec.id));
+        }
         let values: Vec<f32> = spec
             .params
             .iter()
@@ -589,14 +593,22 @@ impl EffectPanel {
                 this.send_params(position, &effect);
             }
         };
-        if spec.id == "compressor" {
-            let graph = CompGraph::new(&values);
-            graph.connect_changed(changed);
-            inner.append(&graph.root);
-        } else {
-            let graph = DeEsserGraph::new(&values);
-            graph.connect_changed(changed);
-            inner.append(&graph.root);
+        match spec.id {
+            "compressor" => {
+                let graph = CompGraph::new(&values);
+                graph.connect_changed(changed);
+                inner.append(&graph.root);
+            }
+            "deesser" => {
+                let graph = DeEsserGraph::new(&values);
+                graph.connect_changed(changed);
+                inner.append(&graph.root);
+            }
+            _ => {
+                let graph = DenoiseGraph::new(&values);
+                graph.connect_changed(changed);
+                inner.append(&graph.root);
+            }
         }
     }
 

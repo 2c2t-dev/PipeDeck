@@ -11,6 +11,8 @@
 mod comp_graph;
 #[path = "../src/deesser_graph.rs"]
 mod deesser_graph;
+#[path = "../src/denoise_graph.rs"]
+mod denoise_graph;
 #[path = "../src/effect_panel.rs"]
 #[allow(dead_code)]
 mod effect_panel;
@@ -54,7 +56,9 @@ fn main() -> gtk::glib::ExitCode {
             adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
 
             let panel = effect_panel::EffectPanel::new(&link, SourceId(1));
-            let chain: Vec<_> = effects::catalogue().iter().map(effects::build).collect();
+            let mut chain: Vec<_> = effects::catalogue().iter().map(effects::build).collect();
+            // Halfway, so the noise it leaves shows.
+            effects::set_value(&mut chain[0], "strength", 50.0);
             panel.refresh(&chain, &[], &Status::Absent);
 
             let page = panel.widget();

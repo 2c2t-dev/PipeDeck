@@ -76,7 +76,9 @@ of its own, written in Rust, so nothing has to be installed:
 
 - **Noise suppression**, RNNoise through `nnnoiseless`: fans, keyboards and
   hiss behind a voice. It holds the sound back 10 ms, and its strength mixes
-  the treated sound with the untouched one.
+  the treated sound with the untouched one. Its window draws a voice over a
+  room, the room as loud as it is left; dragging the noise's level down
+  takes more out, and presets go from off to full.
 - **Equaliser**, five bands shaped for a voice — a low cut, a low shelf, two
   bells and a high shelf — set by dragging them on a curve. Each band has
   its colour and draws its own shape under the curve; scroll over a bell to

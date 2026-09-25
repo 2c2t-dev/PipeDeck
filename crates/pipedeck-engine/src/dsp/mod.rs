@@ -65,6 +65,7 @@ const fn param(
     }
 }
 
+pub use denoise::{DenoisePreset, DENOISE_PRESETS};
 pub use dynamics::{
     compressor_output, deesser_gain, learn_compressor, learn_deesser, CompressorPreset,
     DeEsserPreset, COMPRESSOR_PRESETS, DEESSER_PRESETS,
