@@ -99,7 +99,16 @@ fn main() -> ExitCode {
         match stereotool::Window::open(instance.handle()) {
             Ok(window) => {
                 println!("[ ok ] its window is up; closing in 10 seconds");
-                std::thread::sleep(std::time::Duration::from_secs(10));
+                // Read its events as the engine does on its tick: that is
+                // where the window is kept in place and its close button
+                // heard.
+                for _ in 0..200 {
+                    if window.close_requested() {
+                        println!("[ ok ] its close button was pressed");
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
                 drop(window);
                 println!("[ ok ] and it closed");
             }

@@ -469,6 +469,7 @@ struct X11 {
     destroy_window: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
     map_window: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
     raise_window: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
+    move_window: unsafe extern "C" fn(*mut c_void, c_ulong, c_int, c_int) -> c_int,
     reparent_window: unsafe extern "C" fn(*mut c_void, c_ulong, c_ulong, c_int, c_int) -> c_int,
     resize_window: unsafe extern "C" fn(*mut c_void, c_ulong, c_uint, c_uint) -> c_int,
     store_name: unsafe extern "C" fn(*mut c_void, c_ulong, *const c_char) -> c_int,
@@ -548,7 +549,7 @@ struct XWindowAttributes {
 }
 
 /// Xlib's event union, big enough for any of them. Only the type is read,
-/// and the one message the window manager sends.
+/// the one message the window manager sends, and where a window went.
 #[repr(C)]
 struct XEvent {
     words: [c_long; 24],
@@ -566,8 +567,27 @@ struct XClientMessageEvent {
     data: [c_long; 5],
 }
 
+#[repr(C)]
+struct XConfigureEvent {
+    type_: c_int,
+    serial: c_ulong,
+    send_event: c_int,
+    display: *mut c_void,
+    event: c_ulong,
+    window: c_ulong,
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+    border_width: c_int,
+    above: c_ulong,
+    override_redirect: c_int,
+}
+
+const CONFIGURE_NOTIFY: c_int = 22;
 const CLIENT_MESSAGE: c_int = 33;
 const STRUCTURE_NOTIFY_MASK: c_long = 1 << 17;
+const SUBSTRUCTURE_NOTIFY_MASK: c_long = 1 << 19;
 
 /// X11, if this machine has it. Loaded once, for the same reasons as the
 /// library itself.
@@ -594,6 +614,7 @@ fn x11() -> Option<&'static X11> {
                 destroy_window: symbol!(b"XDestroyWindow\0"),
                 map_window: symbol!(b"XMapWindow\0"),
                 raise_window: symbol!(b"XRaiseWindow\0"),
+                move_window: symbol!(b"XMoveWindow\0"),
                 reparent_window: symbol!(b"XReparentWindow\0"),
                 resize_window: symbol!(b"XResizeWindow\0"),
                 store_name: symbol!(b"XStoreName\0"),
@@ -658,7 +679,13 @@ impl Host {
             let window = (x11.create_window)(display, root, 0, 0, 1, 1, 0, 0, 0);
             let mut wm_delete = (x11.intern_atom)(display, c"WM_DELETE_WINDOW".as_ptr(), 0);
             (x11.set_wm_protocols)(display, window, &mut wm_delete, 1);
-            (x11.select_input)(display, window, STRUCTURE_NOTIFY_MASK);
+            // Its own events for the close request, its children's to see
+            // where Stereo Tool puts its window once it is in ours.
+            (x11.select_input)(
+                display,
+                window,
+                STRUCTURE_NOTIFY_MASK | SUBSTRUCTURE_NOTIFY_MASK,
+            );
             (x11.flush)(display);
             Ok(Self {
                 x11,
@@ -787,7 +814,25 @@ impl Host {
             (self.x11.flush)(self.display);
         }
         self.child = Some(child);
+        self.settle();
         Ok(())
+    }
+
+    /// Put Stereo Tool's window back in the corner of ours.
+    ///
+    /// The library keeps its window where it was on the screen: taken in,
+    /// it moves it back to those coordinates, which are now inside ours and
+    /// far past its edge, and all that shows is our own black. So it is put
+    /// back, now and whenever it moves again.
+    fn settle(&self) {
+        let Some(child) = self.child else {
+            return;
+        };
+        // SAFETY: both windows exist, as for `adopt`.
+        unsafe {
+            (self.x11.move_window)(self.display, child, 0, 0);
+            (self.x11.flush)(self.display);
+        }
     }
 
     /// Bring it to the front, having been buried or hidden.
@@ -804,9 +849,12 @@ impl Host {
     ///
     /// The events wait on our own connection until someone reads them, so
     /// this is called from time to time rather than from a thread of its
-    /// own; a close button that answers within a tick is answered.
+    /// own; a close button that answers within a tick is answered. Stereo
+    /// Tool's window having moved inside ours is among them, and it is put
+    /// back on the way.
     fn close_requested(&self) -> bool {
         let mut asked = false;
+        let mut moved = false;
         // SAFETY: the display is ours; `pending` says whether `next_event`
         // would block, and the event buffer is as large as Xlib's union.
         unsafe {
@@ -814,6 +862,15 @@ impl Host {
                 let mut event = XEvent { words: [0; 24] };
                 (self.x11.next_event)(self.display, &mut event);
                 let type_ = *(&event as *const XEvent).cast::<c_int>();
+                if type_ == CONFIGURE_NOTIFY {
+                    let configured = &*(&event as *const XEvent).cast::<XConfigureEvent>();
+                    if Some(configured.window) == self.child
+                        && (configured.x, configured.y) != (0, 0)
+                    {
+                        moved = true;
+                    }
+                    continue;
+                }
                 if type_ != CLIENT_MESSAGE {
                     continue;
                 }
@@ -825,6 +882,9 @@ impl Host {
                     asked = true;
                 }
             }
+        }
+        if moved {
+            self.settle();
         }
         asked
     }
