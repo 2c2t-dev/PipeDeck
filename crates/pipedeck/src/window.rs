@@ -647,19 +647,39 @@ fn reorderable(
     index: usize,
     moved: impl Fn(u32, usize) + 'static,
 ) {
+    // Where on the card it was taken, so the picture of it stays under the
+    // pointer at that same spot rather than hanging off its corner.
+    let grabbed = std::rc::Rc::new(StdCell::new((0, 0)));
+
     let drag = gtk::DragSource::new();
     drag.set_actions(gtk::gdk::DragAction::MOVE);
-    drag.connect_prepare(move |_, _, _| {
-        Some(gtk::gdk::ContentProvider::for_value(
-            &drag_payload(kind, id).to_value(),
-        ))
+    drag.connect_prepare({
+        let grabbed = grabbed.clone();
+        move |_, x, y| {
+            grabbed.set((x as i32, y as i32));
+            Some(gtk::gdk::ContentProvider::for_value(
+                &drag_payload(kind, id).to_value(),
+            ))
+        }
     });
     drag.connect_drag_begin({
         let card = card.clone();
+        let grabbed = grabbed.clone();
         move |source, _| {
-            // The card itself under the pointer, rather than a generic icon.
-            source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&card))), 0, 0);
+            // A still picture of the card, taken now. A live one redraws the
+            // card all through the drag, pressed and hovered as it is, and
+            // outlives it: dropping rebuilds the grid, and the icon went on
+            // drawing a card that no longer existed.
+            let picture = gtk::WidgetPaintable::new(Some(&card)).current_image();
+            let (x, y) = grabbed.get();
+            source.set_icon(Some(&picture), x, y);
+            // The card left in place fades, so what moves is plain.
+            card.add_css_class("pd-dragging");
         }
+    });
+    drag.connect_drag_end({
+        let card = card.clone();
+        move |_, _, _| card.remove_css_class("pd-dragging")
     });
     card.add_controller(drag);
 
@@ -729,6 +749,7 @@ pub fn load_css() {
         .pd-card .pd-badge-face { transition: opacity 120ms ease-out; }
         .pd-card:hover .pd-badge-face,
         .pd-card:focus-visible .pd-badge-face { opacity: 0; }
+        .pd-card.pd-dragging { opacity: 0.35; }
         .pd-drop:drop(active) {
             box-shadow: inset 0 0 0 2px @accent_color;
             border-radius: 12px;
