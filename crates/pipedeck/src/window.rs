@@ -64,6 +64,8 @@ pub struct Window {
     channel_dialog: RefCell<Option<Rc<ChannelDialog>>>,
     /// The channels unfolded into their sub-tracks.
     expanded: RefCell<HashSet<SourceId>>,
+    /// The faders of the sub-tracks drawn, to move their meters.
+    voice_faders: RefCell<HashMap<(SourceId, String), widgets::MeterFader>>,
 }
 
 impl Window {
@@ -144,6 +146,7 @@ impl Window {
             mix_dialog: RefCell::new(None),
             channel_dialog: RefCell::new(None),
             expanded: RefCell::new(HashSet::new()),
+            voice_faders: RefCell::new(HashMap::new()),
         });
 
         settings.connect_clicked({
@@ -202,7 +205,14 @@ impl Window {
                     .refresh(&self.state.borrow(), &self.outputs.borrow());
                 self.refresh_dialogs();
             }
-            Event::Levels { sources, mixes } => self.draw_levels(&sources, &mixes),
+            Event::Levels {
+                sources,
+                mixes,
+                voices,
+            } => {
+                self.draw_levels(&sources, &mixes);
+                self.draw_voice_levels(&voices);
+            }
             Event::LinkChanged { source, mix, state } => {
                 if let Some(cell) = self.cells.borrow().get(&(source, mix)) {
                     cell.set_state(state);
@@ -302,6 +312,7 @@ impl Window {
             self.grid.remove(&child);
         }
         self.cells.borrow_mut().clear();
+        self.voice_faders.borrow_mut().clear();
 
         let state = self.state.borrow();
 
@@ -698,6 +709,16 @@ impl Window {
         overlay.upcast()
     }
 
+    /// Move the meter of every person of a call drawn.
+    fn draw_voice_levels(&self, voices: &[(SourceId, String, f32)]) {
+        let faders = self.voice_faders.borrow();
+        for (id, user, peak) in voices {
+            if let Some(fader) = faders.get(&(*id, user.clone())) {
+                fader.set_level(*peak);
+            }
+        }
+    }
+
     /// Change one person as the window last heard of them.
     fn with_voice(&self, id: SourceId, user: &str, f: impl FnOnce(&mut VoiceConfig)) {
         let mut state = self.state.borrow_mut();
@@ -745,6 +766,9 @@ impl Window {
         });
         let row = widgets::level_row(&mute, &fader.root);
         fader.root.set_hexpand(true);
+        self.voice_faders
+            .borrow_mut()
+            .insert((id, voice.id.clone()), fader);
         row.set_margin_start(10);
         row.set_margin_end(10);
         let holder = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -763,9 +787,15 @@ fn voice_header(voice: &VoiceConfig) -> gtk::Widget {
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     content.set_margin_start(26);
     content.set_margin_end(10);
-    let icon = gtk::Image::from_icon_name("avatar-default-symbolic");
-    icon.add_css_class("dim-label");
-    content.append(&icon);
+    // Their picture, or their initials until the client has fetched it.
+    let avatar = adw::Avatar::new(26, Some(&voice.name), true);
+    if let Some(path) = &voice.avatar {
+        match gtk::gdk::Texture::from_filename(path) {
+            Ok(texture) => avatar.set_custom_image(Some(&texture)),
+            Err(e) => log::debug!("cannot show {path}: {e}"),
+        }
+    }
+    content.append(&avatar);
     let name = gtk::Label::new(Some(&voice.name));
     name.set_xalign(0.0);
     name.set_hexpand(true);

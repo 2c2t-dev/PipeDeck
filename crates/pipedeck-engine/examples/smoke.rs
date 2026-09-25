@@ -274,7 +274,7 @@ fn wait_levels(
     let (mut loudest_source, mut loudest_mix) = (0.0f32, 0.0f32);
     while let Some(left) = deadline.checked_duration_since(Instant::now()) {
         match rx.recv_timeout(left) {
-            Ok(Event::Levels { sources, mixes }) => {
+            Ok(Event::Levels { sources, mixes, .. }) => {
                 for (id, level) in sources {
                     if id == source {
                         loudest_source = loudest_source.max(level);
@@ -1061,10 +1061,12 @@ fn main() -> ExitCode {
                     pipedeck_engine::CallMember {
                         id: "111".into(),
                         name: "Alice".into(),
+                        avatar: None,
                     },
                     pipedeck_engine::CallMember {
                         id: "222".into(),
                         name: "Bob".into(),
+                        avatar: None,
                     },
                 ],
             })

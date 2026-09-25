@@ -291,6 +291,9 @@ pub enum Event {
     Levels {
         sources: Vec<(SourceId, f32)>,
         mixes: Vec<(MixId, f32)>,
+        /// Each person of a call, on their sub-track: their row, their id
+        /// and their peak.
+        voices: Vec<(SourceId, String, f32)>,
     },
     /// One row's effects, settings and all, after a control moved: sent
     /// instead of the whole matrix, which nothing about a setting changes.

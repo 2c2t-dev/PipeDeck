@@ -88,6 +88,9 @@ pub struct CallMember {
     pub id: String,
     /// What to call them.
     pub name: String,
+    /// Their picture, as a file on this machine, once the client has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 /// One person's sub-track on a row: their own level, before the row's.
@@ -98,6 +101,9 @@ pub struct CallMember {
 pub struct VoiceConfig {
     pub id: String,
     pub name: String,
+    /// Their picture, as a file on this machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
     #[serde(default = "unity_gain")]
     pub gain: f32,
     #[serde(default)]

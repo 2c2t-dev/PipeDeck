@@ -29,6 +29,17 @@ function log(...parts: unknown[]) {
 interface Member {
     id: string;
     name: string;
+    /** Where their picture is, in a format Pipedeck can read. */
+    avatarUrl?: string;
+}
+
+/** A person's picture, small and as a PNG: Discord hands out WebP, which a
+ * desktop may not know how to open. */
+function avatarUrl(user: any, guildId: string | undefined) {
+    let url: string | undefined = user?.getAvatarURL?.(guildId, 64, false);
+    if (!url) return undefined;
+    if (url.startsWith("/")) url = "https://discord.com" + url;
+    return url.replace(/\.webp(\?|$)/, ".png$1");
 }
 
 /** Everyone in the voice channel the user is in, but the user. */
@@ -43,7 +54,11 @@ function members(): Member[] {
         .map(id => {
             const user = UserStore.getUser(id) as any;
             const nick = guildId ? GuildMemberStore.getNick(guildId, id) : null;
-            return { id, name: nick || user?.globalName || user?.username || id };
+            return {
+                id,
+                name: nick || user?.globalName || user?.username || id,
+                avatarUrl: avatarUrl(user, guildId),
+            };
         })
         .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 }

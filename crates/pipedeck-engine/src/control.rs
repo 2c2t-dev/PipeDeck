@@ -152,10 +152,11 @@ mod tests {
     #[test]
     fn a_call_is_read_and_answered_with_unique_labels() {
         let message: Message = serde_json::from_str(
-            r#"{"call":[{"id":"1","name":"Alice"},{"id":"2","name":"Alice"},{"id":"3","name":"Bob"}]}"#,
+            r#"{"call":[{"id":"1","name":"Alice","avatar":"/tmp/a.png"},{"id":"2","name":"Alice"},{"id":"3","name":"Bob"}]}"#,
         )
         .expect("a call");
         let members = message.call.expect("members");
+        assert_eq!(members[0].avatar.as_deref(), Some("/tmp/a.png"));
         assert_eq!(
             voice_labels(&members),
             ["Alice (Discord)", "Alice (Discord) 2", "Bob (Discord)"]

@@ -8,8 +8,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { createHash } from "crypto";
 import { IpcMainInvokeEvent } from "electron";
-import { appendFileSync, mkdirSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { createConnection, Socket } from "net";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
@@ -17,6 +18,7 @@ import { join } from "path";
 const logDir = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "pipedeck");
 const logFile = join(logDir, "vencord-voices.log");
 const socketPath = join(process.env.XDG_RUNTIME_DIR || tmpdir(), "pipedeck", "control.sock");
+const avatarDir = join(logDir, "avatars");
 
 /** Write one line down, with the time it was said. */
 export function log(_: IpcMainInvokeEvent, line: string) {
@@ -27,6 +29,33 @@ export function log(_: IpcMainInvokeEvent, line: string) {
 interface Member {
     id: string;
     name: string;
+    avatarUrl?: string;
+}
+
+/** Where a picture is kept, by the address it came from: a new picture is
+ * a new address, so an old one is never shown in its place. */
+function avatarPath(url: string) {
+    return join(avatarDir, createHash("sha1").update(url).digest("hex") + ".png");
+}
+
+/** Pictures being fetched, so each is fetched once. */
+const fetching = new Set<string>();
+
+/** Fetch a picture, and tell Pipedeck again once it is here. */
+async function fetchAvatar(url: string) {
+    if (fetching.has(url)) return;
+    fetching.add(url);
+    try {
+        const answer = await fetch(url);
+        if (!answer.ok) throw new Error(`${answer.status}`);
+        mkdirSync(avatarDir, { recursive: true });
+        writeFileSync(avatarPath(url), Buffer.from(await answer.arrayBuffer()));
+        send();
+    } catch (e) {
+        log(null as any, `cannot fetch a picture: ${e}`);
+    } finally {
+        fetching.delete(url);
+    }
 }
 
 let socket: Socket | null = null;
@@ -36,8 +65,16 @@ let call: Member[] = [];
 let known: Record<string, string> = {};
 let buffer = "";
 
+/** Tell Pipedeck who is in the call, with the pictures that are here. */
 function send() {
-    socket?.write(JSON.stringify({ call }) + "\n");
+    const members = call.map(({ id, name, avatarUrl }) => {
+        if (!avatarUrl) return { id, name };
+        const path = avatarPath(avatarUrl);
+        if (existsSync(path)) return { id, name, avatar: path };
+        fetchAvatar(avatarUrl);
+        return { id, name };
+    });
+    socket?.write(JSON.stringify({ call: members }) + "\n");
 }
 
 function connect() {

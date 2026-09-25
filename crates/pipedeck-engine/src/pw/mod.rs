@@ -266,6 +266,8 @@ struct AppStream {
 /// One person of a call, on a sink of their own that plays into the sink
 /// of the row carrying the call.
 struct Voice {
+    /// Their level, measured on the sink. It goes before the sink.
+    meter: Option<Meter>,
     /// The links joining this sink to the row's. They go before the sink.
     links: Vec<Link>,
     sink: Node,
@@ -814,7 +816,7 @@ impl Graph {
 
     /// Peaks since the last read, one per row and per column.
     pub fn emit_levels(&self) {
-        if self.source_meters.is_empty() && self.mix_meters.is_empty() {
+        if self.source_meters.is_empty() && self.mix_meters.is_empty() && self.voices.is_empty() {
             return;
         }
         self.emit(Event::Levels {
@@ -827,6 +829,13 @@ impl Graph {
                 .mix_meters
                 .iter()
                 .map(|(id, meter)| (*id, meter.take()))
+                .collect(),
+            voices: self
+                .voices
+                .iter()
+                .filter_map(|((row, user), voice)| {
+                    Some((*row, user.clone(), voice.meter.as_ref()?.take()))
+                })
                 .collect(),
         });
     }
@@ -2292,11 +2301,16 @@ impl Graph {
                             voice.name = member.name.clone();
                             self.dirty = true;
                         }
+                        if member.avatar.is_some() && voice.avatar != member.avatar {
+                            voice.avatar = member.avatar.clone();
+                            self.dirty = true;
+                        }
                     }
                     None => {
                         cfg.voices.push(VoiceConfig {
                             id: member.id.clone(),
                             name: member.name.clone(),
+                            avatar: member.avatar.clone(),
                             gain: 1.0,
                             muted: false,
                             present: true,
@@ -2368,6 +2382,7 @@ impl Graph {
             self.voices.insert(
                 (row, user),
                 Voice {
+                    meter: None,
                     links: Vec::new(),
                     sink,
                     _bound: bound,
@@ -2378,8 +2393,31 @@ impl Graph {
         }
     }
 
-    /// Join every voice's sink to its row's, once both have their ports.
+    /// Join every voice's sink to its row's, once both have their ports,
+    /// and measure it once the server has named it.
     fn hook_up_voices(&mut self) {
+        let unmeasured: Vec<((SourceId, String), u32)> = self
+            .voices
+            .iter()
+            .filter(|(_, voice)| voice.meter.is_none())
+            .filter_map(|((row, user), _)| {
+                let id = self.sink_ids.get(&row.voice_node_name(user)).copied()?;
+                Some(((*row, user.clone()), id))
+            })
+            .collect();
+        for ((row, user), id) in unmeasured {
+            let name = row.voice_node_name(&user);
+            let meter = self.watch_level(
+                &format!("pipedeck.meter.voice.{}.{user}", row.0),
+                &name,
+                Some(id),
+                true,
+            );
+            if let Some(voice) = self.voices.get_mut(&(row, user)) {
+                voice.meter = meter;
+            }
+        }
+
         let wanted: Vec<((SourceId, String), u32, u32)> = self
             .voices
             .iter()
