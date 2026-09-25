@@ -85,6 +85,10 @@ of its own, written in Rust, so nothing has to be installed:
 - **Compressor**, with only a threshold, a ratio and a makeup gain. Its
   timing is fixed at what suits a voice.
 
+Each one's controls open in a window of their own, from the gear on its card,
+so the ones being set can stay open beside the mixer; they close with the
+channel's window.
+
 They run with the plug-ins, on the audio thread. Adding or taking one off
 makes the chain again, which stops the audio for a moment; a control turned
 is only a number written, so it is heard at once and the audio never stops

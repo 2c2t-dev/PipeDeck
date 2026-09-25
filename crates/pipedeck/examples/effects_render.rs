@@ -1,7 +1,9 @@
 //! Draws a channel's effects tab to an image, with every effect the mixer
-//! runs itself, to see it without opening a channel.
+//! runs itself, and each effect's settings window to one more, to see them
+//! without opening a channel.
 //!
-//! `cargo run -p pipedeck --example effects_render [out.png]`. The tab needs
+//! `cargo run -p pipedeck --example effects_render [out.png]` writes the tab
+//! to `out.png` and the windows to `out-1.png` and on. The tab needs
 //! an engine to talk to, so one is started on a scratch config and stopped
 //! once the image is taken; nothing is sent to it.
 
@@ -54,30 +56,29 @@ fn main() -> gtk::glib::ExitCode {
             page.set_margin_start(14);
             page.set_margin_end(14);
             page.set_margin_bottom(14);
-            page.set_size_request(480, 1000);
+            page.set_size_request(480, 420);
 
             let window = adw::ApplicationWindow::builder()
                 .application(app)
                 .content(&page)
                 .build();
             window.present();
+            for position in 0..chain.len() {
+                panel.open_settings(position);
+            }
 
             let out = out.clone();
             gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(900), move || {
-                let _keep = &panel;
-                let paintable = gtk::WidgetPaintable::new(Some(&window));
-                let snapshot = gtk::Snapshot::new();
-                paintable.snapshot(
-                    &snapshot,
-                    f64::from(window.width()),
-                    f64::from(window.height()),
-                );
-                if let (Some(node), Some(renderer)) = (snapshot.to_node(), window.renderer()) {
-                    match renderer.render_texture(node, None).save_to_png(&out) {
-                        Ok(()) => println!("saved {out}"),
-                        Err(e) => println!("cannot save {out}: {e}"),
-                    }
+                let stem = out.strip_suffix(".png").unwrap_or(&out).to_owned();
+                save(window.upcast_ref(), &out);
+                let settings = gtk::Window::list_toplevels()
+                    .into_iter()
+                    .filter_map(|w| w.downcast::<gtk::Window>().ok())
+                    .filter(|w| w.transient_for().as_ref() == Some(window.upcast_ref()));
+                for (n, settings) in settings.enumerate() {
+                    save(&settings, &format!("{stem}-{}.png", n + 1));
                 }
+                panel.close_windows();
                 window.close();
             });
         }
@@ -86,4 +87,21 @@ fn main() -> gtk::glib::ExitCode {
     link.shutdown();
     let _ = std::fs::remove_file(&config);
     code
+}
+
+/// Write what a window shows to a PNG.
+fn save(window: &gtk::Window, out: &str) {
+    let paintable = gtk::WidgetPaintable::new(Some(window));
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(
+        &snapshot,
+        f64::from(window.width()),
+        f64::from(window.height()),
+    );
+    if let (Some(node), Some(renderer)) = (snapshot.to_node(), window.renderer()) {
+        match renderer.render_texture(node, None).save_to_png(out) {
+            Ok(()) => println!("saved {out}"),
+            Err(e) => println!("cannot save {out}: {e}"),
+        }
+    }
 }

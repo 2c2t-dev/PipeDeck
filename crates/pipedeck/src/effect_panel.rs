@@ -3,6 +3,10 @@
 //! A channel is treated before any mix hears it. Adding or taking off an
 //! effect makes the chain again; turning one of its controls does not, and
 //! is sent the moment it moves.
+//!
+//! The tab only lists the chain. An effect's controls are in a window of
+//! their own, opened from its card, so the ones being worked on can sit
+//! beside the mixer rather than inside the channel's window.
 
 use std::cell::{Cell as StdCell, RefCell};
 use std::path::{Path, PathBuf};
@@ -46,6 +50,21 @@ pub struct EffectPanel {
     plugins: RefCell<Vec<Plugin>>,
     /// Where Stereo Tool stands, which decides whether it is offered at all.
     stereotool: RefCell<Status>,
+    /// The settings windows open, one per effect at most.
+    windows: RefCell<Vec<SettingsWindow>>,
+}
+
+/// The window holding one effect's controls.
+struct SettingsWindow {
+    /// Where the effect is in the chain.
+    position: usize,
+    /// What the effect is, so a window is closed when another takes its
+    /// place.
+    label: String,
+    window: adw::Window,
+    /// What the controls are drawn in, drawn again when the chain changes
+    /// under them.
+    body: gtk::Box,
 }
 
 impl EffectPanel {
@@ -60,6 +79,7 @@ impl EffectPanel {
             drawn: StdCell::new(false),
             plugins: RefCell::new(Vec::new()),
             stereotool: RefCell::new(Status::Absent),
+            windows: RefCell::new(Vec::new()),
         });
         this.build();
         this
@@ -127,11 +147,128 @@ impl EffectPanel {
             empty.add_css_class("dim-label");
             empty.set_margin_top(24);
             self.list.append(&empty);
-            return;
         }
         for (position, effect) in effects.iter().enumerate() {
             let row = self.row(position, effect);
             self.list.append(&row);
+        }
+        self.redraw_windows();
+    }
+
+    /// Open the controls of the effect at `position` in a window of their
+    /// own, or bring that window forward if it is already open.
+    pub fn open_settings(self: &Rc<Self>, position: usize) {
+        let open = self
+            .windows
+            .borrow()
+            .iter()
+            .find(|open| open.position == position)
+            .map(|open| open.window.clone());
+        if let Some(window) = open {
+            window.present();
+            return;
+        }
+        let Some(effect) = self.shown.borrow().get(position).cloned() else {
+            return;
+        };
+        let Some(spec) = effects::spec(&effect) else {
+            return;
+        };
+
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        body.set_margin_top(12);
+        body.set_margin_bottom(18);
+        body.set_margin_start(18);
+        body.set_margin_end(18);
+        self.settings_body(position, &effect, spec, &body);
+
+        let view = adw::ToolbarView::new();
+        view.add_top_bar(&adw::HeaderBar::new());
+        view.set_content(Some(&body));
+
+        // Kept above the mixer, and gone with it, but not modal: the point
+        // of a window apart is to keep working beside it.
+        let window = adw::Window::builder()
+            .title(spec.name)
+            .default_width(if spec.id == "eq" { 560 } else { 420 })
+            // As tall as its controls: without a height asked for, a
+            // libadwaita window is never under 200 pixels, and a single
+            // slider sits above a gap.
+            .height_request(0)
+            .content(&view)
+            .destroy_with_parent(true)
+            .build();
+        if let Some(parent) = self.page.root().and_downcast::<gtk::Window>() {
+            window.set_transient_for(Some(&parent));
+            window.set_application(parent.application().as_ref());
+        }
+        window.connect_close_request({
+            let this = Rc::downgrade(self);
+            move |window| {
+                if let Some(this) = this.upgrade() {
+                    this.windows
+                        .borrow_mut()
+                        .retain(|open| open.window != *window);
+                }
+                gtk::glib::Propagation::Proceed
+            }
+        });
+        self.windows.borrow_mut().push(SettingsWindow {
+            position,
+            label: effect.label.clone(),
+            window: window.clone(),
+            body,
+        });
+        window.present();
+    }
+
+    /// Close every settings window, as the channel's own window goes.
+    pub fn close_windows(&self) {
+        let open = self.windows.take();
+        for open in open {
+            open.window.close();
+        }
+    }
+
+    /// Follow a chain that changed: a window whose effect is still where it
+    /// was is drawn again with what it is now set to, and one whose effect
+    /// went away is closed.
+    fn redraw_windows(self: &Rc<Self>) {
+        let shown = self.shown.borrow().clone();
+        let (kept, gone): (Vec<_>, Vec<_>) = self.windows.take().into_iter().partition(|open| {
+            shown
+                .get(open.position)
+                .is_some_and(|effect| effects::spec(effect).is_some() && effect.label == open.label)
+        });
+        *self.windows.borrow_mut() = kept;
+        for open in gone {
+            open.window.close();
+        }
+        let windows = self.windows.borrow();
+        for open in windows.iter() {
+            let effect = &shown[open.position];
+            let Some(spec) = effects::spec(effect) else {
+                continue;
+            };
+            while let Some(child) = open.body.first_child() {
+                open.body.remove(&child);
+            }
+            self.settings_body(open.position, effect, spec, &open.body);
+        }
+    }
+
+    /// The controls of one of the mixer's own effects.
+    fn settings_body(
+        self: &Rc<Self>,
+        position: usize,
+        effect: &Effect,
+        spec: &'static pipedeck_engine::dsp::EffectSpec,
+        body: &gtk::Box,
+    ) {
+        if spec.id == "eq" {
+            self.equaliser_body(position, effect, body);
+        } else {
+            self.controls_body(position, effect, spec, body);
         }
     }
 
@@ -168,6 +305,17 @@ impl EffectPanel {
             top.append(&open);
         }
 
+        if effects::spec(effect).is_some() {
+            let settings = gtk::Button::from_icon_name("emblem-system-symbolic");
+            settings.add_css_class("flat");
+            settings.set_tooltip_text(Some("Open its settings"));
+            settings.connect_clicked({
+                let this = self.clone();
+                move |_| this.open_settings(position)
+            });
+            top.append(&settings);
+        }
+
         let remove = gtk::Button::from_icon_name("list-remove-symbolic");
         remove.add_css_class("flat");
         remove.set_tooltip_text(Some("Take this effect off"));
@@ -184,20 +332,12 @@ impl EffectPanel {
         top.append(&remove);
         inner.append(&top);
 
+        // Stereo Tool keeps its preset on the card. The mixer's own effects
+        // keep their controls in their window, and an effect from an older
+        // chain, of a kind no longer offered, still runs but has nothing to
+        // set.
         if effect.kind == EffectKind::StereoTool {
             self.stereotool_body(position, effect, &inner);
-            return card.upcast();
-        }
-
-        let Some(spec) = effects::spec(effect) else {
-            // An effect from an older chain, of a kind no longer offered:
-            // it still runs, and can be taken off, but has nothing to set.
-            return card.upcast();
-        };
-        if spec.id == "eq" {
-            self.equaliser_body(position, effect, &inner);
-        } else {
-            self.controls_body(position, effect, spec, &inner);
         }
         card.upcast()
     }
@@ -249,7 +389,7 @@ impl EffectPanel {
             scale.set_value(f64::from(effects::value_of(effect, param)));
 
             // The value in a label of its own, as wide as the widest one, so
-            // every slider of the tab is the same length.
+            // every slider of the window is the same length.
             let value = gtk::Label::new(Some(&effects::format(param, scale.value() as f32)));
             value.add_css_class("caption");
             value.add_css_class("numeric");

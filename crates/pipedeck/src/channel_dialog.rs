@@ -273,8 +273,12 @@ impl ChannelDialog {
         });
         self.dialog.connect_closed({
             let closed = self.closed.clone();
+            let effects = self.effects.clone();
             move |_| {
                 closed.set(true);
+                // Effect windows belong to this one: left open, they would
+                // be set by a tab no longer told when the chain changes.
+                effects.close_windows();
                 rename();
             }
         });
