@@ -7,6 +7,7 @@ mod dialogs;
 mod effect_panel;
 mod effects;
 mod engine_link;
+mod eq_graph;
 mod listen;
 mod meter_fader;
 mod mix_dialog;

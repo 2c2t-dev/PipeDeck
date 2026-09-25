@@ -1,10 +1,8 @@
-//! The effects tab, which a channel and a mix share.
+//! The effects tab of a channel.
 //!
-//! Both run the same chain in the same order; where it sits differs and that
-//! is the engine's business. A channel is treated before any mix hears it, a
-//! mix between its cells and the sink a capture client reads — which is the
-//! place for a processor that adds delay, since it leaves the monitoring
-//! path alone.
+//! A channel is treated before any mix hears it. Adding or taking off an
+//! effect makes the chain again; turning one of its controls does not, and
+//! is sent the moment it moves.
 
 use std::cell::{Cell as StdCell, RefCell};
 use std::path::{Path, PathBuf};
@@ -15,10 +13,11 @@ use adw::prelude::*;
 use libadwaita as adw;
 
 use pipedeck_engine::stereotool::Status;
-use pipedeck_engine::{vst3::Plugin, Command, Control, Effect, EffectKind, SourceId};
+use pipedeck_engine::{vst3::Plugin, Command, Effect, EffectKind, SourceId};
 
 use crate::effects;
 use crate::engine_link::EngineLink;
+use crate::eq_graph::EqGraph;
 use crate::widgets;
 
 /// The channel whose chain this is. Only a channel runs effects: a mix is
@@ -26,8 +25,8 @@ use crate::widgets;
 pub type Target = SourceId;
 
 /// What the tab says about where the chain runs.
-const HINT: &str = "Every mix hears this channel through these, in order. Changing one reloads \
-                    the chain, so the audio stops for a moment.";
+const HINT: &str = "Every mix hears this channel through these, in order. Adding or taking \
+                    one off stops the audio for a moment; turning a control does not.";
 
 pub struct EffectPanel {
     engine: EngineLink,
@@ -47,11 +46,6 @@ pub struct EffectPanel {
     plugins: RefCell<Vec<Plugin>>,
     /// Where Stereo Tool stands, which decides whether it is offered at all.
     stereotool: RefCell<Status>,
-    /// A control being dragged sends one command when it settles rather than
-    /// one per pixel: each change reloads the chain.
-    pending: RefCell<Option<gtk::glib::SourceId>>,
-    /// Set while engine state is pushed into the widgets.
-    syncing: Rc<StdCell<bool>>,
 }
 
 impl EffectPanel {
@@ -66,8 +60,6 @@ impl EffectPanel {
             drawn: StdCell::new(false),
             plugins: RefCell::new(Vec::new()),
             stereotool: RefCell::new(Status::Absent),
-            pending: RefCell::new(None),
-            syncing: Rc::new(StdCell::new(false)),
         });
         this.build();
         this
@@ -186,7 +178,7 @@ impl EffectPanel {
                 if position < chain.len() {
                     chain.remove(position);
                 }
-                this.send(chain, false);
+                this.send(chain);
             }
         });
         top.append(&remove);
@@ -197,59 +189,113 @@ impl EffectPanel {
             return card.upcast();
         }
 
-        let spec = effects::spec(effect);
-        for (index, control) in effect.controls.iter().enumerate() {
-            let known = spec.and_then(|spec| spec.controls.get(index));
+        let Some(spec) = effects::spec(effect) else {
+            // An effect from an older chain, of a kind no longer offered:
+            // it still runs, and can be taken off, but has nothing to set.
+            return card.upcast();
+        };
+        if spec.id == "eq" {
+            self.equaliser_body(position, effect, &inner);
+        } else {
+            self.controls_body(position, effect, spec, &inner);
+        }
+        card.upcast()
+    }
+
+    /// Send what one effect of the chain is now set to. The engine hands it
+    /// to the effect where it runs: nothing is reloaded, so there is no need
+    /// to wait for a control to settle.
+    fn send_params(&self, position: usize, effect: &Effect) {
+        self.engine.send(Command::SetEffectParams {
+            id: self.target,
+            index: position,
+            controls: effect.controls.clone(),
+        });
+    }
+
+    /// Write one value into the chain as drawn and send it.
+    fn set_param(&self, position: usize, name: &str, value: f32) {
+        let mut shown = self.shown.borrow_mut();
+        let Some(effect) = shown.get_mut(position) else {
+            return;
+        };
+        effects::set_value(effect, name, value);
+        let effect = effect.clone();
+        drop(shown);
+        self.send_params(position, &effect);
+    }
+
+    /// A slider for each control, with its unit.
+    fn controls_body(
+        self: &Rc<Self>,
+        position: usize,
+        effect: &Effect,
+        spec: &'static pipedeck_engine::dsp::EffectSpec,
+        inner: &gtk::Box,
+    ) {
+        for param in spec.params {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
 
-            let name = gtk::Label::new(Some(known.map_or(control.name.as_str(), |c| c.label)));
+            let name = gtk::Label::new(Some(param.label));
             name.add_css_class("caption");
             name.set_xalign(0.0);
-            name.set_width_chars(9);
+            name.set_width_chars(10);
             row.append(&name);
 
-            let (min, max) = known.map_or((0.0, 1.0), |c| (c.min, c.max));
+            let (min, max) = (f64::from(param.min), f64::from(param.max));
             let scale =
-                gtk::Scale::with_range(gtk::Orientation::Horizontal, min, max, (max - min) / 100.0);
+                gtk::Scale::with_range(gtk::Orientation::Horizontal, min, max, (max - min) / 200.0);
             scale.set_hexpand(true);
-            scale.set_draw_value(true);
-            scale.set_value_pos(gtk::PositionType::Right);
-            scale.set_digits(if max <= 10.0 { 1 } else { 0 });
-            scale.set_value(f64::from(control.value));
-            if let Some(known) = known {
-                scale.set_tooltip_text(Some(&format!("{}{}", control.value, known.unit)));
-            }
+            scale.set_value(f64::from(effects::value_of(effect, param)));
+
+            // The value in a label of its own, as wide as the widest one, so
+            // every slider of the tab is the same length.
+            let value = gtk::Label::new(Some(&effects::format(param, scale.value() as f32)));
+            value.add_css_class("caption");
+            value.add_css_class("numeric");
+            value.set_width_chars(8);
+            value.set_xalign(1.0);
+
             scale.connect_value_changed({
                 let this = self.clone();
-                let name = control.name.clone();
+                let value = value.clone();
                 move |scale| {
-                    if this.syncing.get() {
-                        return;
-                    }
-                    let mut chain = this.shown.borrow().clone();
-                    let Some(effect) = chain.get_mut(position) else {
-                        return;
-                    };
-                    if let Some(control) = effect
-                        .controls
-                        .iter_mut()
-                        .find(|control| control.name == name)
-                    {
-                        control.value = scale.value() as f32;
-                    } else {
-                        effect.controls.push(Control {
-                            name: name.clone(),
-                            value: scale.value() as f32,
-                        });
-                    }
-                    this.send(chain, true);
+                    let now = scale.value() as f32;
+                    value.set_text(&effects::format(param, now));
+                    this.set_param(position, param.name, now);
                 }
             });
             row.append(&scale);
+            row.append(&value);
             inner.append(&row);
         }
+    }
 
-        card.upcast()
+    /// The equaliser, as a curve with a handle on each band.
+    fn equaliser_body(self: &Rc<Self>, position: usize, effect: &Effect, inner: &gtk::Box) {
+        use pipedeck_engine::dsp::eq::PARAMS;
+        let values: Vec<f32> = PARAMS
+            .iter()
+            .map(|param| effects::value_of(effect, param))
+            .collect();
+        let graph = EqGraph::new(&values);
+        graph.connect_changed({
+            let this = self.clone();
+            move |values| {
+                let mut shown = this.shown.borrow_mut();
+                let Some(effect) = shown.get_mut(position) else {
+                    return;
+                };
+                for (param, value) in PARAMS.iter().zip(values) {
+                    effects::set_value(effect, param.name, *value);
+                }
+                let effect = effect.clone();
+                drop(shown);
+                this.send_params(position, &effect);
+            }
+        });
+        graph.root.set_margin_top(4);
+        inner.append(&graph.root);
     }
 
     /// Stereo Tool has no controls of ours: it is configured by the preset
@@ -360,42 +406,21 @@ impl EffectPanel {
             return;
         };
         effect.plugin = preset.map(|path| path.display().to_string());
-        self.send(chain, false);
+        self.send(chain);
     }
 
-    /// Send a chain to the engine, waiting for a dragged control to settle.
-    fn send(self: &Rc<Self>, chain: Vec<Effect>, debounce: bool) {
-        if let Some(pending) = self.pending.borrow_mut().take() {
-            pending.remove();
-        }
-        if !debounce {
-            // Drawn here rather than when the engine echoes it back: the
-            // echo is this very chain, and a panel that only redraws on a
-            // difference would find none and leave the list as it was.
-            self.shown.borrow_mut().clear();
-            self.drawn.set(false);
-            self.show(&chain);
-            self.engine.send(Command::SetEffects {
-                id: self.target,
-                effects: chain,
-            });
-            return;
-        }
-        // A control that moved already shows its own value, and redrawing
-        // would take the slider out from under the pointer. What is on
-        // screen is the truth while the engine catches up, so the next
-        // change reads this one rather than the state before it.
-        *self.shown.borrow_mut() = chain.clone();
-        let this = self.clone();
-        let source =
-            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
-                this.pending.borrow_mut().take();
-                this.engine.send(Command::SetEffects {
-                    id: this.target,
-                    effects: chain,
-                });
-            });
-        *self.pending.borrow_mut() = Some(source);
+    /// Send a chain to the engine, which makes it again.
+    fn send(self: &Rc<Self>, chain: Vec<Effect>) {
+        // Drawn here rather than when the engine echoes it back: the echo is
+        // this very chain, and a panel that only redraws on a difference
+        // would find none and leave the list as it was.
+        self.shown.borrow_mut().clear();
+        self.drawn.set(false);
+        self.show(&chain);
+        self.engine.send(Command::SetEffects {
+            id: self.target,
+            effects: chain,
+        });
     }
 
     /// What this object could run.
@@ -403,7 +428,7 @@ impl EffectPanel {
         let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let popover = gtk::Popover::new();
 
-        for spec in effects::EFFECTS {
+        for spec in effects::catalogue() {
             let button = entry(spec.name, spec.description);
             button.connect_clicked({
                 let this = self.clone();
@@ -411,7 +436,7 @@ impl EffectPanel {
                 move |_| {
                     let mut chain = this.shown.borrow().clone();
                     chain.push(effects::build(spec));
-                    this.send(chain, false);
+                    this.send(chain);
                     popover.popdown();
                 }
             });
@@ -444,7 +469,7 @@ impl EffectPanel {
                         label: "stereotool".to_owned(),
                         controls: Vec::new(),
                     });
-                    this.send(chain, false);
+                    this.send(chain);
                     popover.popdown();
                 }
             });
@@ -466,7 +491,7 @@ impl EffectPanel {
                         label: plugin.class_id.clone(),
                         controls: Vec::new(),
                     });
-                    this.send(chain, false);
+                    this.send(chain);
                     popover.popdown();
                 }
             });

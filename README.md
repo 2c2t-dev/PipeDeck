@@ -71,10 +71,24 @@ remove the object.
 
 ## Effects
 
-A channel can run effects, which every mix then hears: a low cut, shelves,
-a band and a gain, each with its own controls. They are filters PipeWire
-ships, so nothing has to be installed, and they run in one filter chain
-between the channel and the cells that read it.
+A channel can run effects, which every mix then hears. The mixer runs four
+of its own, written in Rust, so nothing has to be installed:
+
+- **Noise suppression**, RNNoise through `nnnoiseless`: fans, keyboards and
+  hiss behind a voice. It holds the sound back 10 ms, and its strength mixes
+  the treated sound with the untouched one.
+- **Equaliser**, five bands shaped for a voice — a low cut, a low shelf, two
+  bells and a high shelf — set by dragging them on a curve. Scroll over a
+  bell to widen it, double-click a band to put it back.
+- **De-esser**: splits the sound at a frequency, listens for s and sh there,
+  and turns only the part above down when they are too loud.
+- **Compressor**, with only a threshold, a ratio and a makeup gain. Its
+  timing is fixed at what suits a voice.
+
+They run with the plug-ins, on the audio thread. Adding or taking one off
+makes the chain again, which stops the audio for a moment; a control turned
+is only a number written, so it is heard at once and the audio never stops
+for it.
 
 A channel bound to a microphone runs them too, in a tab of its own: it has no
 sink to read, so the chain captures the device itself and every mix hears the
@@ -85,7 +99,7 @@ treat them.
 
 A channel can also run **VST3 plug-ins**, which the mixer hosts itself. It
 reads the bundles installed under the usual paths, plus `VST3_PATH`, and
-offers their effects alongside the filters above. A plug-in runs between two
+offers their effects alongside the ones above. A plug-in runs between two
 streams of its own, after whatever PipeWire runs for the channel, and every
 mix hears the result.
 
@@ -258,8 +272,8 @@ With effects, a channel grows a stage or two before the cells read it. A row
 bound to a microphone starts on that microphone instead of on a sink:
 
 ```
- [pipedeck.src.N] ─▶ [pipedeck.fx.N] ─▶ [pipedeck.vst.N] ─▶ cells
-  or the microphone   PipeWire filters    hosted plug-ins
+ [pipedeck.src.N] ─▶ [pipedeck.vst.N] ─▶ cells
+  or the microphone   the mixer's own effects and hosted plug-ins
 ```
 
 Audio crosses two of our nodes on its way to a device, one for the cell and
