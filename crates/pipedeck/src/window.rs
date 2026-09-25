@@ -284,7 +284,7 @@ impl Window {
 
         self.grid.attach(&corner(), 0, 0, 1, 1);
         for (column, mix) in state.mixes.iter().enumerate() {
-            let header = self.mix_header(mix);
+            let header = self.mix_header(mix, column);
             self.grid.attach(&header, column as i32 + 1, 0, 1, 1);
         }
         // The two add buttons continue the grid: a new column on the right of
@@ -299,7 +299,7 @@ impl Window {
             .attach(&add, 0, state.sources.len() as i32 + 1, 1, 1);
 
         for (row, source) in state.sources.iter().enumerate() {
-            let header = self.source_header(source);
+            let header = self.source_header(source, row);
             self.grid.attach(&header, 0, row as i32 + 1, 1, 1);
 
             for (column, mix) in state.mixes.iter().enumerate() {
@@ -494,7 +494,7 @@ impl Window {
         button.upcast()
     }
 
-    fn mix_header(self: &Rc<Self>, mix: &MixConfig) -> gtk::Widget {
+    fn mix_header(self: &Rc<Self>, mix: &MixConfig, index: usize) -> gtk::Widget {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
 
         content.append(&widgets::badge(
@@ -568,10 +568,21 @@ impl Window {
         overlay.set_child(Some(&card));
         overlay.add_overlay(&ear);
         overlay.set_margin_bottom(6);
+        // Dropped on the overlay rather than the card, or a drop landing on
+        // the ear would find nothing to take it.
+        reorderable(&card, &overlay, "mix", mix.id.0, index, {
+            let engine = self.engine.clone();
+            move |dragged, to| {
+                engine.send(Command::MoveMix {
+                    id: MixId(dragged),
+                    to,
+                })
+            }
+        });
         overlay.upcast()
     }
 
-    fn source_header(self: &Rc<Self>, source: &SourceConfig) -> gtk::Widget {
+    fn source_header(self: &Rc<Self>, source: &SourceConfig, index: usize) -> gtk::Widget {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
 
         content.append(&widgets::badge(
@@ -595,6 +606,15 @@ impl Window {
             let id = source.id;
             move |_| this.open_channel_dialog(id)
         });
+        reorderable(&card, &card, "source", source.id.0, index, {
+            let engine = self.engine.clone();
+            move |dragged, to| {
+                engine.send(Command::MoveSource {
+                    id: SourceId(dragged),
+                    to,
+                })
+            }
+        });
         card.upcast()
     }
 }
@@ -604,12 +624,74 @@ impl Window {
 ///
 /// The reveal is left to the stylesheet in [`load_css`], so it also covers
 /// keyboard focus and needs no event plumbing.
+/// What a dragged card carries: which kind of thing it is, and which one.
+/// A mix is only dropped among mixes and a channel among channels, so a
+/// column never ends up a row.
+fn drag_payload(kind: &str, id: u32) -> String {
+    format!("{kind}:{id}")
+}
+
+fn read_payload(text: &str, kind: &str) -> Option<u32> {
+    let (dragged, id) = text.split_once(':')?;
+    (dragged == kind).then(|| id.parse().ok())?
+}
+
+/// Let a card be dragged, and let one of its own kind be dropped on `onto`,
+/// which then takes this card's place: a column along the columns, a row
+/// along the rows. `moved` says where to.
+fn reorderable(
+    card: &gtk::Button,
+    onto: &impl IsA<gtk::Widget>,
+    kind: &'static str,
+    id: u32,
+    index: usize,
+    moved: impl Fn(u32, usize) + 'static,
+) {
+    let drag = gtk::DragSource::new();
+    drag.set_actions(gtk::gdk::DragAction::MOVE);
+    drag.connect_prepare(move |_, _, _| {
+        Some(gtk::gdk::ContentProvider::for_value(
+            &drag_payload(kind, id).to_value(),
+        ))
+    });
+    drag.connect_drag_begin({
+        let card = card.clone();
+        move |source, _| {
+            // The card itself under the pointer, rather than a generic icon.
+            source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&card))), 0, 0);
+        }
+    });
+    card.add_controller(drag);
+
+    let drop = gtk::DropTarget::new(gtk::glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+    drop.connect_drop(move |_, value, _, _| {
+        let Ok(text) = value.get::<String>() else {
+            return false;
+        };
+        let Some(dragged) = read_payload(&text, kind) else {
+            return false;
+        };
+        if dragged != id {
+            moved(dragged, index);
+        }
+        true
+    });
+    onto.add_css_class("pd-drop");
+    onto.add_controller(drop);
+}
+
 fn clickable_card(content: &gtk::Box, width: i32, height: i32) -> gtk::Button {
     let pencil = gtk::Image::from_icon_name("document-edit-symbolic");
     pencil.add_css_class("pd-pencil");
     // Always in the layout, so revealing it never shifts the text. It leads
     // the card rather than ending it, where a mix card keeps its ear.
     content.prepend(&pencil);
+    // And before it the grip: the whole card can be dragged, and this says
+    // so. It shows with the pencil, on hover.
+    let grip = gtk::Image::from_icon_name("pd-drag-symbolic");
+    grip.add_css_class("pd-pencil");
+    grip.set_tooltip_text(Some("Drag to reorder"));
+    content.prepend(&grip);
 
     content.set_margin_top(8);
     content.set_margin_bottom(8);
@@ -630,6 +712,10 @@ fn clickable_card(content: &gtk::Box, width: i32, height: i32) -> gtk::Button {
 pub fn load_css() {
     const CSS: &str = "
         .pd-card .pd-pencil { opacity: 0; transition: opacity 120ms ease-out; }
+        .pd-drop:drop(active) {
+            box-shadow: inset 0 0 0 2px @accent_color;
+            border-radius: 12px;
+        }
         .pd-card:hover .pd-pencil,
         .pd-card:focus-visible .pd-pencil { opacity: 1; }
         .pd-badge-large {
@@ -669,5 +755,17 @@ fn output_label(count: usize) -> String {
         0 => "No output".to_owned(),
         1 => "1 output".to_owned(),
         n => format!("{n} outputs"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_column_is_never_dropped_among_rows() {
+        let mix = super::drag_payload("mix", 3);
+        assert_eq!(super::read_payload(&mix, "mix"), Some(3));
+        assert_eq!(super::read_payload(&mix, "source"), None);
+        assert_eq!(super::read_payload("rubbish", "mix"), None);
+        assert_eq!(super::read_payload("mix:x", "mix"), None);
     }
 }

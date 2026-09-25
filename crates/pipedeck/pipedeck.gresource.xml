@@ -8,6 +8,7 @@
     <file preprocess="xml-stripblanks">pd-5-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-aux-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-browser-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-drag-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-fun-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-game-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-headset-symbolic.svg</file>

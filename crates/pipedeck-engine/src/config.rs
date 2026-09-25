@@ -248,12 +248,42 @@ impl Config {
     }
 
     /// Drop every link that no longer has both ends.
+    /// Put a mix at another place among the columns. The order is only how
+    /// the matrix is drawn: nothing on the graph moves.
+    pub fn move_mix(&mut self, id: MixId, to: usize) -> bool {
+        let Some(from) = self.mixes.iter().position(|mix| mix.id == id) else {
+            return false;
+        };
+        move_within(&mut self.mixes, from, to);
+        true
+    }
+
+    /// Put a row at another place among the rows. Same as for a mix.
+    pub fn move_source(&mut self, id: SourceId, to: usize) -> bool {
+        let Some(from) = self.sources.iter().position(|source| source.id == id) else {
+            return false;
+        };
+        move_within(&mut self.sources, from, to);
+        true
+    }
+
     pub fn prune_links(&mut self) {
         let sources: Vec<SourceId> = self.sources.iter().map(|s| s.id).collect();
         let mixes: Vec<MixId> = self.mixes.iter().map(|m| m.id).collect();
         self.links
             .retain(|l| sources.contains(&l.source) && mixes.contains(&l.mix));
     }
+}
+
+/// Take the item at `from` out and put it back at `to`, so that it ends up
+/// there whichever side of it `to` was: dropping a card on another puts it
+/// where that one stood.
+fn move_within<T>(items: &mut Vec<T>, from: usize, to: usize) {
+    if from >= items.len() {
+        return;
+    }
+    let item = items.remove(from);
+    items.insert(to.min(items.len()), item);
 }
 
 #[cfg(test)]
@@ -395,5 +425,35 @@ value = 90.0
         assert_eq!(cfg.mixes.len(), 1);
         assert!(cfg.sources.is_empty());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_column_or_a_row_lands_where_it_was_dropped() {
+        let mut cfg = Config::fresh();
+        cfg.mixes = (1..=4)
+            .map(|id| MixConfig::new(MixId(id), format!("m{id}")))
+            .collect();
+        let order = |cfg: &Config| cfg.mixes.iter().map(|m| m.id.0).collect::<Vec<_>>();
+
+        // Rightwards, onto the third: it takes the third place.
+        assert!(cfg.move_mix(MixId(1), 2));
+        assert_eq!(order(&cfg), [2, 3, 1, 4]);
+        // Leftwards, onto the first.
+        assert!(cfg.move_mix(MixId(4), 0));
+        assert_eq!(order(&cfg), [4, 2, 3, 1]);
+        // Past the end is the end.
+        assert!(cfg.move_mix(MixId(4), 99));
+        assert_eq!(order(&cfg), [2, 3, 1, 4]);
+        // A mix that is not there moves nothing.
+        assert!(!cfg.move_mix(MixId(9), 0));
+
+        cfg.sources = (1..=3)
+            .map(|id| SourceConfig::virtual_sink(SourceId(id), format!("s{id}")))
+            .collect();
+        assert!(cfg.move_source(SourceId(3), 0));
+        assert_eq!(
+            cfg.sources.iter().map(|s| s.id.0).collect::<Vec<_>>(),
+            [3, 1, 2]
+        );
     }
 }

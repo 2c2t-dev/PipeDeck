@@ -77,6 +77,16 @@ pub enum Command {
         index: usize,
         enabled: bool,
     },
+    /// Put a mix at another place among the columns, or a row among the
+    /// rows. Only the drawing changes.
+    MoveMix {
+        id: MixId,
+        to: usize,
+    },
+    MoveSource {
+        id: SourceId,
+        to: usize,
+    },
     /// Hear a mix in your headphones, or stop: switch on, or off, its output
     /// to the device you listen on, adding one if it has none there yet.
     SetListening {
@@ -655,6 +665,20 @@ fn handle_command(
             g.set_output_enabled(id, index, enabled)
         }
         Command::SetListening { id, listening } => g.set_listening(id, listening),
+        Command::MoveMix { id, to } => {
+            if g.config_mut().move_mix(id, to) {
+                Ok(())
+            } else {
+                Err(EngineError::UnknownMix(id))
+            }
+        }
+        Command::MoveSource { id, to } => {
+            if g.config_mut().move_source(id, to) {
+                Ok(())
+            } else {
+                Err(EngineError::UnknownSource(id))
+            }
+        }
         Command::SetListenDevice(device) => g.set_listen_device(device),
         Command::AddSource { name, device, icon } => add_source(&mut g, name, device, icon),
         Command::RemoveSource(id) => g.remove_source(id).map(|()| {
