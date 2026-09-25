@@ -126,7 +126,9 @@ impl EqGraph {
         });
         self.area.add_controller(motion);
 
-        // Dragging a handle moves its band.
+        // Dragging a handle moves its band. It moves by as much as the
+        // pointer does, from where the handle was: taking a handle by its
+        // edge does not make it jump to put its middle under the pointer.
         let drag = gtk::GestureDrag::new();
         let grabbed = Rc::new(Cell::new(None::<(usize, f64, f64)>));
         drag.connect_drag_begin({
@@ -134,7 +136,12 @@ impl EqGraph {
             let grabbed = grabbed.clone();
             move |_, x, y| {
                 let near = this.nearest(x, y);
-                grabbed.set(near.map(|band| (band, x, y)));
+                grabbed.set(near.map(|band| {
+                    let width = f64::from(this.area.width());
+                    let height = f64::from(this.area.height());
+                    let (hx, hy) = handle(&this.values.borrow(), band, width, height);
+                    (band, hx, hy)
+                }));
                 this.active.set(near);
                 this.say(near);
                 this.area.queue_draw();

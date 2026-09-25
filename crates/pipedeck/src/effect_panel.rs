@@ -11,6 +11,7 @@
 use std::cell::{Cell as StdCell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use adw::gtk;
 use adw::prelude::*;
@@ -32,6 +33,10 @@ pub type Target = SourceId;
 const HINT: &str = "Every mix hears this channel through these, in order. Adding or taking \
                     one off stops the audio for a moment; turning a control does not.";
 
+/// How long after a control was last moved here the engine's answers are
+/// taken to be about that move.
+const SETTLE: Duration = Duration::from_secs(1);
+
 pub struct EffectPanel {
     engine: EngineLink,
     target: Target,
@@ -46,6 +51,11 @@ pub struct EffectPanel {
     /// panel starts with, so without this the first state to arrive would
     /// match and the list would be left blank rather than told it is empty.
     drawn: StdCell<bool>,
+    /// When a control was last moved here. The engine answers every move
+    /// with the chain as it then stood, and while a control is dragged
+    /// those answers trail behind it: taken as news, they would put the
+    /// control back where it was a moment ago, under the pointer.
+    touched: StdCell<Option<Instant>>,
     /// The plug-ins the engine found installed.
     plugins: RefCell<Vec<Plugin>>,
     /// Where Stereo Tool stands, which decides whether it is offered at all.
@@ -77,6 +87,7 @@ impl EffectPanel {
             add: gtk::MenuButton::new(),
             shown: RefCell::new(Vec::new()),
             drawn: StdCell::new(false),
+            touched: StdCell::new(None),
             plugins: RefCell::new(Vec::new()),
             stereotool: RefCell::new(Status::Absent),
             windows: RefCell::new(Vec::new()),
@@ -133,8 +144,23 @@ impl EffectPanel {
 
     /// Redraw the chain, unless it is already what is on screen.
     fn show(self: &Rc<Self>, effects: &[Effect]) {
-        if self.drawn.get() && self.shown.borrow().as_slice() == effects {
-            return;
+        if self.drawn.get() {
+            let shown = self.shown.borrow();
+            if shown.as_slice() == effects {
+                return;
+            }
+            // The same chain set otherwise: the cards show no control, so
+            // only the windows have anything to draw again, and not while a
+            // control is being moved here.
+            if same_chain(&shown, effects) {
+                drop(shown);
+                if self.touched.get().is_some_and(|at| at.elapsed() < SETTLE) {
+                    return;
+                }
+                *self.shown.borrow_mut() = effects.to_vec();
+                self.redraw_windows();
+                return;
+            }
         }
         self.drawn.set(true);
         *self.shown.borrow_mut() = effects.to_vec();
@@ -346,6 +372,7 @@ impl EffectPanel {
     /// to the effect where it runs: nothing is reloaded, so there is no need
     /// to wait for a control to settle.
     fn send_params(&self, position: usize, effect: &Effect) {
+        self.touched.set(Some(Instant::now()));
         self.engine.send(Command::SetEffectParams {
             id: self.target,
             index: position,
@@ -642,6 +669,15 @@ impl EffectPanel {
         popover.set_child(Some(&list));
         popover
     }
+}
+
+/// Whether two chains hold the same effects in the same order, whatever
+/// their controls are set to.
+fn same_chain(a: &[Effect], b: &[Effect]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            a.name == b.name && a.kind == b.kind && a.plugin == b.plugin && a.label == b.label
+        })
 }
 
 /// One line of the menu: what it is, and what it does.
