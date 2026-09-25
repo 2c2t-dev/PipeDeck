@@ -214,6 +214,10 @@ pub(crate) fn unity_gain() -> f32 {
     1.0
 }
 
+fn switched_on() -> bool {
+    true
+}
+
 /// One device a mix plays to, with its own level.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MixOutput {
@@ -221,6 +225,10 @@ pub struct MixOutput {
     pub device: String,
     pub gain: f32,
     pub muted: bool,
+    /// Whether the mix plays there at all. An output switched off stays in
+    /// the list, with its level, and lets go of the device: switching sound
+    /// cards is switching one off and another on, not forgetting either.
+    pub enabled: bool,
 }
 
 impl MixOutput {
@@ -229,6 +237,7 @@ impl MixOutput {
             device: device.into(),
             gain: 1.0,
             muted: false,
+            enabled: true,
         }
     }
 
@@ -259,6 +268,9 @@ impl<'de> Deserialize<'de> for MixOutput {
                 gain: f32,
                 #[serde(default)]
                 muted: bool,
+                // Every output written before there was a switch was on.
+                #[serde(default = "switched_on")]
+                enabled: bool,
             },
         }
         Ok(match Repr::deserialize(deserializer)? {
@@ -267,10 +279,12 @@ impl<'de> Deserialize<'de> for MixOutput {
                 device,
                 gain,
                 muted,
+                enabled,
             } => MixOutput {
                 device,
                 gain,
                 muted,
+                enabled,
             },
         })
     }
@@ -505,6 +519,17 @@ mod tests {
         full.muted = true;
         let text = toml::to_string(&full).unwrap();
         assert_eq!(toml::from_str::<MixOutput>(&text).unwrap(), full);
+    }
+
+    #[test]
+    fn an_output_written_before_the_switch_is_on() {
+        let old: MixOutput =
+            toml::from_str("device = \"alsa.x\"\ngain = 0.5\nmuted = false").unwrap();
+        assert!(old.enabled);
+        let mut off = MixOutput::new("alsa.y");
+        off.enabled = false;
+        let text = toml::to_string(&off).unwrap();
+        assert_eq!(toml::from_str::<MixOutput>(&text).unwrap(), off);
     }
 
     #[test]

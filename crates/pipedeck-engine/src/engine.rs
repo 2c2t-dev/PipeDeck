@@ -70,6 +70,21 @@ pub enum Command {
         index: usize,
         muted: bool,
     },
+    /// Switch one output of a mix on or off. Off lets go of the device and
+    /// keeps the output, level and all, for when it comes back on.
+    SetOutputEnabled {
+        id: MixId,
+        index: usize,
+        enabled: bool,
+    },
+    /// Send a mix to this device and to none of its other outputs, adding
+    /// it if the mix did not play there yet: switching sound cards.
+    SwitchOutput {
+        id: MixId,
+        device: String,
+    },
+    /// The mix you listen to, which the sound card switch acts on.
+    SetMonitoredMix(MixId),
     /// Add a row: a virtual sink, or a capture device when `device` is set.
     /// `icon` is carried through to the clients as the row's look.
     AddSource {
@@ -173,6 +188,8 @@ pub struct StateSnapshot {
     /// The Stereo Tool licence key the settings hold, so the window can show
     /// what is in use.
     pub stereotool_license: Option<String>,
+    /// The mix you listen to: the one the sound card switch acts on.
+    pub monitored_mix: Option<MixId>,
     pub mixes: Vec<MixConfig>,
     pub sources: Vec<SourceConfig>,
     pub links: Vec<LinkConfig>,
@@ -632,6 +649,18 @@ fn handle_command(
         Command::SetOutputMute { id, index, muted } => {
             structural = false;
             g.update_output(id, index, |c| c.muted = muted)
+        }
+        Command::SetOutputEnabled { id, index, enabled } => {
+            g.set_output_enabled(id, index, enabled)
+        }
+        Command::SwitchOutput { id, device } => g.switch_output(id, device),
+        Command::SetMonitoredMix(id) => {
+            if g.config().mix(id).is_none() {
+                Err(EngineError::UnknownMix(id))
+            } else {
+                g.config_mut().monitored_mix = Some(id);
+                Ok(())
+            }
         }
         Command::AddSource { name, device, icon } => add_source(&mut g, name, device, icon),
         Command::RemoveSource(id) => g.remove_source(id).map(|()| {

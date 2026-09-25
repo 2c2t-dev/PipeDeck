@@ -195,6 +195,19 @@ starts with the session, the quantum asked of its nodes, the VST3 plug-ins it
 found and where Stereo Tool stands. Changing the quantum reloads every route,
 so the audio stops for a moment.
 
+## Switching sound cards
+
+You listen to one mix: the one whose ear is lit on its card, the first by
+default. The button in the header bar says what you hear it on and how loud,
+and lists every output device; picking one sends that mix there and switches
+off every other output it had, which is what changing sound cards means when
+you are wearing one of them.
+
+Each output in a mix's window has a switch of its own too. Off, the mix stops
+playing there and lets go of the device, and the output stays in the list
+with its level for when it comes back on — the card switch is only that, done
+to all of a mix's outputs at once.
+
 ## Using it with OBS
 
 Every mix *is* an input device, named after it, so OBS, Discord or a browser

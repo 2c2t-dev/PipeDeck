@@ -19,6 +19,7 @@ use crate::cell::{link_button, Cell};
 use crate::channel_dialog::ChannelDialog;
 use crate::dialogs;
 use crate::engine_link::EngineLink;
+use crate::listen::Listen;
 use crate::mix_dialog::MixDialog;
 use crate::preferences;
 use crate::presets;
@@ -40,6 +41,8 @@ pub struct Window {
     /// Set once the engine is gone, so a rebuild keeps the add buttons off.
     stopped: StdCell<bool>,
     state: RefCell<StateSnapshot>,
+    /// The sound card switch in the header bar.
+    listen: Rc<Listen>,
     outputs: RefCell<Vec<Device>>,
     inputs: RefCell<Vec<Device>>,
     /// Applications currently playing, for the channel windows.
@@ -72,6 +75,10 @@ impl Window {
         let settings = gtk::Button::from_icon_name("preferences-system-symbolic");
         settings.set_tooltip_text(Some("Settings"));
         header.pack_end(&settings);
+        // Where you hear the mix you listen to, beside the settings, as the
+        // one thing up here you reach for mid-stream.
+        let listen = Listen::new(&engine);
+        header.pack_end(&listen.widget());
 
         let grid = gtk::Grid::new();
         // Cards keep their size in a wide window instead of stretching: a
@@ -113,9 +120,11 @@ impl Window {
             hint,
             toasts,
             stopped: StdCell::new(false),
+            listen,
             state: RefCell::new(StateSnapshot {
                 latency: String::new(),
                 stereotool_license: None,
+                monitored_mix: None,
                 mixes: Vec::new(),
                 sources: Vec::new(),
                 links: Vec::new(),
@@ -161,6 +170,8 @@ impl Window {
         match event {
             Event::State(state) => {
                 *self.state.borrow_mut() = state;
+                self.listen
+                    .refresh(&self.state.borrow(), &self.outputs.borrow());
                 self.rebuild();
                 self.refresh_settings();
                 self.refresh_dialogs();
@@ -182,6 +193,8 @@ impl Window {
             Event::Devices { outputs, inputs } => {
                 *self.outputs.borrow_mut() = outputs;
                 *self.inputs.borrow_mut() = inputs;
+                self.listen
+                    .refresh(&self.state.borrow(), &self.outputs.borrow());
                 self.refresh_dialogs();
             }
             Event::Levels { sources, mixes } => self.draw_levels(&sources, &mixes),
@@ -494,12 +507,17 @@ impl Window {
         let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
         labels.set_hexpand(true);
         labels.set_valign(gtk::Align::Center);
+        // Room for the ear, which sits over the card rather than in it: a
+        // button inside a button would take its clicks.
+        labels.set_margin_end(34);
         let title = gtk::Label::new(Some(&mix.name));
         title.add_css_class("heading");
         title.set_xalign(0.0);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
         labels.append(&title);
-        let subtitle = gtk::Label::new(Some(&output_label(mix.outputs.len())));
+        // The outputs it plays to now, not those switched off in its list.
+        let playing = mix.outputs.iter().filter(|output| output.enabled).count();
+        let subtitle = gtk::Label::new(Some(&output_label(playing)));
         subtitle.add_css_class("caption");
         subtitle.add_css_class("dim-label");
         subtitle.set_xalign(0.0);
@@ -514,8 +532,39 @@ impl Window {
             let id = mix.id;
             move |_| this.open_mix_dialog(id)
         });
-        card.set_margin_bottom(6);
-        card.upcast()
+
+        // The ear: which mix you listen to, and so which one the sound card
+        // switch in the header bar acts on. One is lit at a time.
+        let listening = self.state.borrow().monitored_mix == Some(mix.id);
+        let ear = gtk::ToggleButton::new();
+        ear.set_icon_name("pd-listen-symbolic");
+        ear.add_css_class("flat");
+        ear.add_css_class("circular");
+        ear.set_active(listening);
+        ear.set_halign(gtk::Align::End);
+        ear.set_valign(gtk::Align::Center);
+        ear.set_margin_end(10);
+        ear.set_tooltip_text(Some(if listening {
+            "You listen to this mix"
+        } else {
+            "Listen to this mix"
+        }));
+        ear.connect_clicked({
+            let engine = self.engine.clone();
+            let id = mix.id;
+            move |button| {
+                // Pressing the lit one again does not put it out: one mix is
+                // always the one you listen to.
+                button.set_active(true);
+                engine.send(Command::SetMonitoredMix(id));
+            }
+        });
+
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&card));
+        overlay.add_overlay(&ear);
+        overlay.set_margin_bottom(6);
+        overlay.upcast()
     }
 
     fn source_header(self: &Rc<Self>, source: &SourceConfig) -> gtk::Widget {

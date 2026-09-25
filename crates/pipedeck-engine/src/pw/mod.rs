@@ -166,7 +166,9 @@ enum StageRef {
 struct Mix {
     // Field order matters: the outputs are destroyed before the node they
     // read.
-    outputs: Vec<Stage>,
+    /// One slot per output in the config, at the same index, empty for an
+    /// output switched off or one that failed to load.
+    outputs: Vec<Option<Stage>>,
     _sink_listener: NodeListener,
     _sink_bound: ProxyListener,
     /// The mix itself: an input device to the rest of the system, and the
@@ -381,6 +383,7 @@ impl Graph {
         StateSnapshot {
             latency: self.config.latency.clone(),
             stereotool_license: self.config.stereotool_license.clone(),
+            monitored_mix: self.monitored_mix(),
             mixes: self.config.mixes.clone(),
             sources: self.config.sources.clone(),
             links: self.config.links.clone(),
@@ -471,32 +474,109 @@ impl Graph {
 
     /// Load the loopbacks feeding a mix's devices. Any output that fails is
     /// reported and skipped: one dead device must not take the mix down.
-    fn load_outputs(&mut self, cfg: &MixConfig) -> Vec<Stage> {
-        let mut stages = Vec::with_capacity(cfg.outputs.len());
-        for (index, output) in cfg.outputs.iter().enumerate() {
-            let node_name = loopback::output_node_name(cfg.id, index);
-            self.stage_index
-                .insert(node_name.clone(), StageRef::Output(cfg.id, index));
-            let spec = LoopbackSpec::for_output(cfg, index, &output.device, &self.config.latency);
-            match LoadedModule::load(&self.context, LOOPBACK_MODULE, &spec.to_args()) {
-                Ok(module) => stages.push(Stage {
-                    node_name,
-                    links: Vec::new(),
-                    node: None,
-                    _module: module,
-                    wanted: output.state(),
-                }),
-                Err(e) => {
-                    log::error!("{e}");
-                    self.stage_index.remove(&node_name);
-                    self.emit(Event::Error(format!(
-                        "cannot send {} to {}: {e}",
-                        cfg.name, output.device
-                    )));
-                }
+    fn load_outputs(&mut self, cfg: &MixConfig) -> Vec<Option<Stage>> {
+        (0..cfg.outputs.len())
+            .map(|index| self.load_output(cfg, index))
+            .collect()
+    }
+
+    /// The loopback sending a mix to one of its devices, unless that output
+    /// is switched off, in which case the device is left alone entirely.
+    fn load_output(&mut self, cfg: &MixConfig, index: usize) -> Option<Stage> {
+        let output = cfg.outputs.get(index)?;
+        if !output.enabled {
+            return None;
+        }
+        let node_name = loopback::output_node_name(cfg.id, index);
+        self.stage_index
+            .insert(node_name.clone(), StageRef::Output(cfg.id, index));
+        let spec = LoopbackSpec::for_output(cfg, index, &output.device, &self.config.latency);
+        match LoadedModule::load(&self.context, LOOPBACK_MODULE, &spec.to_args()) {
+            Ok(module) => Some(Stage {
+                node_name,
+                links: Vec::new(),
+                node: None,
+                _module: module,
+                wanted: output.state(),
+            }),
+            Err(e) => {
+                log::error!("{e}");
+                self.stage_index.remove(&node_name);
+                self.emit(Event::Error(format!(
+                    "cannot send {} to {}: {e}",
+                    cfg.name, output.device
+                )));
+                None
             }
         }
-        stages
+    }
+
+    /// Switch one output of a mix on or off, leaving the others playing.
+    pub fn set_output_enabled(
+        &mut self,
+        id: MixId,
+        index: usize,
+        enabled: bool,
+    ) -> Result<(), EngineError> {
+        let cfg = self.config.mix_mut(id).ok_or(EngineError::UnknownMix(id))?;
+        let output = cfg
+            .outputs
+            .get_mut(index)
+            .ok_or(EngineError::UnknownOutput(id, index))?;
+        if output.enabled == enabled {
+            return Ok(());
+        }
+        output.enabled = enabled;
+        let cfg = cfg.clone();
+        self.dirty = true;
+
+        let previous = self
+            .mixes
+            .get_mut(&id)
+            .and_then(|mix| mix.outputs.get_mut(index))
+            .and_then(Option::take);
+        if let Some(mut stage) = previous {
+            self.stage_index.remove(&stage.node_name);
+            self.retire(&mut stage);
+        }
+        let loaded = self.load_output(&cfg, index);
+        if let Some(slot) = self
+            .mixes
+            .get_mut(&id)
+            .and_then(|mix| mix.outputs.get_mut(index))
+        {
+            *slot = loaded;
+        }
+        log::info!(
+            "{} {} {}",
+            cfg.name,
+            if enabled {
+                "plays to"
+            } else {
+                "no longer plays to"
+            },
+            cfg.outputs[index].device
+        );
+        Ok(())
+    }
+
+    /// Send a mix to one device and to no other of its outputs: what
+    /// switching sound cards means. A device the mix did not play to yet is
+    /// added, with the level a new output starts at.
+    pub fn switch_output(&mut self, id: MixId, device: String) -> Result<(), EngineError> {
+        let cfg = self.config.mix_mut(id).ok_or(EngineError::UnknownMix(id))?;
+        if cfg.output(&device).is_none() {
+            cfg.outputs.push(MixOutput::new(device.clone()));
+        }
+        for output in &mut cfg.outputs {
+            output.enabled = output.device == device;
+        }
+        let devices: Vec<String> = cfg.outputs.iter().map(|o| o.device.clone()).collect();
+        // The whole list is loaded again: switching cards is a moment the
+        // audio moves anyway, and this keeps one path for it.
+        self.set_mix_outputs(id, devices)?;
+        log::info!("mix {id} now listens on {device}");
+        Ok(())
     }
 
     /// Take a stage's proxy out before the stage, and its module, go.
@@ -622,6 +702,15 @@ impl Graph {
 
     // --- mixes --------------------------------------------------------------
 
+    /// The mix you listen to: the one asked for, if it still exists, else
+    /// the first.
+    pub fn monitored_mix(&self) -> Option<MixId> {
+        self.config
+            .monitored_mix
+            .filter(|id| self.config.mix(*id).is_some())
+            .or_else(|| self.config.mixes.first().map(|mix| mix.id))
+    }
+
     pub fn create_mix(&mut self, cfg: &MixConfig) -> Result<(), EngineError> {
         if self.mixes.contains_key(&cfg.id) {
             return Ok(());
@@ -683,7 +772,7 @@ impl Graph {
         let mut mix = self.mixes.remove(&id).ok_or(EngineError::UnknownMix(id))?;
         self.mix_meters.remove(&id);
         self.sink_ids.remove(&id.sink_node_name());
-        for stage in &mut mix.outputs {
+        for stage in mix.outputs.iter_mut().flatten() {
             self.retire(stage);
         }
         self.forget_outputs(id);
@@ -722,7 +811,7 @@ impl Graph {
                 .ok_or(EngineError::UnknownMix(id))?
                 .outputs,
         );
-        for stage in &mut previous {
+        for stage in previous.iter_mut().flatten() {
             self.retire(stage);
         }
         // Drop the old loopbacks before loading the new ones, so a device
@@ -772,13 +861,17 @@ impl Graph {
         f(&mut state);
         output.set_state(state);
 
-        let stage = self
+        // An output switched off has no loopback to carry the level; it is
+        // kept for when it comes back on.
+        if let Some(stage) = self
             .mixes
             .get_mut(&id)
             .and_then(|mix| mix.outputs.get_mut(index))
-            .ok_or(EngineError::UnknownOutput(id, index))?;
-        stage.wanted = state;
-        stage.apply();
+            .and_then(Option::as_mut)
+        {
+            stage.wanted = state;
+            stage.apply();
+        }
         self.dirty = true;
         self.emit(Event::OutputChanged { id, index, state });
         Ok(())
@@ -1515,7 +1608,8 @@ impl Graph {
             StageRef::Output(mix, index) => self
                 .mixes
                 .get_mut(&mix)
-                .and_then(|mix| mix.outputs.get_mut(index)),
+                .and_then(|mix| mix.outputs.get_mut(index))
+                .and_then(Option::as_mut),
         };
         let Some(link) = stage else {
             return;
@@ -1695,7 +1789,7 @@ impl Graph {
         let outputs = self
             .mixes
             .values_mut()
-            .flat_map(|mix| mix.outputs.iter_mut());
+            .flat_map(|mix| mix.outputs.iter_mut().flatten());
         for stage in self.links.values_mut().chain(outputs) {
             if stage
                 .node

@@ -58,6 +58,10 @@ pub struct Config {
     /// audio, which is the vendor's doing and not something to work around.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stereotool_license: Option<String>,
+    /// The mix you listen to, which the sound card switch acts on. None means
+    /// the first one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitored_mix: Option<MixId>,
     #[serde(default, rename = "mix")]
     pub mixes: Vec<MixConfig>,
     #[serde(default, rename = "source")]
@@ -79,6 +83,7 @@ impl Default for Config {
         Self {
             latency: default_latency(),
             stereotool_license: None,
+            monitored_mix: None,
             mixes: Vec::new(),
             sources: Vec::new(),
             links: Vec::new(),
@@ -173,6 +178,7 @@ impl Config {
         }
         Self {
             stereotool_license: None,
+            monitored_mix: None,
             latency,
             mixes: vec![
                 MixConfig::new(stream, "Stream Mix"),

@@ -1091,6 +1091,114 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
+    // An output switched off lets go of its device and stays in the list;
+    // switched on, it comes back with the level it had.
+    engine
+        .send(Command::SetOutputEnabled {
+            id: mix,
+            index: 0,
+            enabled: false,
+        })
+        .unwrap();
+    wait_state(&rx, "the output switched off", |s| {
+        s.mixes
+            .iter()
+            .any(|m| m.outputs.first().is_some_and(|o| !o.enabled))
+    });
+    settle();
+    let names = node_names(&pw_dump());
+    check(
+        !names.contains(&format!("pipedeck.out.{mix}.0")),
+        &format!("an output switched off lets go of its device: {names:?}"),
+        &mut failures,
+    );
+    engine
+        .send(Command::SetOutputEnabled {
+            id: mix,
+            index: 0,
+            enabled: true,
+        })
+        .unwrap();
+    wait_state(&rx, "the output switched on", |s| {
+        s.mixes
+            .iter()
+            .any(|m| m.outputs.first().is_some_and(|o| o.enabled))
+    });
+    settle();
+    let dump = pw_dump();
+    let back = our_node(&dump, &format!("pipedeck.out.{mix}.0")).map(|node| {
+        props(node)["target.object"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    });
+    let level = node_volume(&dump, &format!("pipedeck.out.{mix}.0"));
+    check(
+        back.as_deref() == Some(device.name.as_str())
+            && level
+                .as_ref()
+                .is_some_and(|(v, muted)| v.iter().all(|x| (x - 0.512).abs() < 1e-3) && *muted),
+        &format!("switched on, it plays there again with the level it had: {back:?} {level:?}"),
+        &mut failures,
+    );
+
+    // Switching sound cards is one device on and every other off.
+    if let Some(other) = devices.iter().find(|d| d.name != device.name) {
+        engine
+            .send(Command::SwitchOutput {
+                id: mix,
+                device: other.name.clone(),
+            })
+            .unwrap();
+        let state = wait_state(&rx, "the switch", |s| {
+            s.mixes.iter().any(|m| {
+                m.outputs
+                    .iter()
+                    .any(|o| o.device == other.name && o.enabled)
+            })
+        });
+        settle();
+        let outputs = state
+            .mixes
+            .iter()
+            .find(|m| m.id == mix)
+            .map(|m| m.outputs.clone())
+            .unwrap_or_default();
+        let dump = pw_dump();
+        let playing: Vec<String> = (0..outputs.len())
+            .filter_map(|index| our_node(&dump, &format!("pipedeck.out.{mix}.{index}")))
+            .filter_map(|node| props(node)["target.object"].as_str().map(str::to_owned))
+            .collect();
+        check(
+            playing == [other.name.clone()],
+            &format!(
+                "switching sound cards leaves one playing: {playing:?} of {:?}",
+                outputs
+                    .iter()
+                    .map(|o| (&o.device, o.enabled))
+                    .collect::<Vec<_>>()
+            ),
+            &mut failures,
+        );
+        // Back to the one the rest of this test expects.
+        engine
+            .send(Command::SwitchOutput {
+                id: mix,
+                device: device.name.clone(),
+            })
+            .unwrap();
+        wait_state(&rx, "the switch back", |s| {
+            s.mixes.iter().any(|m| {
+                m.outputs
+                    .iter()
+                    .any(|o| o.device == device.name && o.enabled)
+            })
+        });
+        settle();
+    } else {
+        println!("[skip] only one output device, so nothing to switch to");
+    }
+
     // Unlinking removes the cell and nothing else.
     engine
         .send(Command::SetLink {

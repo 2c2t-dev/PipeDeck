@@ -11,6 +11,7 @@
     <file preprocess="xml-stripblanks">pd-fun-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-game-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-headset-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">pd-listen-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-mic-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-music-symbolic.svg</file>
     <file preprocess="xml-stripblanks">pd-people-symbolic.svg</file>

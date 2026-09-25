@@ -319,7 +319,7 @@ impl MixDialog {
                 .find(|d| d.name == output.device)
                 .map(|d| d.description.clone())
                 .unwrap_or_else(|| format!("{} (unavailable)", output.device));
-            let row = self.output_row(index, &label, output.state());
+            let row = self.output_row(index, &label, output.state(), output.enabled);
             self.outputs.append(&row);
         }
 
@@ -328,7 +328,13 @@ impl MixDialog {
         self.syncing.set(false);
     }
 
-    fn output_row(self: &Rc<Self>, index: usize, label: &str, state: ChainState) -> gtk::Widget {
+    fn output_row(
+        self: &Rc<Self>,
+        index: usize,
+        label: &str,
+        state: ChainState,
+        enabled: bool,
+    ) -> gtk::Widget {
         let row = gtk::Box::new(gtk::Orientation::Vertical, 4);
         row.add_css_class("card");
 
@@ -345,6 +351,31 @@ impl MixDialog {
         title.set_xalign(0.0);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
         top.append(&title);
+
+        // On or off without leaving the list: the device is let go while
+        // off, and the output keeps its level for when it comes back.
+        let switch = gtk::Switch::new();
+        switch.set_active(enabled);
+        switch.set_valign(gtk::Align::Center);
+        switch.set_tooltip_text(Some(if enabled {
+            "This mix plays here; switch off to let go of the device"
+        } else {
+            "Switched off; this mix does not play here"
+        }));
+        switch.connect_active_notify({
+            let this = self.clone();
+            move |switch| {
+                if this.syncing.get() {
+                    return;
+                }
+                this.engine.send(Command::SetOutputEnabled {
+                    id: this.id,
+                    index,
+                    enabled: switch.is_active(),
+                });
+            }
+        });
+        top.append(&switch);
 
         let remove = gtk::Button::from_icon_name("list-remove-symbolic");
         remove.add_css_class("flat");
@@ -410,6 +441,12 @@ impl MixDialog {
             }
         });
         level.append(&scale);
+        // A level for an output that plays nowhere would do nothing, so it
+        // waits, greyed, with the value it will have.
+        level.set_sensitive(enabled);
+        if !enabled {
+            title.add_css_class("dim-label");
+        }
         inner.append(&level);
 
         row.upcast()
