@@ -253,6 +253,8 @@ struct AppStream {
     /// where it should be, and moving it to the row's sink with the rest of
     /// the application would put that person back in with everyone.
     pinned: bool,
+    /// That sink's name, for a pinned stream.
+    voice: Option<String>,
     /// Whether it has been put where it goes, for a stream that waits to
     /// say where it was sent.
     placed: bool,
@@ -1867,6 +1869,7 @@ impl Graph {
                 AppStream {
                     app,
                     pinned: false,
+                    voice: None,
                     placed: false,
                     _watch: watch,
                 },
@@ -1987,14 +1990,12 @@ impl Graph {
             }
             stream.placed = true;
             stream.pinned = pinned;
+            stream.voice = target.clone().filter(|_| pinned);
             let name = stream.app.name.clone();
-            if pinned {
-                // Taken back from wherever it was moved before this was known.
-                self.move_stream(id, &name, None);
-                log::info!(
-                    "{name} plays a person of the call on {}",
-                    target.unwrap_or_default()
-                );
+            if let Some(voice) = target.filter(|_| pinned) {
+                // Said again where it goes, over whatever moved it before
+                // this was known: a move outlives the mixer that made it.
+                self.pin_stream(id, &name, &voice);
             } else if let Some(source) = self.source_for_app(VOICE_APP) {
                 self.move_stream(id, &name, Some(source));
             }
@@ -2003,11 +2004,26 @@ impl Graph {
 
     /// Send every running application back to the channel it belongs to.
     fn reassign_apps(&self) {
-        for (id, stream) in self.streams.iter().filter(|(_, s)| !s.pinned) {
-            if let Some(source) = self.source_for_app(&stream.app.key) {
+        for (id, stream) in &self.streams {
+            if let Some(voice) = &stream.voice {
+                self.pin_stream(*id, &stream.app.name, voice);
+            } else if stream.app.key == VOICE_APP && !stream.placed {
+                // Where it was sent is not known yet; it is placed then.
+            } else if let Some(source) = self.source_for_app(&stream.app.key) {
                 self.move_stream(*id, &stream.app.name, Some(source));
             }
         }
+    }
+
+    /// Keep a stream on the voice sink it was sent to, by saying so where
+    /// a move would be said.
+    fn pin_stream(&self, stream: u32, name: &str, voice: &str) {
+        let Some(metadata) = &self.metadata else {
+            // Said again when the metadata is bound. See `reassign_apps`.
+            return;
+        };
+        metadata.set_property(stream, "target.object", Some("Spa:String"), Some(voice));
+        log::info!("{name} plays a person of the call on {voice}");
     }
 
     /// Note a link that joins one of our cells to its mix, so that its going
