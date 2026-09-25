@@ -2,15 +2,20 @@
  * Pipedeck voices: each person of a Discord call as a track of their own.
  *
  * Vesktop plays Discord's voice through Chromium's WebRTC, and every person
- * arrives there as a stream of their own, named `<user id>-<ssrc>`, played
+ * arrives there as a track of their own, named `<user id>-<ssrc>`, played
  * through an <audio> element of its own. This plugin tells Pipedeck who is
  * in the call, Pipedeck makes a sink for each of them, and each person's
- * element is sent to theirs instead of to the output Discord chose: the
- * channel Vesktop is on in Pipedeck unfolds into one sub-track a person.
+ * track is played into theirs: the channel Vesktop is on in Pipedeck
+ * unfolds into one sub-track a person.
  *
- * Discord's own controls still work: a person's volume and mute in Discord
- * are set on that same element. When Pipedeck is not running, or has no
- * sink for someone, their voice goes where Discord sends it.
+ * The elements cannot be sent apart: Chromium mixes every WebRTC track of a
+ * page into one output, and an element's output is that mix's, so the last
+ * one set wins for all. Each person is played instead through an audio
+ * context of their own, which reads their track before it is mixed and has
+ * an output of its own; their element is turned down to nothing, so they
+ * are not heard twice. The volume and mute Discord sets on the element are
+ * put on that output instead. When Pipedeck is not running, or has no sink
+ * for someone, their element plays as Discord has it.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -78,17 +83,35 @@ function sendCall() {
 /** The name Pipedeck gave each person's sink, by their id. */
 let labels: Record<string, string> = {};
 
-/** Discord's elements playing one person each, with the output Discord chose. */
-const elements = new Map<HTMLMediaElement, { user: string; wanted: string; }>();
+/** A person's own output: their track, read before Chromium mixes it, played
+ * into their sink. */
+interface Output {
+    context: AudioContext;
+    gain: GainNode;
+    device: string;
+    track: string;
+}
 
-let setSinkId: (this: HTMLMediaElement, sinkId: string) => Promise<void>;
+/** Discord's elements playing one person each. */
+interface Entry {
+    user: string;
+    /** What Discord set on the element, put on the person's own output. */
+    volume: number;
+    muted: boolean;
+    output?: Output;
+}
+
+const elements = new Map<HTMLMediaElement, Entry>();
+
+/** The element's own volume and mute, as the browser has them. */
+let volumeProperty: PropertyDescriptor | undefined;
+let mutedProperty: PropertyDescriptor | undefined;
 
 /** Whose each received track is, by the track's id. */
 const trackUser = new Map<string, string>();
 
-/** Elements playing a stream nobody is known to be behind yet, with the
- * output Discord chose for them. */
-const waiting = new Map<HTMLMediaElement, string>();
+/** Elements playing a stream nobody is known to be behind yet. */
+const waiting = new Set<HTMLMediaElement>();
 
 /** The person a stream's name says it is: `<user id>-<ssrc>`. */
 function named(id: string) {
@@ -110,8 +133,8 @@ function userOf(element: HTMLMediaElement) {
 function learn(track: string, user: string) {
     if (trackUser.get(track) === user) return;
     trackUser.set(track, user);
-    for (const [element, wanted] of waiting) {
-        if (adopt(element, wanted)) waiting.delete(element);
+    for (const element of waiting) {
+        if (adopt(element)) waiting.delete(element);
     }
 }
 
@@ -162,58 +185,132 @@ async function deviceFor(user: string) {
     return found?.deviceId ?? null;
 }
 
-/** Send an element to its person's sink, or where Discord wanted it. */
+/** The live track an element plays. */
+function trackOf(element: HTMLMediaElement) {
+    const stream = element.srcObject;
+    if (!(stream instanceof MediaStream)) return null;
+    return stream.getAudioTracks().find(track => track.readyState === "live") ?? null;
+}
+
+function live(element: HTMLMediaElement) {
+    return trackOf(element) !== null;
+}
+
+/** Put what Discord asked for where it is heard: on the person's own
+ * output while there is one, on the element otherwise. */
+function apply(element: HTMLMediaElement, entry: Entry) {
+    if (entry.output) {
+        entry.output.gain.gain.value = entry.muted ? 0 : entry.volume;
+        volumeProperty?.set?.call(element, 0);
+    } else {
+        volumeProperty?.set?.call(element, entry.volume);
+    }
+}
+
+/** Stop a person's own output, and let their element be heard again. */
+function release(element: HTMLMediaElement, entry: Entry) {
+    if (!entry.output) return;
+    entry.output.context.close().catch(() => { });
+    entry.output = undefined;
+    apply(element, entry);
+}
+
+/** Play an element's person into their sink, through an output of their
+ * own, or leave the element to Discord when they have none. */
 async function route(element: HTMLMediaElement) {
     const entry = elements.get(element);
     if (!entry) return;
     const device = await deviceFor(entry.user);
-    const target = device ?? entry.wanted;
-    if (element.sinkId === target) return;
+    const track = trackOf(element);
+    if (!device || !track) {
+        release(element, entry);
+        return;
+    }
+    const { output } = entry;
+    if (output && output.device === device && output.track === track.id) return;
+    release(element, entry);
     try {
-        await setSinkId.call(element, target);
-        log(device ? `${labels[entry.user]} plays into its own sink` : `${entry.user} plays where Discord says`);
+        // The sink is given with the context, which has an output of its
+        // own; the element's output is everyone's.
+        const context = new AudioContext({ latencyHint: "interactive", sinkId: device } as AudioContextOptions);
+        const gain = context.createGain();
+        context.createMediaStreamSource(new MediaStream([track])).connect(gain).connect(context.destination);
+        context.resume().catch(() => { });
+        entry.output = { context, gain, device, track: track.id };
+        apply(element, entry);
+        log(`${labels[entry.user] ?? entry.user} plays into its own sink`);
     } catch (e) {
-        log("cannot move", entry.user, String(e));
+        log("cannot play", entry.user, "on its own:", String(e));
     }
 }
 
 /** Drop the elements whose stream has ended, and route the others again,
  * to whoever is behind them now. */
 async function routeAll() {
-    for (const [element, wanted] of waiting) {
-        if (!live(element) || adopt(element, wanted)) waiting.delete(element);
+    for (const element of waiting) {
+        if (!live(element) || adopt(element)) waiting.delete(element);
     }
     for (const [element, entry] of elements) {
         if (!live(element)) {
+            release(element, entry);
             elements.delete(element);
             continue;
         }
-        entry.user = userOf(element) ?? entry.user;
+        const user = userOf(element) ?? entry.user;
+        if (user !== entry.user) {
+            release(element, entry);
+            entry.user = user;
+        }
         await route(element);
     }
 }
 
-function live(element: HTMLMediaElement) {
-    const stream = element.srcObject;
-    return stream instanceof MediaStream && stream.getAudioTracks().some(track => track.readyState === "live");
-}
-
 let timer: ReturnType<typeof setInterval> | undefined;
-let original: typeof HTMLMediaElement.prototype.setSinkId | undefined;
 let srcObject: PropertyDescriptor | undefined;
 let setRemoteDescription: typeof RTCPeerConnection.prototype.setRemoteDescription | undefined;
 
 /** Take in an element that plays one person, and send it to them. */
-function adopt(element: HTMLMediaElement, wanted: string) {
+function adopt(element: HTMLMediaElement) {
     const user = userOf(element);
     if (!user) {
-        if (live(element)) waiting.set(element, wanted);
+        if (live(element)) waiting.add(element);
         return false;
     }
-    if (!elements.has(element)) log(`${user} is played by an element of its own`);
-    elements.set(element, { user, wanted });
+    const known = elements.get(element);
+    if (known) {
+        if (known.user !== user) {
+            release(element, known);
+            known.user = user;
+        }
+    } else {
+        log(`${user} is played by an element of its own`);
+        elements.set(element, {
+            user,
+            volume: volumeProperty?.get?.call(element) ?? 1,
+            muted: mutedProperty?.get?.call(element) ?? false,
+        });
+    }
     route(element);
     return true;
+}
+
+/** Wrap a property of every element, so what Discord sets on one of ours
+ * is kept and put where it is heard. */
+function hook(name: "volume" | "muted", keep: (entry: Entry, value: any) => void) {
+    const property = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, name);
+    if (!property?.set) return undefined;
+    const { set } = property;
+    Object.defineProperty(HTMLMediaElement.prototype, name, {
+        ...property,
+        set(this: HTMLMediaElement, value: any) {
+            const entry = elements.get(this);
+            if (!entry) return set.call(this, value);
+            keep(entry, value);
+            if (name === "muted") set.call(this, value);
+            apply(this, entry);
+        },
+    });
+    return property;
 }
 
 async function refresh() {
@@ -242,15 +339,9 @@ export default definePlugin({
     },
 
     start() {
-        original = HTMLMediaElement.prototype.setSinkId;
-        setSinkId = original;
-        // Discord picks an output for each person's element, but not every
-        // time: an element is taken in as soon as a person's stream is put
-        // on it, and what Discord picks after is remembered as where to
-        // send them without Pipedeck.
-        HTMLMediaElement.prototype.setSinkId = function (this: HTMLMediaElement, sinkId: string) {
-            return adopt(this, sinkId) ? route(this) : setSinkId.call(this, sinkId);
-        };
+        volumeProperty = hook("volume", (entry, value) => { entry.volume = Number(value); });
+        mutedProperty = hook("muted", (entry, value) => { entry.muted = Boolean(value); });
+        // An element is taken in as soon as a person's stream is put on it.
         srcObject = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "srcObject");
         if (srcObject?.set) {
             const { set } = srcObject;
@@ -259,7 +350,7 @@ export default definePlugin({
                 set(this: HTMLMediaElement, value: MediaProvider | null) {
                     set.call(this, value);
                     try {
-                        adopt(this, elements.get(this)?.wanted ?? (this.sinkId || "default"));
+                        adopt(this);
                     } catch (e) {
                         log("cannot take in an element:", String(e));
                     }
@@ -294,11 +385,12 @@ export default definePlugin({
     stop() {
         if (timer) clearInterval(timer);
         navigator.mediaDevices.removeEventListener("devicechange", routeAll);
-        if (original) HTMLMediaElement.prototype.setSinkId = original;
+        // Everyone back on Discord's own output, as loud as Discord wants.
+        for (const [element, entry] of elements) release(element, entry);
+        if (volumeProperty) Object.defineProperty(HTMLMediaElement.prototype, "volume", volumeProperty);
+        if (mutedProperty) Object.defineProperty(HTMLMediaElement.prototype, "muted", mutedProperty);
         if (srcObject) Object.defineProperty(HTMLMediaElement.prototype, "srcObject", srcObject);
         if (setRemoteDescription) RTCPeerConnection.prototype.setRemoteDescription = setRemoteDescription;
-        // Everyone back where Discord wanted them, and the call handed back.
-        for (const [element, { wanted }] of elements) setSinkId.call(element, wanted).catch(() => { });
         elements.clear();
         waiting.clear();
         Native.setCall([]);
