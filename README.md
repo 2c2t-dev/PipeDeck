@@ -71,8 +71,9 @@ remove the object.
 
 ## Discord calls
 
-With Vesktop and Pipedeck's plugin for it (see
-[integrations/vencord](integrations/vencord/README.md)), the channel Vesktop
+With Vesktop and Pipedeck's plugin for it, installed from Settings, Plug-ins,
+Discord voices (see [integrations/vencord](integrations/vencord/README.md)),
+the channel Vesktop
 is assigned to unfolds into the people of the call you are in: each has a
 sub-track of their own, with a level and a mute, on its way into the
 channel, whose effects and cells they then go through. A person's level is

@@ -1271,6 +1271,7 @@ dependencies = [
  "log",
  "pipedeck-engine",
  "serde",
+ "serde_json",
  "toml",
  "zip",
 ]

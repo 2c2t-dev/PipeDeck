@@ -13,6 +13,7 @@ use pipedeck_engine::Command;
 
 use crate::engine_link::EngineLink;
 use crate::settings::{self, Settings, Theme};
+use crate::vesktop;
 
 /// What the Plug-ins page has to show: how many VST3 effects were found,
 /// where Stereo Tool stands, and the licence key it was given.
@@ -214,7 +215,136 @@ fn plugins_page(
     page.add(&install);
 
     page.add(&stereotool_group(parent, engine, state, found, key));
+    if vesktop::state() != vesktop::State::Missing {
+        page.add(&vesktop_group());
+    }
     page
+}
+
+/// What the plugin for Vesktop is doing, from the thread doing it.
+enum Work {
+    Says(String),
+    Done(Result<(), String>),
+}
+
+/// Pipedeck's plugin for Vesktop: installed, updated and removed from
+/// here, so Vesktop's settings are never touched by hand.
+fn vesktop_group() -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Discord voices");
+    group.set_description(Some(
+        "With Pipedeck's plugin in Vesktop, the channel Vesktop plays into unfolds into \
+         the people of your call, each with a level, a mute and a meter. Vencord only \
+         runs the plugins built into it, so installing builds Vencord with this one in \
+         and points Vesktop at it. It needs git and Node.js, and takes a minute or two \
+         the first time.",
+    ));
+
+    let row = adw::ActionRow::new();
+    let spinner = adw::Spinner::new();
+    spinner.set_visible(false);
+    row.add_suffix(&spinner);
+    let install = gtk::Button::new();
+    install.set_valign(gtk::Align::Center);
+    install.add_css_class("suggested-action");
+    row.add_suffix(&install);
+    let remove = gtk::Button::with_label("Remove");
+    remove.set_valign(gtk::Align::Center);
+    row.add_suffix(&remove);
+    group.add(&row);
+
+    let status = gtk::Label::new(None);
+    status.add_css_class("caption");
+    status.set_wrap(true);
+    status.set_xalign(0.0);
+    status.set_visible(false);
+    group.add(&status);
+
+    let show = {
+        let (row, install, remove) = (row.clone(), install.clone(), remove.clone());
+        move || {
+            let installed = vesktop::state() == vesktop::State::Installed;
+            if installed {
+                row.set_title("Installed in Vesktop");
+                row.set_subtitle("Update it when Vesktop or Vencord has been updated");
+                install.set_label("Update");
+            } else {
+                row.set_title("Not installed");
+                row.set_subtitle("Vesktop runs its own Vencord, without the plugin");
+                install.set_label("Install");
+            }
+            remove.set_visible(installed);
+        }
+    };
+    show();
+
+    // The work runs on a thread of its own, since building takes a while
+    // and waiting for Vesktop to close takes as long as the user does.
+    let start = {
+        let (install, remove, spinner, status) = (
+            install.clone(),
+            remove.clone(),
+            spinner.clone(),
+            status.clone(),
+        );
+        let show = show.clone();
+        move |removing: bool| {
+            install.set_sensitive(false);
+            remove.set_sensitive(false);
+            spinner.set_visible(true);
+            status.set_visible(false);
+            let (tx, rx) = async_channel::unbounded::<Work>();
+            std::thread::spawn(move || {
+                let say = |said: &str| {
+                    let _ = tx.send_blocking(Work::Says(said.to_owned()));
+                };
+                let result = if removing {
+                    vesktop::remove(say)
+                } else {
+                    vesktop::install(say)
+                };
+                let _ = tx.send_blocking(Work::Done(result));
+            });
+            gtk::glib::spawn_future_local({
+                let (install, remove, spinner, status) = (
+                    install.clone(),
+                    remove.clone(),
+                    spinner.clone(),
+                    status.clone(),
+                );
+                let show = show.clone();
+                async move {
+                    while let Ok(work) = rx.recv().await {
+                        status.set_visible(true);
+                        match work {
+                            Work::Says(said) => status.set_label(&said),
+                            Work::Done(result) => {
+                                status.set_label(&match (result, removing) {
+                                    (Ok(()), false) => {
+                                        "Done. Start Vesktop: the plugin is on.".to_owned()
+                                    }
+                                    (Ok(()), true) => {
+                                        "Removed. Vesktop runs its own Vencord again.".to_owned()
+                                    }
+                                    (Err(e), _) => format!("It did not work: {e}"),
+                                });
+                                spinner.set_visible(false);
+                                install.set_sensitive(true);
+                                remove.set_sensitive(true);
+                                show();
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    };
+    install.connect_clicked({
+        let start = start.clone();
+        move |_| start(false)
+    });
+    remove.connect_clicked(move |_| start(true));
+    group
 }
 
 /// What the count row says.

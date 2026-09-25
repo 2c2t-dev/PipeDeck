@@ -18,6 +18,7 @@ mod preferences;
 mod presets;
 mod settings;
 mod signals;
+mod vesktop;
 mod widgets;
 mod window;
 
