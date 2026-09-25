@@ -26,5 +26,11 @@ pnpm() { npx --yes "pnpm@$(sed -n 's/.*"packageManager": "pnpm@\([^"]*\)".*/\1/p
 pnpm install --frozen-lockfile --silent
 pnpm build
 
+# Vesktop loads the vencordDesktop files: the plugin must be in them.
+if ! grep -q PipedeckVoices dist/vencordDesktopRenderer.js; then
+    echo "The build left the plugin out of Vesktop's files." >&2
+    exit 1
+fi
+
 echo
 echo "Built. In Vesktop: Settings, Vesktop Settings, Vencord Location: $dir/dist"
