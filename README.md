@@ -197,16 +197,20 @@ so the audio stops for a moment.
 
 ## Switching sound cards
 
-You listen to one mix: the one whose ear is lit on its card, the first by
-default. The button in the header bar says what you hear it on and how loud,
-and lists every output device; picking one sends that mix there and switches
-off every other output it had, which is what changing sound cards means when
-you are wearing one of them.
+You listen on one device — your headphones — and the ear on each mix card
+says whether that mix is heard there: lit, it is; dark, it is not. Several can
+be lit, to hear the chat over the game. The button in the header bar says
+which device that is, sets how loud, and lists every output device; picking
+another moves every mix you hear onto it and off the old one, which is what
+changing sound cards means when you are wearing one of them. Until one is
+picked, the first device a mix already plays to stands in, so nothing changes
+for someone who never touches it.
 
-Each output in a mix's window has a switch of its own too. Off, the mix stops
-playing there and lets go of the device, and the output stays in the list
-with its level for when it comes back on — the card switch is only that, done
-to all of a mix's outputs at once.
+Underneath, it is all outputs. A mix is heard on your headphones when it has
+an output to them that is switched on; the ear switches it, adding one if
+there is none. Each output in a mix's window has that switch of its own: off,
+the mix stops playing there and lets go of the device, and the output stays
+in the list with its level for when it comes back on.
 
 ## Using it with OBS
 

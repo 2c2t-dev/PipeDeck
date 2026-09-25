@@ -124,7 +124,7 @@ impl Window {
             state: RefCell::new(StateSnapshot {
                 latency: String::new(),
                 stereotool_license: None,
-                monitored_mix: None,
+                listen_device: None,
                 mixes: Vec::new(),
                 sources: Vec::new(),
                 links: Vec::new(),
@@ -533,9 +533,13 @@ impl Window {
             move |_| this.open_mix_dialog(id)
         });
 
-        // The ear: which mix you listen to, and so which one the sound card
-        // switch in the header bar acts on. One is lit at a time.
-        let listening = self.state.borrow().monitored_mix == Some(mix.id);
+        // The ear: whether this mix is heard on the device you listen on,
+        // which the switch in the header bar picks. Several can be lit.
+        let listen = self.state.borrow().listen_device.clone();
+        let listening = mix
+            .outputs
+            .iter()
+            .any(|output| output.enabled && Some(&output.device) == listen.as_ref());
         let ear = gtk::ToggleButton::new();
         ear.set_icon_name("pd-listen-symbolic");
         ear.add_css_class("flat");
@@ -545,18 +549,18 @@ impl Window {
         ear.set_valign(gtk::Align::Center);
         ear.set_margin_end(10);
         ear.set_tooltip_text(Some(if listening {
-            "You listen to this mix"
+            "Heard in your headphones; click to stop"
         } else {
-            "Listen to this mix"
+            "Not heard in your headphones; click to hear it"
         }));
-        ear.connect_clicked({
+        ear.connect_toggled({
             let engine = self.engine.clone();
             let id = mix.id;
             move |button| {
-                // Pressing the lit one again does not put it out: one mix is
-                // always the one you listen to.
-                button.set_active(true);
-                engine.send(Command::SetMonitoredMix(id));
+                engine.send(Command::SetListening {
+                    id,
+                    listening: button.is_active(),
+                });
             }
         });
 
@@ -603,8 +607,9 @@ impl Window {
 fn clickable_card(content: &gtk::Box, width: i32, height: i32) -> gtk::Button {
     let pencil = gtk::Image::from_icon_name("document-edit-symbolic");
     pencil.add_css_class("pd-pencil");
-    // Always in the layout, so revealing it never shifts the text.
-    content.append(&pencil);
+    // Always in the layout, so revealing it never shifts the text. It leads
+    // the card rather than ending it, where a mix card keeps its ear.
+    content.prepend(&pencil);
 
     content.set_margin_top(8);
     content.set_margin_bottom(8);

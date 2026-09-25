@@ -31,6 +31,8 @@ pub enum EngineError {
     TooManyMixes(usize),
     #[error("not one plug-in of the chain could be opened")]
     NoPlugin,
+    #[error("no output device to listen on")]
+    NoListenDevice,
     #[error("the engine thread is no longer running")]
     Stopped,
 }

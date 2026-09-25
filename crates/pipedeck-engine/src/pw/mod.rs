@@ -383,7 +383,7 @@ impl Graph {
         StateSnapshot {
             latency: self.config.latency.clone(),
             stereotool_license: self.config.stereotool_license.clone(),
-            monitored_mix: self.monitored_mix(),
+            listen_device: self.listen_device(),
             mixes: self.config.mixes.clone(),
             sources: self.config.sources.clone(),
             links: self.config.links.clone(),
@@ -560,22 +560,78 @@ impl Graph {
         Ok(())
     }
 
-    /// Send a mix to one device and to no other of its outputs: what
-    /// switching sound cards means. A device the mix did not play to yet is
-    /// added, with the level a new output starts at.
-    pub fn switch_output(&mut self, id: MixId, device: String) -> Result<(), EngineError> {
-        let cfg = self.config.mix_mut(id).ok_or(EngineError::UnknownMix(id))?;
-        if cfg.output(&device).is_none() {
-            cfg.outputs.push(MixOutput::new(device.clone()));
+    /// Hear a mix in your headphones, or stop.
+    ///
+    /// That is its output to the device you listen on, switched on or off;
+    /// one is added if the mix has none there yet. Its other outputs are
+    /// left as they are.
+    pub fn set_listening(&mut self, id: MixId, listening: bool) -> Result<(), EngineError> {
+        let device = self
+            .listen_device()
+            .or_else(|| self.device_lists().0.first().map(|d| d.name.clone()))
+            .ok_or(EngineError::NoListenDevice)?;
+        // Heard somewhere means the somewhere is now the one picked.
+        self.config.listen_device = Some(device.clone());
+        self.dirty = true;
+
+        let cfg = self.config.mix(id).ok_or(EngineError::UnknownMix(id))?;
+        match cfg
+            .outputs
+            .iter()
+            .position(|output| output.device == device)
+        {
+            Some(index) => self.set_output_enabled(id, index, listening),
+            None if listening => {
+                let mut devices: Vec<String> =
+                    cfg.outputs.iter().map(|o| o.device.clone()).collect();
+                devices.push(device);
+                self.set_mix_outputs(id, devices)
+            }
+            None => Ok(()),
         }
-        for output in &mut cfg.outputs {
-            output.enabled = output.device == device;
+    }
+
+    /// Listen on another device: every mix heard on the old one is moved,
+    /// its output there switched off and one to the new device switched on.
+    pub fn set_listen_device(&mut self, device: String) -> Result<(), EngineError> {
+        let old = self.listen_device();
+        self.config.listen_device = Some(device.clone());
+        self.dirty = true;
+        if old.as_deref() == Some(device.as_str()) {
+            return Ok(());
         }
-        let devices: Vec<String> = cfg.outputs.iter().map(|o| o.device.clone()).collect();
-        // The whole list is loaded again: switching cards is a moment the
-        // audio moves anyway, and this keeps one path for it.
-        self.set_mix_outputs(id, devices)?;
-        log::info!("mix {id} now listens on {device}");
+        let heard: Vec<MixId> = self
+            .config
+            .mixes
+            .iter()
+            .filter(|mix| {
+                mix.outputs
+                    .iter()
+                    .any(|o| o.enabled && Some(&o.device) == old.as_ref())
+            })
+            .map(|mix| mix.id)
+            .collect();
+        for id in heard {
+            let Some(cfg) = self.config.mix_mut(id) else {
+                continue;
+            };
+            if cfg.output(&device).is_none() {
+                cfg.outputs.push(MixOutput::new(device.clone()));
+            }
+            for output in &mut cfg.outputs {
+                if Some(&output.device) == old.as_ref() {
+                    output.enabled = false;
+                }
+                if output.device == device {
+                    output.enabled = true;
+                }
+            }
+            let devices: Vec<String> = cfg.outputs.iter().map(|o| o.device.clone()).collect();
+            // The mix's outputs are loaded again: switching cards is a moment
+            // the audio moves anyway, and this keeps one path for it.
+            self.set_mix_outputs(id, devices)?;
+        }
+        log::info!("listening on {device} now");
         Ok(())
     }
 
@@ -702,13 +758,18 @@ impl Graph {
 
     // --- mixes --------------------------------------------------------------
 
-    /// The mix you listen to: the one asked for, if it still exists, else
-    /// the first.
-    pub fn monitored_mix(&self) -> Option<MixId> {
-        self.config
-            .monitored_mix
-            .filter(|id| self.config.mix(*id).is_some())
-            .or_else(|| self.config.mixes.first().map(|mix| mix.id))
+    /// The device you listen on: the one picked, else the first a mix
+    /// plays to, so that someone who never touched the switch hears what
+    /// they already heard.
+    pub fn listen_device(&self) -> Option<String> {
+        self.config.listen_device.clone().or_else(|| {
+            self.config
+                .mixes
+                .iter()
+                .flat_map(|mix| mix.outputs.iter())
+                .find(|output| output.enabled)
+                .map(|output| output.device.clone())
+        })
     }
 
     pub fn create_mix(&mut self, cfg: &MixConfig) -> Result<(), EngineError> {

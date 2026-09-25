@@ -1142,13 +1142,53 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
-    // Switching sound cards is one device on and every other off.
+    // The ear: whether this mix is heard on the device you listen on. Off,
+    // nothing of it plays there; on, it plays there again.
+    engine
+        .send(Command::SetListening {
+            id: mix,
+            listening: false,
+        })
+        .unwrap();
+    wait_state(&rx, "the ear off", |s| {
+        s.mixes.iter().any(|m| m.outputs.iter().all(|o| !o.enabled))
+    });
+    settle();
+    let names = node_names(&pw_dump());
+    check(
+        !names
+            .iter()
+            .any(|n| n.starts_with(&format!("pipedeck.out.{mix}."))),
+        &format!("with its ear off, the mix is not heard: {names:?}"),
+        &mut failures,
+    );
+    engine
+        .send(Command::SetListening {
+            id: mix,
+            listening: true,
+        })
+        .unwrap();
+    wait_state(&rx, "the ear on", |s| {
+        s.mixes.iter().any(|m| m.outputs.iter().any(|o| o.enabled))
+    });
+    settle();
+    let back = our_node(&pw_dump(), &format!("pipedeck.out.{mix}.0")).map(|node| {
+        props(node)["target.object"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    });
+    check(
+        back.as_deref() == Some(device.name.as_str()),
+        &format!("with its ear on, it is heard there again: {back:?}"),
+        &mut failures,
+    );
+
+    // Switching sound cards moves every mix you hear onto the new device,
+    // and off the old one.
     if let Some(other) = devices.iter().find(|d| d.name != device.name) {
         engine
-            .send(Command::SwitchOutput {
-                id: mix,
-                device: other.name.clone(),
-            })
+            .send(Command::SetListenDevice(other.name.clone()))
             .unwrap();
         let state = wait_state(&rx, "the switch", |s| {
             s.mixes.iter().any(|m| {
@@ -1182,10 +1222,7 @@ fn main() -> ExitCode {
         );
         // Back to the one the rest of this test expects.
         engine
-            .send(Command::SwitchOutput {
-                id: mix,
-                device: device.name.clone(),
-            })
+            .send(Command::SetListenDevice(device.name.clone()))
             .unwrap();
         wait_state(&rx, "the switch back", |s| {
             s.mixes.iter().any(|m| {

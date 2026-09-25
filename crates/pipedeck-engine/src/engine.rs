@@ -77,14 +77,15 @@ pub enum Command {
         index: usize,
         enabled: bool,
     },
-    /// Send a mix to this device and to none of its other outputs, adding
-    /// it if the mix did not play there yet: switching sound cards.
-    SwitchOutput {
+    /// Hear a mix in your headphones, or stop: switch on, or off, its output
+    /// to the device you listen on, adding one if it has none there yet.
+    SetListening {
         id: MixId,
-        device: String,
+        listening: bool,
     },
-    /// The mix you listen to, which the sound card switch acts on.
-    SetMonitoredMix(MixId),
+    /// Listen on another device: every mix heard on the old one is moved to
+    /// this one. Switching sound cards.
+    SetListenDevice(String),
     /// Add a row: a virtual sink, or a capture device when `device` is set.
     /// `icon` is carried through to the clients as the row's look.
     AddSource {
@@ -188,8 +189,8 @@ pub struct StateSnapshot {
     /// The Stereo Tool licence key the settings hold, so the window can show
     /// what is in use.
     pub stereotool_license: Option<String>,
-    /// The mix you listen to: the one the sound card switch acts on.
-    pub monitored_mix: Option<MixId>,
+    /// The device you listen on, whether picked or stood in for.
+    pub listen_device: Option<String>,
     pub mixes: Vec<MixConfig>,
     pub sources: Vec<SourceConfig>,
     pub links: Vec<LinkConfig>,
@@ -653,15 +654,8 @@ fn handle_command(
         Command::SetOutputEnabled { id, index, enabled } => {
             g.set_output_enabled(id, index, enabled)
         }
-        Command::SwitchOutput { id, device } => g.switch_output(id, device),
-        Command::SetMonitoredMix(id) => {
-            if g.config().mix(id).is_none() {
-                Err(EngineError::UnknownMix(id))
-            } else {
-                g.config_mut().monitored_mix = Some(id);
-                Ok(())
-            }
-        }
+        Command::SetListening { id, listening } => g.set_listening(id, listening),
+        Command::SetListenDevice(device) => g.set_listen_device(device),
         Command::AddSource { name, device, icon } => add_source(&mut g, name, device, icon),
         Command::RemoveSource(id) => g.remove_source(id).map(|()| {
             let cfg = g.config_mut();

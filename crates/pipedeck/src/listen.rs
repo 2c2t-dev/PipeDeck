@@ -1,9 +1,10 @@
 //! The sound card switch in the header bar.
 //!
-//! You listen to one mix — the one with the ear lit on its card — and this is
-//! where you say on what: the device it plays to, and how loud. Picking
-//! another device switches the mix over to it and off every other, which is
-//! what changing sound cards means when you are wearing one of them.
+//! You listen on one device — your headphones — and the ear on each mix card
+//! says whether that mix is heard there. This is where you say which device
+//! it is and how loud: picking another moves every mix you hear onto it,
+//! which is what changing sound cards means when you are wearing one of
+//! them.
 
 use std::rc::Rc;
 
@@ -47,38 +48,35 @@ impl Listen {
         self.button.clone().upcast()
     }
 
-    /// Say what is being listened to, and offer what it could be.
+    /// Say what is being listened on, and offer what it could be.
     pub fn refresh(self: &Rc<Self>, state: &StateSnapshot, devices: &[Device]) {
-        let mix = state
-            .monitored_mix
-            .and_then(|id| state.mixes.iter().find(|mix| mix.id == id));
-        let Some(mix) = mix else {
-            self.label.set_label("No mix");
-            self.button
-                .set_tooltip_text(Some("Add a mix to have something to listen to"));
-            self.button.set_popover(None::<&gtk::Popover>);
-            return;
-        };
-
-        // The device it plays to, if it plays anywhere. When several are on,
-        // the first is the one this speaks of, as a switch leaves one only.
-        let active = mix
-            .outputs
-            .iter()
-            .enumerate()
-            .find(|(_, output)| output.enabled);
+        let listen = state.listen_device.clone();
         let describe = |name: &str| {
             devices
                 .iter()
                 .find(|device| device.name == name)
                 .map_or_else(|| name.to_owned(), |device| device.description.clone())
         };
-        self.label.set_label(&match active {
-            Some((_, output)) => describe(&output.device),
+        self.label.set_label(&match &listen {
+            Some(name) => describe(name),
             None => "No output".to_owned(),
         });
         self.button
-            .set_tooltip_text(Some(&format!("Where you hear {}", mix.name)));
+            .set_tooltip_text(Some("The device you listen on, and how loud"));
+
+        // Every output heard on that device: one per mix whose ear is lit.
+        // They share the one volume up here.
+        let heard: Vec<(pipedeck_engine::MixId, usize, f32)> = state
+            .mixes
+            .iter()
+            .flat_map(|mix| {
+                mix.outputs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, output)| output.enabled && Some(&output.device) == listen.as_ref())
+                    .map(move |(index, output)| (mix.id, index, output.gain))
+            })
+            .collect();
 
         let page = gtk::Box::new(gtk::Orientation::Vertical, 6);
         page.set_margin_top(10);
@@ -87,10 +85,21 @@ impl Listen {
         page.set_margin_end(10);
         page.set_width_request(300);
 
-        let heading = gtk::Label::new(Some(&format!("Listening to {}", mix.name)));
+        let names: Vec<&str> = state
+            .mixes
+            .iter()
+            .filter(|mix| heard.iter().any(|(id, _, _)| *id == mix.id))
+            .map(|mix| mix.name.as_str())
+            .collect();
+        let heading = gtk::Label::new(Some(&if names.is_empty() {
+            "No mix is heard here; light the ear on one".to_owned()
+        } else {
+            format!("Hearing {}", names.join(", "))
+        }));
         heading.add_css_class("caption");
         heading.add_css_class("dim-label");
         heading.set_xalign(0.0);
+        heading.set_wrap(true);
         page.append(&heading);
 
         let volume_title = gtk::Label::new(Some("Volume"));
@@ -103,18 +112,21 @@ impl Listen {
         volume.set_draw_value(true);
         volume.set_value_pos(gtk::PositionType::Right);
         volume.set_digits(0);
-        match active {
-            Some((index, output)) => {
-                volume.set_value(f64::from(output.gain) * FADER_MAX);
+        match heard.first() {
+            Some((_, _, gain)) => {
+                volume.set_value(f64::from(*gain) * FADER_MAX);
                 volume.connect_value_changed({
                     let engine = self.engine.clone();
-                    let id = mix.id;
+                    let heard = heard.clone();
                     move |scale| {
-                        engine.send(Command::SetOutputGain {
-                            id,
-                            index,
-                            gain: (scale.value() / FADER_MAX) as f32,
-                        })
+                        let gain = (scale.value() / FADER_MAX) as f32;
+                        for (id, index, _) in &heard {
+                            engine.send(Command::SetOutputGain {
+                                id: *id,
+                                index: *index,
+                                gain,
+                            });
+                        }
                     }
                 });
             }
@@ -130,7 +142,7 @@ impl Listen {
 
         let popover = gtk::Popover::new();
         for device in devices {
-            let is_active = active.is_some_and(|(_, output)| output.device == device.name);
+            let is_active = listen.as_deref() == Some(device.name.as_str());
             let name = gtk::Label::new(Some(&device.description));
             name.set_xalign(0.0);
             name.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -146,13 +158,9 @@ impl Listen {
             button.connect_clicked({
                 let engine = self.engine.clone();
                 let popover = popover.clone();
-                let id = mix.id;
                 let device = device.name.clone();
                 move |_| {
-                    engine.send(Command::SwitchOutput {
-                        id,
-                        device: device.clone(),
-                    });
+                    engine.send(Command::SetListenDevice(device.clone()));
                     popover.popdown();
                 }
             });
