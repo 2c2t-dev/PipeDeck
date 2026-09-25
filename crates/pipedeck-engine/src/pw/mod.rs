@@ -1878,7 +1878,10 @@ impl Graph {
     /// back to the session manager's own policy.
     fn move_stream(&self, stream: u32, name: &str, source: Option<SourceId>) {
         let Some(metadata) = &self.metadata else {
-            log::warn!("cannot move {name}: the default metadata is not bound yet");
+            // Not a failure: at startup the registry announces streams before
+            // the metadata, and binding the metadata sends every assigned
+            // application where it belongs. See `reassign_apps`.
+            log::debug!("{name} waits for the default metadata to be moved");
             return;
         };
         let target = source.map(|id| id.sink_node_name());
