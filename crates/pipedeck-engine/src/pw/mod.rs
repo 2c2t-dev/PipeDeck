@@ -243,12 +243,22 @@ struct DeviceEntry {
 }
 
 /// A playback stream belonging to some application.
+/// Streams whose target was just read, and that target. See
+/// `Graph::stream_targets`.
+type StreamTargets = Rc<RefCell<Vec<(u32, Option<String>)>>>;
+
 struct AppStream {
     app: App,
     /// Sent by the application to one of our voice sinks: it is already
     /// where it should be, and moving it to the row's sink with the rest of
     /// the application would put that person back in with everyone.
     pinned: bool,
+    /// Whether it has been put where it goes, for a stream that waits to
+    /// say where it was sent.
+    placed: bool,
+    /// For a stream of the call's application, the node bound to read what
+    /// it was sent to, which the registry does not say.
+    _watch: Option<(Node, NodeListener)>,
 }
 
 /// One person of a call, on a sink of their own that plays into the sink
@@ -260,7 +270,15 @@ struct Voice {
     _bound: ProxyListener,
     /// What the sink is called, which is how the call's client finds it.
     label: String,
+    /// When the person was last said to have left. The sink is kept a
+    /// while: a call that drops and comes back says everyone left and came
+    /// back within a second, and a sink made again under a stream leaves
+    /// that stream playing nowhere.
+    gone_since: Option<std::time::Instant>,
 }
+
+/// How long a person's sink outlives their leaving the call.
+const VOICE_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The key an assignment matches on: the binary when the server knows it,
 /// the application name otherwise, and the node name as a last resort.
@@ -338,6 +356,10 @@ pub struct Graph {
     stereotool_stale: bool,
     /// Application playback streams currently on the graph.
     streams: HashMap<u32, AppStream>,
+    /// Streams of the call's application whose target has just been read:
+    /// their id, and the sink they were sent to, if any. The listener only
+    /// queues, for the same reason as `incoming`.
+    stream_targets: StreamTargets,
     streams_dirty: bool,
     /// The server's `default` metadata, which is how a stream is moved from
     /// one sink to another. Bound when the registry announces it.
@@ -383,6 +405,7 @@ impl Graph {
             links: HashMap::new(),
             voices: HashMap::new(),
             call: Vec::new(),
+            stream_targets: Rc::new(RefCell::new(Vec::new())),
             mixes: HashMap::new(),
             sources: HashMap::new(),
             stage_index: HashMap::new(),
@@ -1825,17 +1848,29 @@ impl Graph {
                     .or_else(|| props.get("application.id"))
                     .map(str::to_owned),
             };
-            let pinned = props
-                .get("target.object")
-                .is_some_and(|target| target.starts_with(VOICE_NODE_PREFIX));
-            // An application the user has assigned lands on its row's sink as
-            // soon as it starts playing.
-            if !pinned {
+            // The call's application sends each person to a voice sink of
+            // theirs, and its own mix wherever the user assigned it. Which
+            // is which is in the stream's own properties, which the registry
+            // leaves out: the node is bound to read them before it is moved.
+            let watch = if app.key == VOICE_APP {
+                self.watch_stream_target(global)
+            } else {
+                // An application the user has assigned lands on its row's
+                // sink as soon as it starts playing.
                 if let Some(source) = self.source_for_app(&app.key) {
                     self.move_stream(global.id, &app.name, Some(source));
                 }
-            }
-            self.streams.insert(global.id, AppStream { app, pinned });
+                None
+            };
+            self.streams.insert(
+                global.id,
+                AppStream {
+                    app,
+                    pinned: false,
+                    placed: false,
+                    _watch: watch,
+                },
+            );
             self.streams_dirty = true;
             return;
         }
@@ -1908,6 +1943,62 @@ impl Graph {
             channel,
             input,
         });
+    }
+
+    /// Bind a stream to read where it was sent, and queue that for the tick.
+    fn watch_stream_target(&self, global: &GlobalObject<&DictRef>) -> Option<(Node, NodeListener)> {
+        let node = match self.registry.bind::<Node, _>(global) {
+            Ok(node) => node,
+            Err(e) => {
+                log::warn!("cannot read where stream {} goes: {e}", global.id);
+                return None;
+            }
+        };
+        let queue = self.stream_targets.clone();
+        let id = global.id;
+        let listener = node
+            .add_listener_local()
+            .info(move |info| {
+                let Some(props) = info.props() else {
+                    return;
+                };
+                let target = props.get("target.object").map(str::to_owned);
+                queue.borrow_mut().push((id, target));
+            })
+            .register();
+        Some((node, listener))
+    }
+
+    /// Move the call's application's streams once where they were sent is
+    /// known: one sent to a voice sink stays there, the rest go to its row.
+    fn place_call_streams(&mut self) {
+        let read: Vec<(u32, Option<String>)> = self.stream_targets.borrow_mut().drain(..).collect();
+        for (id, target) in read {
+            let pinned = target
+                .as_deref()
+                .is_some_and(|target| target.starts_with(VOICE_NODE_PREFIX));
+            let Some(stream) = self.streams.get_mut(&id) else {
+                continue;
+            };
+            // The node says what it is again on every change of state; only
+            // a change of target is news.
+            if stream.placed && stream.pinned == pinned {
+                continue;
+            }
+            stream.placed = true;
+            stream.pinned = pinned;
+            let name = stream.app.name.clone();
+            if pinned {
+                // Taken back from wherever it was moved before this was known.
+                self.move_stream(id, &name, None);
+                log::info!(
+                    "{name} plays a person of the call on {}",
+                    target.unwrap_or_default()
+                );
+            } else if let Some(source) = self.source_for_app(VOICE_APP) {
+                self.move_stream(id, &name, Some(source));
+            }
+        }
     }
 
     /// Send every running application back to the channel it belongs to.
@@ -2204,16 +2295,23 @@ impl Graph {
                 .collect(),
             None => Vec::new(),
         };
-        let gone: Vec<(SourceId, String)> = self
-            .voices
-            .iter()
-            .filter(|(key, voice)| {
-                !wanted
-                    .iter()
-                    .any(|(wanted, label)| wanted == *key && *label == voice.label)
-            })
-            .map(|(key, _)| key.clone())
-            .collect();
+        // Someone gone from the call keeps their sink a while; one whose
+        // name changed gets a new one at once, since the client looks
+        // their output up by it.
+        let now = std::time::Instant::now();
+        let mut gone: Vec<(SourceId, String)> = Vec::new();
+        for (key, voice) in &mut self.voices {
+            match wanted.iter().find(|(wanted, _)| wanted == key) {
+                Some((_, label)) if *label == voice.label => voice.gone_since = None,
+                Some(_) => gone.push(key.clone()),
+                None => {
+                    let since = *voice.gone_since.get_or_insert(now);
+                    if now.duration_since(since) >= VOICE_GRACE {
+                        gone.push(key.clone());
+                    }
+                }
+            }
+        }
         for key in gone {
             if let Some(voice) = self.voices.remove(&key) {
                 self.sink_ids.remove(&key.0.voice_node_name(&key.1));
@@ -2252,6 +2350,7 @@ impl Graph {
                     sink,
                     _bound: bound,
                     label,
+                    gone_since: None,
                 },
             );
         }
@@ -2434,6 +2533,15 @@ impl Graph {
         self.hook_up_plugins();
         self.hook_up_meters();
         self.hook_up_voices();
+        self.place_call_streams();
+        // The people who left the call a while ago lose their sinks.
+        if self.voices.values().any(|voice| {
+            voice
+                .gone_since
+                .is_some_and(|since| since.elapsed() >= VOICE_GRACE)
+        }) {
+            self.sync_voices();
+        }
         self.absorb_levels();
         self.poll_windows();
         // What the server has had time to tell us is gone leaves without a
