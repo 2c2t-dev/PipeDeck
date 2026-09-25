@@ -229,7 +229,7 @@ impl EffectPanel {
         // of a window apart is to keep working beside it.
         let window = adw::Window::builder()
             .title(spec.name)
-            .default_width(if spec.id == "eq" { 560 } else { 420 })
+            .default_width(if spec.id == "eq" { 720 } else { 420 })
             // As tall as its controls: without a height asked for, a
             // libadwaita window is never under 200 pixels, and a single
             // slider sits above a gap.

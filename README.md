@@ -78,8 +78,13 @@ of its own, written in Rust, so nothing has to be installed:
   hiss behind a voice. It holds the sound back 10 ms, and its strength mixes
   the treated sound with the untouched one.
 - **Equaliser**, five bands shaped for a voice — a low cut, a low shelf, two
-  bells and a high shelf — set by dragging them on a curve. Scroll over a
-  bell to widen it, double-click a band to put it back.
+  bells and a high shelf — set by dragging them on a curve. Each band has
+  its colour and draws its own shape under the curve; scroll over a bell to
+  widen it, double-click a band to put it back, or pick one under the graph
+  to type its exact values. Behind the curve, the range is cut into the
+  zones a voice is talked about in — rumble, body, mud, honk, presence,
+  sibilance, air — and pointing at one says what to do there. Presets give
+  a starting point: clear, warm, podcast, less boom, less mud, and more.
 - **De-esser**: splits the sound at a frequency, listens for s and sh there,
   and turns only the part above down when they are too loud.
 - **Compressor**, with only a threshold, a ratio and a makeup gain. Its

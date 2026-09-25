@@ -2,9 +2,16 @@
 //!
 //! The curve is the equaliser's response across the audible range, worked
 //! out from the same filters the audio goes through, so what is drawn is
-//! what is heard. Each band has a handle on it: drag it sideways for its
-//! frequency and up or down for its gain, scroll over a bell to make it
-//! wider or narrower, double-click to put it back flat.
+//! what is heard. Each band has a colour of its own, a handle in it, and
+//! its own shape drawn faintly under the curve, so it is plain which band
+//! does what. Drag a handle sideways for its frequency and up or down for
+//! its gain, scroll over a bell to make it wider or narrower, double-click
+//! to put it back flat.
+//!
+//! Behind the curve, the range is cut into the zones a voice is talked
+//! about in — rumble, body, mud and so on — and the pointer over one says
+//! what it does and what to do about it. Presets give a starting point, and
+//! the band picked under the graph can be set to the exact value.
 //!
 //! This depends on GTK, libadwaita and the engine's equaliser only, so
 //! `examples/eq_render.rs` can draw it to an image.
@@ -16,7 +23,7 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
-use pipedeck_engine::dsp::eq::{self, BAND_LAYOUT, LOW_CUT_OFF, PARAMS};
+use pipedeck_engine::dsp::eq::{self, BAND_LAYOUT, LOW_CUT_OFF, PARAMS, PRESETS};
 
 const MIN_FREQ: f32 = 20.0;
 const MAX_FREQ: f32 = 20_000.0;
@@ -27,26 +34,107 @@ const HANDLE: f64 = 7.0;
 /// How near a press has to be to a handle to take it.
 const REACH: f64 = 18.0;
 const MARGIN: f64 = 10.0;
+/// Room over the curve for the zones' names.
+const ZONE_BAR: f64 = 18.0;
+
+/// Each band's colour, in the order of `BAND_LAYOUT`: from warm at the
+/// bottom of the range to cool at the top.
+const BAND_COLOURS: [(f64, f64, f64); 5] = [
+    (0.753, 0.380, 0.796), // low cut, purple
+    (1.000, 0.471, 0.000), // low, orange
+    (0.965, 0.827, 0.176), // mid, yellow
+    (0.200, 0.820, 0.478), // presence, green
+    (0.384, 0.627, 0.918), // air, blue
+];
+
+/// A stretch of the range as a voice is talked about, and what to do there.
+struct Zone {
+    from: f32,
+    to: f32,
+    name: &'static str,
+    advice: &'static str,
+}
+
+const ZONES: &[Zone] = &[
+    Zone {
+        from: MIN_FREQ,
+        to: 80.0,
+        name: "Rumble",
+        advice: "Traffic, knocks on the desk and hum. A voice has nothing here: cut it.",
+    },
+    Zone {
+        from: 80.0,
+        to: 250.0,
+        name: "Body",
+        advice: "The weight of a voice. A little more for warmth, less if it booms.",
+    },
+    Zone {
+        from: 250.0,
+        to: 600.0,
+        name: "Mud",
+        advice: "Where a voice turns boxy or muffled. Cutting here often clears it.",
+    },
+    Zone {
+        from: 600.0,
+        to: 2000.0,
+        name: "Honk",
+        advice: "Nasal, telephone-like when too strong. A gentle cut softens it.",
+    },
+    Zone {
+        from: 2000.0,
+        to: 5000.0,
+        name: "Presence",
+        advice: "Clarity: what makes words easy to follow. Lift it to cut through.",
+    },
+    Zone {
+        from: 5000.0,
+        to: 9000.0,
+        name: "Sibilance",
+        advice: "The s and sh. Too much here is harsh; the de-esser handles it.",
+    },
+    Zone {
+        from: 9000.0,
+        to: MAX_FREQ,
+        name: "Air",
+        advice: "Sparkle and breath. A gentle lift opens a voice up.",
+    },
+];
 
 type Changed = Rc<dyn Fn(&[f32])>;
 
 pub struct EqGraph {
-    /// What goes in the layout: the graph and the line under it saying what
-    /// is being set.
+    /// What goes in the layout: the presets, the graph, the line under it
+    /// saying what is being set, and the bands to pick.
     pub root: gtk::Box,
     area: gtk::DrawingArea,
     readout: gtk::Label,
-    values: Rc<RefCell<Vec<f32>>>,
+    presets: gtk::MenuButton,
+    /// One per band, to pick the one the exact controls set.
+    chips: Vec<gtk::ToggleButton>,
+    freq: gtk::SpinButton,
+    gain: gtk::SpinButton,
+    width: gtk::SpinButton,
+    /// The gain and width with their names, hidden for a band without.
+    gain_field: gtk::Box,
+    width_field: gtk::Box,
+    values: RefCell<Vec<f32>>,
     /// The band under the pointer or being dragged.
-    active: Rc<Cell<Option<usize>>>,
-    changed: Rc<RefCell<Option<Changed>>>,
+    hovered: Cell<Option<usize>>,
+    /// The band the exact controls set: the last one picked or moved.
+    selected: Cell<usize>,
+    /// The zone under the pointer, when no handle is.
+    zone: Cell<Option<usize>>,
+    /// Set while the exact controls are given values, so they do not send
+    /// them back.
+    syncing: Cell<bool>,
+    changed: RefCell<Option<Changed>>,
 }
 
 impl EqGraph {
     /// A graph showing `values`, in the order of the equaliser's controls.
     pub fn new(values: &[f32]) -> Rc<Self> {
         let area = gtk::DrawingArea::new();
-        area.set_content_height(170);
+        area.set_content_height(220);
         area.set_hexpand(true);
         area.add_css_class("pd-eq");
 
@@ -54,26 +142,46 @@ impl EqGraph {
         readout.add_css_class("caption");
         readout.add_css_class("dim-label");
         readout.set_xalign(0.0);
-
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        root.append(&area);
-        root.append(&readout);
+        readout.set_wrap(true);
+        readout.set_lines(2);
 
         let mut initial: Vec<f32> = PARAMS.iter().map(|param| param.default).collect();
         for (slot, value) in initial.iter_mut().zip(values) {
             *slot = *value;
         }
 
+        let spin = |min: f64, max: f64, step: f64, digits: u32| {
+            let spin = gtk::SpinButton::with_range(min, max, step);
+            spin.set_digits(digits);
+            spin.set_numeric(true);
+            spin
+        };
+
         let this = Rc::new(Self {
-            root,
+            root: gtk::Box::new(gtk::Orientation::Vertical, 8),
             area,
             readout,
-            values: Rc::new(RefCell::new(initial)),
-            active: Rc::new(Cell::new(None)),
-            changed: Rc::new(RefCell::new(None)),
+            presets: gtk::MenuButton::new(),
+            chips: BAND_LAYOUT
+                .iter()
+                .map(|band| gtk::ToggleButton::with_label(band.label))
+                .collect(),
+            freq: spin(20.0, 20000.0, 1.0, 0),
+            gain: spin(-12.0, 12.0, 0.5, 1),
+            width: spin(0.3, 6.0, 0.1, 1),
+            gain_field: gtk::Box::new(gtk::Orientation::Horizontal, 6),
+            width_field: gtk::Box::new(gtk::Orientation::Horizontal, 6),
+            values: RefCell::new(initial),
+            hovered: Cell::new(None),
+            selected: Cell::new(2),
+            zone: Cell::new(None),
+            syncing: Cell::new(false),
+            changed: RefCell::new(None),
         });
+        this.build();
         this.wire();
-        this.say(None);
+        this.select(2);
+        this.say();
         this
     }
 
@@ -82,23 +190,174 @@ impl EqGraph {
         *self.changed.borrow_mut() = Some(Rc::new(f));
     }
 
+    fn build(self: &Rc<Self>) {
+        // The presets, named by the one the values are, if any.
+        self.presets.set_popover(Some(&self.preset_menu()));
+        self.presets.set_halign(gtk::Align::Start);
+        self.presets
+            .set_tooltip_text(Some("Start from a ready-made curve"));
+        self.show_preset();
+        self.root.append(&self.presets);
+
+        self.root.append(&self.area);
+        self.root.append(&self.readout);
+
+        // The bands, each in its colour; the one picked is set exactly
+        // below.
+        let chips = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        chips.set_homogeneous(true);
+        for (band, chip) in self.chips.iter().enumerate() {
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            content.set_halign(gtk::Align::Center);
+            content.append(&dot(BAND_COLOURS[band]));
+            content.append(&gtk::Label::new(Some(BAND_LAYOUT[band].label)));
+            chip.set_child(Some(&content));
+            chip.add_css_class("flat");
+            if band > 0 {
+                chip.set_group(Some(&self.chips[0]));
+            }
+            chip.connect_toggled({
+                let this = self.clone();
+                move |chip| {
+                    if chip.is_active() && !this.syncing.get() {
+                        this.select(band);
+                        this.area.queue_draw();
+                    }
+                }
+            });
+            chips.append(chip);
+        }
+        self.root.append(&chips);
+
+        let fields = gtk::Box::new(gtk::Orientation::Horizontal, 18);
+        fields.set_halign(gtk::Align::Center);
+        let field = |name: &str, spin: &gtk::SpinButton, unit: &str, into: &gtk::Box| {
+            let label = gtk::Label::new(Some(name));
+            label.add_css_class("caption");
+            into.append(&label);
+            into.append(spin);
+            if !unit.is_empty() {
+                let unit = gtk::Label::new(Some(unit));
+                unit.add_css_class("caption");
+                unit.add_css_class("dim-label");
+                into.append(&unit);
+            }
+        };
+        let freq_field = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        field("Frequency", &self.freq, "Hz", &freq_field);
+        field("Gain", &self.gain, "dB", &self.gain_field);
+        field("Width", &self.width, "", &self.width_field);
+        fields.append(&freq_field);
+        fields.append(&self.gain_field);
+        fields.append(&self.width_field);
+        self.root.append(&fields);
+
+        for (spin, which) in [(&self.freq, 0), (&self.gain, 1), (&self.width, 2)] {
+            spin.connect_value_changed({
+                let this = self.clone();
+                move |spin| {
+                    if this.syncing.get() {
+                        return;
+                    }
+                    let band = this.selected.get();
+                    let layout = BAND_LAYOUT[band];
+                    let index = match which {
+                        0 => Some(layout.freq),
+                        1 => layout.gain,
+                        _ => layout.q,
+                    };
+                    let Some(index) = index else {
+                        return;
+                    };
+                    let spec = &PARAMS[index];
+                    this.values.borrow_mut()[index] =
+                        (spin.value() as f32).clamp(spec.min, spec.max);
+                    this.after_change(band);
+                }
+            });
+        }
+    }
+
+    /// The list of presets, each with what it is for.
+    fn preset_menu(self: &Rc<Self>) -> gtk::Popover {
+        let popover = gtk::Popover::new();
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        for preset in PRESETS {
+            let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            let title = gtk::Label::new(Some(preset.name));
+            title.set_xalign(0.0);
+            labels.append(&title);
+            let detail = gtk::Label::new(Some(preset.description));
+            detail.add_css_class("caption");
+            detail.add_css_class("dim-label");
+            detail.set_xalign(0.0);
+            labels.append(&detail);
+
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.set_child(Some(&labels));
+            button.connect_clicked({
+                let this = self.clone();
+                let popover = popover.clone();
+                move |_| {
+                    *this.values.borrow_mut() = preset.values.to_vec();
+                    popover.popdown();
+                    this.after_change(this.selected.get());
+                }
+            });
+            list.append(&button);
+        }
+        let scroller = gtk::ScrolledWindow::new();
+        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroller.set_max_content_height(420);
+        scroller.set_propagate_natural_height(true);
+        scroller.set_child(Some(&list));
+        popover.set_child(Some(&scroller));
+        popover
+    }
+
+    /// Name the preset on its button: the one the curve is, or none.
+    fn show_preset(&self) {
+        let name = eq::preset_of(&self.values.borrow()).map_or("Custom", |preset| preset.name);
+        self.presets.set_child(Some(
+            &adw::ButtonContent::builder()
+                .icon_name("view-list-symbolic")
+                .label(format!("Preset: {name}"))
+                .build(),
+        ));
+    }
+
+    /// Pick the band the exact controls set, and show its values in them.
+    fn select(&self, band: usize) {
+        self.selected.set(band);
+        self.syncing.set(true);
+        self.chips[band].set_active(true);
+        let layout = BAND_LAYOUT[band];
+        let values = self.values.borrow();
+
+        let spec = &PARAMS[layout.freq];
+        self.freq
+            .set_range(f64::from(spec.min), f64::from(spec.max));
+        self.freq.set_value(f64::from(values[layout.freq]));
+        self.gain_field.set_visible(layout.gain.is_some());
+        if let Some(gain) = layout.gain {
+            self.gain.set_value(f64::from(values[gain]));
+        }
+        self.width_field.set_visible(layout.q.is_some());
+        if let Some(q) = layout.q {
+            self.width.set_value(f64::from(values[q]));
+        }
+        drop(values);
+        self.syncing.set(false);
+    }
+
     fn wire(self: &Rc<Self>) {
         self.area.set_draw_func({
-            let values = self.values.clone();
-            let active = self.active.clone();
-            move |area, cr, width, height| {
-                draw(
-                    area,
-                    cr,
-                    f64::from(width),
-                    f64::from(height),
-                    &values.borrow(),
-                    active.get(),
-                )
-            }
+            let this = self.clone();
+            move |_, cr, width, height| this.draw(cr, f64::from(width), f64::from(height))
         });
 
-        // Hovering says which band is under the pointer.
+        // Hovering says which band, or which zone, is under the pointer.
         let motion = gtk::EventControllerMotion::new();
         motion.connect_motion({
             let this = self.clone();
@@ -107,9 +366,16 @@ impl EqGraph {
                     return;
                 }
                 let near = this.nearest(x, y);
-                if near != this.active.get() {
-                    this.active.set(near);
-                    this.say(near);
+                let zone = if near.is_some() {
+                    None
+                } else {
+                    let freq = x_to_freq(x, f64::from(this.area.width()));
+                    ZONES.iter().position(|z| freq >= z.from && freq < z.to)
+                };
+                if near != this.hovered.get() || zone != this.zone.get() {
+                    this.hovered.set(near);
+                    this.zone.set(zone);
+                    this.say();
                     this.area.queue_draw();
                 }
             }
@@ -118,8 +384,9 @@ impl EqGraph {
             let this = self.clone();
             move |_| {
                 if !this.dragging() {
-                    this.active.set(None);
-                    this.say(None);
+                    this.hovered.set(None);
+                    this.zone.set(None);
+                    this.say();
                     this.area.queue_draw();
                 }
             }
@@ -137,13 +404,15 @@ impl EqGraph {
             move |_, x, y| {
                 let near = this.nearest(x, y);
                 grabbed.set(near.map(|band| {
-                    let width = f64::from(this.area.width());
-                    let height = f64::from(this.area.height());
-                    let (hx, hy) = handle(&this.values.borrow(), band, width, height);
+                    let (hx, hy) = this.handle(band);
                     (band, hx, hy)
                 }));
-                this.active.set(near);
-                this.say(near);
+                if let Some(band) = near {
+                    this.select(band);
+                }
+                this.hovered.set(near);
+                this.zone.set(None);
+                this.say();
                 this.area.queue_draw();
             }
         });
@@ -168,7 +437,7 @@ impl EqGraph {
         scroll.connect_scroll({
             let this = self.clone();
             move |_, _, dy| {
-                let Some(band) = this.active.get() else {
+                let Some(band) = this.hovered.get() else {
                     return gtk::glib::Propagation::Proceed;
                 };
                 let Some(q) = BAND_LAYOUT[band].q else {
@@ -216,7 +485,7 @@ impl EqGraph {
     }
 
     fn dragging(&self) -> bool {
-        // A band stays the active one while it is dragged, whatever the
+        // A band stays the hovered one while it is dragged, whatever the
         // pointer passes over; the drag gesture is what says it is.
         self.area
             .observe_controllers()
@@ -228,8 +497,7 @@ impl EqGraph {
 
     /// Set a band from where the pointer is.
     fn move_band(&self, band: usize, x: f64, y: f64) {
-        let width = f64::from(self.area.width());
-        let height = f64::from(self.area.height());
+        let (width, height) = self.size();
         let layout = BAND_LAYOUT[band];
         {
             let mut values = self.values.borrow_mut();
@@ -246,8 +514,10 @@ impl EqGraph {
     }
 
     fn after_change(&self, band: usize) {
-        self.active.set(Some(band));
-        self.say(Some(band));
+        self.hovered.set(Some(band));
+        self.select(band);
+        self.say();
+        self.show_preset();
         self.area.queue_draw();
         let values = self.values.borrow().clone();
         let changed = self.changed.borrow().clone();
@@ -256,14 +526,21 @@ impl EqGraph {
         }
     }
 
+    fn size(&self) -> (f64, f64) {
+        (f64::from(self.area.width()), f64::from(self.area.height()))
+    }
+
+    /// Where a band's handle is drawn.
+    fn handle(&self, band: usize) -> (f64, f64) {
+        let (width, height) = self.size();
+        handle(&self.values.borrow(), band, width, height)
+    }
+
     /// The band whose handle is nearest the pointer, if one is in reach.
     fn nearest(&self, x: f64, y: f64) -> Option<usize> {
-        let width = f64::from(self.area.width());
-        let height = f64::from(self.area.height());
-        let values = self.values.borrow();
         (0..BAND_LAYOUT.len())
             .map(|band| {
-                let (hx, hy) = handle(&values, band, width, height);
+                let (hx, hy) = self.handle(band);
                 (band, (hx - x).hypot(hy - y))
             })
             .filter(|(_, distance)| *distance <= REACH)
@@ -271,31 +548,222 @@ impl EqGraph {
             .map(|(band, _)| band)
     }
 
-    /// Say what a band is set to, or how to set one.
-    fn say(&self, band: Option<usize>) {
-        let Some(band) = band else {
+    /// Say what the band under the pointer is set to, or what the zone
+    /// under it is, or how to set one.
+    fn say(&self) {
+        if let Some(band) = self.hovered.get() {
+            let values = self.values.borrow();
+            let layout = BAND_LAYOUT[band];
+            let freq = values[layout.freq];
+            let mut parts = vec![layout.label.to_owned()];
+            if layout.gain.is_none() && freq <= LOW_CUT_OFF {
+                parts.push("off".to_owned());
+            } else {
+                parts.push(format_freq(freq));
+            }
+            if let Some(gain) = layout.gain {
+                parts.push(format!("{:+.1} dB", values[gain]));
+            }
+            if let Some(q) = layout.q {
+                parts.push(format!("width {:.1}", values[q]));
+            }
+            if let Some(zone) = ZONES.iter().find(|z| freq >= z.from && freq < z.to) {
+                parts.push(format!("in {}", zone.name));
+            }
+            self.readout.set_label(&parts.join("  ·  "));
+        } else if let Some(zone) = self.zone.get() {
+            let zone = &ZONES[zone];
+            self.readout.set_label(&format!(
+                "{} ({} – {}): {}",
+                zone.name,
+                format_freq(zone.from),
+                format_freq(zone.to),
+                zone.advice
+            ));
+        } else {
             self.readout.set_label(
                 "Drag a point to move a band, scroll over a bell to widen it, \
-                 double-click to put it back",
+                 double-click to put it back. Point at a zone to see what it does.",
             );
-            return;
-        };
+        }
+    }
+
+    fn draw(&self, cr: &gtk::cairo::Context, width: f64, height: f64) {
         let values = self.values.borrow();
-        let layout = BAND_LAYOUT[band];
-        let freq = values[layout.freq];
-        let mut parts = vec![layout.label.to_owned()];
-        if layout.gain.is_none() && freq <= LOW_CUT_OFF {
-            parts.push("off".to_owned());
-        } else {
-            parts.push(format_freq(freq));
+        let fg = self.area.color();
+        let set = |cr: &gtk::cairo::Context, color: &gtk::gdk::RGBA, alpha: f64| {
+            cr.set_source_rgba(
+                color.red().into(),
+                color.green().into(),
+                color.blue().into(),
+                alpha,
+            );
+        };
+        let colour = |cr: &gtk::cairo::Context, (r, g, b): (f64, f64, f64), alpha: f64| {
+            cr.set_source_rgba(r, g, b, alpha);
+        };
+        let top = ZONE_BAR;
+
+        // The ground.
+        rounded(cr, 0.0, 0.0, width, height, 10.0);
+        set(cr, &fg, 0.04);
+        let _ = cr.fill();
+
+        // The zones: every other one shaded, the one pointed at more, each
+        // named along the top.
+        cr.set_font_size(10.0);
+        for (index, zone) in ZONES.iter().enumerate() {
+            let from = freq_to_x(zone.from, width);
+            let to = freq_to_x(zone.to, width);
+            let alpha = if self.zone.get() == Some(index) {
+                0.07
+            } else if index % 2 == 1 {
+                0.025
+            } else {
+                0.0
+            };
+            if alpha > 0.0 {
+                cr.rectangle(from, top, to - from, height - top - MARGIN);
+                set(cr, &fg, alpha);
+                let _ = cr.fill();
+            }
+            if let Ok(extents) = cr.text_extents(zone.name) {
+                let x = (from + to) / 2.0 - extents.width() / 2.0;
+                if extents.width() < to - from - 4.0 {
+                    cr.move_to(x, top - 5.0);
+                    let emphasis = if self.zone.get() == Some(index) {
+                        0.85
+                    } else {
+                        0.4
+                    };
+                    set(cr, &fg, emphasis);
+                    let _ = cr.show_text(zone.name);
+                }
+            }
         }
-        if let Some(gain) = layout.gain {
-            parts.push(format!("{:+.1} dB", values[gain]));
+
+        // Decades and the usual landmarks across, decibels along.
+        cr.set_line_width(1.0);
+        for freq in [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0] {
+            let x = freq_to_x(freq, width).round() + 0.5;
+            cr.move_to(x, top);
+            cr.line_to(x, height - MARGIN);
         }
-        if let Some(q) = layout.q {
-            parts.push(format!("width {:.1}", values[q]));
+        set(cr, &fg, 0.06);
+        let _ = cr.stroke();
+        for db in [-12.0, -6.0, 6.0, 12.0] {
+            let y = db_to_y(db, height).round() + 0.5;
+            cr.move_to(MARGIN, y);
+            cr.line_to(width - MARGIN, y);
         }
-        self.readout.set_label(&parts.join("  ·  "));
+        set(cr, &fg, 0.05);
+        let _ = cr.stroke();
+        let flat = db_to_y(0.0, height).round() + 0.5;
+        cr.move_to(MARGIN, flat);
+        cr.line_to(width - MARGIN, flat);
+        set(cr, &fg, 0.18);
+        let _ = cr.stroke();
+
+        set(cr, &fg, 0.45);
+        for (freq, text) in [(100.0, "100"), (1000.0, "1k"), (10000.0, "10k")] {
+            let x = freq_to_x(freq, width);
+            cr.move_to(x + 3.0, height - MARGIN - 3.0);
+            let _ = cr.show_text(text);
+        }
+        for (db, text) in [(12.0, "+12"), (-12.0, "-12")] {
+            cr.move_to(MARGIN + 3.0, db_to_y(db, height) - 3.0);
+            let _ = cr.show_text(text);
+        }
+
+        // Each band's own shape, in its colour, the picked one plainer.
+        const POINTS: usize = 240;
+        let xs: Vec<f64> = (0..=POINTS)
+            .map(|i| MARGIN + (width - 2.0 * MARGIN) * i as f64 / POINTS as f64)
+            .collect();
+        let filters = eq::design(&values);
+        for (band, filter) in filters.iter().enumerate() {
+            if !band_on(&values, band) {
+                continue;
+            }
+            let picked = self.selected.get() == band || self.hovered.get() == Some(band);
+            cr.move_to(xs[0], flat);
+            for x in &xs {
+                let db = filter.response_db(x_to_freq(*x, width));
+                cr.line_to(*x, db_to_y(db, height));
+            }
+            cr.line_to(xs[POINTS], flat);
+            cr.close_path();
+            colour(cr, BAND_COLOURS[band], if picked { 0.22 } else { 0.1 });
+            let _ = cr.fill_preserve();
+            cr.set_line_width(1.0);
+            colour(cr, BAND_COLOURS[band], if picked { 0.7 } else { 0.35 });
+            let _ = cr.stroke();
+        }
+
+        // The curve all the bands make together.
+        for (i, x) in xs.iter().enumerate() {
+            let db = eq::response(&values, x_to_freq(*x, width));
+            let y = db_to_y(db, height);
+            if i == 0 {
+                cr.move_to(*x, y);
+            } else {
+                cr.line_to(*x, y);
+            }
+        }
+        cr.set_line_width(2.5);
+        set(cr, &fg, 0.92);
+        let _ = cr.stroke();
+
+        // The handles, each in its colour, the one pointed at larger.
+        for band in 0..BAND_LAYOUT.len() {
+            let (x, y) = handle(&values, band, width, height);
+            let on = band_on(&values, band);
+            let active = self.hovered.get() == Some(band);
+            let picked = self.selected.get() == band;
+            let radius = if active { HANDLE + 2.0 } else { HANDLE };
+            cr.arc(x, y, radius, 0.0, std::f64::consts::TAU);
+            if on || BAND_LAYOUT[band].gain.is_some() {
+                colour(cr, BAND_COLOURS[band], 1.0);
+            } else {
+                set(cr, &fg, 0.35);
+            }
+            let _ = cr.fill_preserve();
+            cr.set_line_width(if active || picked { 2.5 } else { 1.5 });
+            set(cr, &fg, if active || picked { 0.95 } else { 0.5 });
+            let _ = cr.stroke();
+        }
+    }
+}
+
+/// A small disc of a band's colour, for its chip.
+fn dot(colour: (f64, f64, f64)) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(10);
+    area.set_content_height(10);
+    area.set_valign(gtk::Align::Center);
+    area.set_draw_func(move |_, cr, width, height| {
+        let (r, g, b) = colour;
+        cr.set_source_rgb(r, g, b);
+        let radius = f64::from(width.min(height)) / 2.0;
+        cr.arc(
+            f64::from(width) / 2.0,
+            f64::from(height) / 2.0,
+            radius,
+            0.0,
+            std::f64::consts::TAU,
+        );
+        let _ = cr.fill();
+    });
+    area
+}
+
+/// Whether a band does anything: the low cut is off at its lowest, and a
+/// band at no gain is flat.
+fn band_on(values: &[f32], band: usize) -> bool {
+    let layout = BAND_LAYOUT[band];
+    match layout.gain {
+        Some(gain) => values[gain].abs() >= 0.05,
+        None => values[layout.freq] > LOW_CUT_OFF,
     }
 }
 
@@ -320,13 +788,23 @@ fn x_to_freq(x: f64, width: f64) -> f32 {
     MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(at)
 }
 
+/// Where flat is, halfway down what is left under the zones' names.
+fn middle(height: f64) -> f64 {
+    ZONE_BAR + (height - ZONE_BAR - MARGIN) / 2.0
+}
+
+/// How far from flat full scale is.
+fn half(height: f64) -> f64 {
+    (height - ZONE_BAR - MARGIN) / 2.0 - 4.0
+}
+
 fn db_to_y(db: f32, height: f64) -> f64 {
     let at = f64::from((db / RANGE_DB).clamp(-1.0, 1.0));
-    height / 2.0 - at * (height / 2.0 - MARGIN)
+    middle(height) - at * half(height)
 }
 
 fn y_to_db(y: f64, height: f64) -> f32 {
-    ((height / 2.0 - y) / (height / 2.0 - MARGIN)) as f32 * RANGE_DB
+    ((middle(height) - y) / half(height)) as f32 * RANGE_DB
 }
 
 /// Where a band's handle sits: at its frequency, and at its gain, or on the
@@ -339,113 +817,6 @@ fn handle(values: &[f32], band: usize, width: f64, height: f64) -> (f64, f64) {
     let freq = values[layout.freq];
     let db = layout.gain.map_or(0.0, |gain| values[gain]);
     (freq_to_x(freq, width), db_to_y(db, height))
-}
-
-// --- drawing --------------------------------------------------------------
-
-fn draw(
-    area: &gtk::DrawingArea,
-    cr: &gtk::cairo::Context,
-    width: f64,
-    height: f64,
-    values: &[f32],
-    active: Option<usize>,
-) {
-    let fg = area.color();
-    let accent = adw::StyleManager::default().accent_color_rgba();
-    let set = |cr: &gtk::cairo::Context, color: &gtk::gdk::RGBA, alpha: f64| {
-        cr.set_source_rgba(
-            color.red().into(),
-            color.green().into(),
-            color.blue().into(),
-            alpha,
-        );
-    };
-
-    // The ground.
-    rounded(cr, 0.0, 0.0, width, height, 10.0);
-    set(cr, &fg, 0.04);
-    let _ = cr.fill();
-
-    // Decades and the usual landmarks across, decibels along.
-    cr.set_line_width(1.0);
-    for freq in [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0] {
-        let x = freq_to_x(freq, width).round() + 0.5;
-        cr.move_to(x, MARGIN);
-        cr.line_to(x, height - MARGIN);
-    }
-    set(cr, &fg, 0.07);
-    let _ = cr.stroke();
-    for db in [-12.0, -6.0, 6.0, 12.0] {
-        let y = db_to_y(db, height).round() + 0.5;
-        cr.move_to(MARGIN, y);
-        cr.line_to(width - MARGIN, y);
-    }
-    set(cr, &fg, 0.05);
-    let _ = cr.stroke();
-    let flat = db_to_y(0.0, height).round() + 0.5;
-    cr.move_to(MARGIN, flat);
-    cr.line_to(width - MARGIN, flat);
-    set(cr, &fg, 0.18);
-    let _ = cr.stroke();
-
-    cr.set_font_size(10.0);
-    set(cr, &fg, 0.45);
-    for (freq, text) in [(100.0, "100"), (1000.0, "1k"), (10000.0, "10k")] {
-        let x = freq_to_x(freq, width);
-        cr.move_to(x + 3.0, height - MARGIN - 3.0);
-        let _ = cr.show_text(text);
-    }
-    for (db, text) in [(12.0, "+12"), (-12.0, "-12")] {
-        cr.move_to(MARGIN + 3.0, db_to_y(db, height) - 3.0);
-        let _ = cr.show_text(text);
-    }
-
-    // The curve, and what it takes away from or adds to flat, shaded.
-    const POINTS: usize = 240;
-    let curve: Vec<(f64, f64)> = (0..=POINTS)
-        .map(|i| {
-            let x = MARGIN + (width - 2.0 * MARGIN) * i as f64 / POINTS as f64;
-            let db = eq::response(values, x_to_freq(x, width));
-            (x, db_to_y(db, height))
-        })
-        .collect();
-    cr.move_to(curve[0].0, flat);
-    for (x, y) in &curve {
-        cr.line_to(*x, *y);
-    }
-    cr.line_to(curve[POINTS].0, flat);
-    cr.close_path();
-    set(cr, &accent, 0.16);
-    let _ = cr.fill();
-    cr.move_to(curve[0].0, curve[0].1);
-    for (x, y) in &curve[1..] {
-        cr.line_to(*x, *y);
-    }
-    cr.set_line_width(2.0);
-    set(cr, &accent, 1.0);
-    let _ = cr.stroke();
-
-    // The handles, the active one larger and ringed.
-    for band in 0..BAND_LAYOUT.len() {
-        let (x, y) = handle(values, band, width, height);
-        let off = BAND_LAYOUT[band].gain.is_none() && values[BAND_LAYOUT[band].freq] <= LOW_CUT_OFF;
-        let radius = if active == Some(band) {
-            HANDLE + 2.0
-        } else {
-            HANDLE
-        };
-        cr.arc(x, y, radius, 0.0, std::f64::consts::TAU);
-        if off {
-            set(cr, &fg, 0.35);
-        } else {
-            set(cr, &accent, 1.0);
-        }
-        let _ = cr.fill_preserve();
-        cr.set_line_width(if active == Some(band) { 2.5 } else { 1.5 });
-        set(cr, &fg, if active == Some(band) { 0.95 } else { 0.55 });
-        let _ = cr.stroke();
-    }
 }
 
 fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
@@ -469,8 +840,18 @@ mod tests {
             assert!((x_to_freq(x, 400.0) - freq).abs() / freq < 1e-3, "{freq}");
         }
         for db in [-12.0, -3.5, 0.0, 6.0, 12.0] {
-            let y = db_to_y(db, 170.0);
-            assert!((y_to_db(y, 170.0) - db).abs() < 1e-3, "{db}");
+            let y = db_to_y(db, 220.0);
+            assert!((y_to_db(y, 220.0) - db).abs() < 1e-3, "{db}");
         }
+    }
+
+    #[test]
+    fn the_zones_cover_the_range_end_to_end() {
+        assert_eq!(ZONES[0].from, MIN_FREQ);
+        assert_eq!(ZONES[ZONES.len() - 1].to, MAX_FREQ);
+        for pair in ZONES.windows(2) {
+            assert_eq!(pair[0].to, pair[1].from);
+        }
+        assert_eq!(BAND_COLOURS.len(), BAND_LAYOUT.len());
     }
 }

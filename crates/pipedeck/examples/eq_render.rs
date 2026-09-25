@@ -44,7 +44,7 @@ fn main() -> gtk::glib::ExitCode {
         column.set_margin_bottom(14);
         column.set_margin_start(14);
         column.set_margin_end(14);
-        column.set_size_request(460, -1);
+        column.set_size_request(690, -1);
         column.append(&graph.root);
 
         let window = adw::ApplicationWindow::builder()

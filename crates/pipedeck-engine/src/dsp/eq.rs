@@ -153,6 +153,131 @@ pub const BAND_LAYOUT: [Band; BANDS] = [
     },
 ];
 
+/// A starting point for the equaliser: every value, in the order of
+/// `PARAMS`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Preset {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub values: [f32; PARAMS.len()],
+}
+
+/// The starting points offered, most of them for a voice.
+///
+/// Values: low cut, low frequency and gain, mid frequency, gain and width,
+/// presence frequency, gain and width, air frequency and gain.
+pub const PRESETS: &[Preset] = &[
+    Preset {
+        name: "Flat",
+        description: "Changes nothing at all",
+        values: [
+            LOW_CUT_OFF,
+            150.0,
+            0.0,
+            800.0,
+            0.0,
+            1.0,
+            3500.0,
+            0.0,
+            1.0,
+            10000.0,
+            0.0,
+        ],
+    },
+    Preset {
+        name: "Rumble only",
+        description: "Takes out what is under a voice, and nothing else",
+        values: [
+            80.0, 150.0, 0.0, 800.0, 0.0, 1.0, 3500.0, 0.0, 1.0, 10000.0, 0.0,
+        ],
+    },
+    Preset {
+        name: "Clear voice",
+        description: "Less mud, more presence: easy to follow",
+        values: [
+            80.0, 200.0, -1.5, 400.0, -2.5, 1.2, 3500.0, 3.0, 1.0, 10000.0, 2.0,
+        ],
+    },
+    Preset {
+        name: "Warm voice",
+        description: "Fuller and rounder, the way radio sounds",
+        values: [
+            60.0, 120.0, 3.5, 350.0, -1.5, 1.0, 3000.0, 1.5, 0.8, 12000.0, 1.0,
+        ],
+    },
+    Preset {
+        name: "Podcast",
+        description: "Balanced and close, for talking at length",
+        values: [
+            80.0, 150.0, 1.0, 300.0, -2.0, 1.0, 4000.0, 2.5, 1.0, 12000.0, 1.5,
+        ],
+    },
+    Preset {
+        name: "Less boom",
+        description: "For a microphone held close, which swells the lows",
+        values: [
+            100.0, 180.0, -4.0, 800.0, 0.0, 1.0, 3500.0, 0.0, 1.0, 10000.0, 0.0,
+        ],
+    },
+    Preset {
+        name: "Less mud",
+        description: "Clears a boxy or muffled voice",
+        values: [
+            80.0, 150.0, 0.0, 300.0, -5.0, 1.4, 3500.0, 0.0, 1.0, 10000.0, 0.0,
+        ],
+    },
+    Preset {
+        name: "Softer",
+        description: "Takes the edge off a harsh or piercing voice",
+        values: [
+            80.0, 150.0, 0.0, 800.0, 0.0, 1.0, 3000.0, -3.5, 1.5, 10000.0, -1.5,
+        ],
+    },
+    Preset {
+        name: "Bright",
+        description: "Opens a dull microphone up",
+        values: [
+            80.0, 150.0, 0.0, 800.0, 0.0, 1.0, 5000.0, 2.0, 0.8, 11000.0, 4.0,
+        ],
+    },
+    Preset {
+        name: "Music, more bass",
+        description: "Lifts the lows and the top of music, as a loudness button does",
+        values: [
+            LOW_CUT_OFF,
+            100.0,
+            4.0,
+            800.0,
+            0.0,
+            1.0,
+            3500.0,
+            0.0,
+            1.0,
+            10000.0,
+            3.0,
+        ],
+    },
+    Preset {
+        name: "Telephone",
+        description: "Only the middle, as a phone line carries it",
+        values: [
+            400.0, 150.0, 0.0, 1500.0, 6.0, 0.8, 3500.0, 0.0, 1.0, 4000.0, -12.0,
+        ],
+    },
+];
+
+/// The preset a set of values is, if it is one.
+pub fn preset_of(values: &[f32]) -> Option<&'static Preset> {
+    PRESETS.iter().find(|preset| {
+        preset.values.len() == values.len()
+            && preset
+                .values
+                .iter()
+                .zip(values)
+                .all(|(a, b)| (a - b).abs() < 1e-3)
+    })
+}
+
 /// The five filters for a set of values, in the order of `PARAMS`.
 pub fn design(values: &[f32]) -> [Coeffs; BANDS] {
     let v = |i: usize| values.get(i).copied().unwrap_or(PARAMS[i].default);
@@ -235,6 +360,25 @@ mod tests {
         }
         let params = Params::new(spec, &controls);
         (params.clone(), Equaliser::new(params, 2))
+    }
+
+    #[test]
+    fn every_preset_is_within_range_and_found_again() {
+        for preset in PRESETS {
+            for (value, param) in preset.values.iter().zip(PARAMS) {
+                assert!(
+                    (param.min..=param.max).contains(value),
+                    "{} sets {} to {value}",
+                    preset.name,
+                    param.label
+                );
+            }
+            assert_eq!(preset_of(&preset.values).map(|p| p.name), Some(preset.name));
+        }
+        let flat = &PRESETS[0].values;
+        for freq in [30.0, 300.0, 3000.0, 15000.0] {
+            assert!(response(flat, freq).abs() < 0.01, "flat at {freq}");
+        }
     }
 
     #[test]
