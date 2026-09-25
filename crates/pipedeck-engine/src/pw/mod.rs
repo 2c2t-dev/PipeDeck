@@ -45,8 +45,8 @@ use crate::config::Config;
 use crate::engine::{Event, StateSnapshot};
 use crate::error::EngineError;
 use crate::types::{
-    App, ChainState, Device, Effect, EffectKind, LinkConfig, MixConfig, MixId, MixOutput,
-    SourceConfig, SourceId,
+    voice_labels, App, CallMember, ChainState, Device, Effect, EffectKind, LinkConfig, MixConfig,
+    MixId, MixOutput, SourceConfig, SourceId, VoiceConfig, VOICE_APP, VOICE_NODE_PREFIX,
 };
 use crate::vst3::Plugin;
 
@@ -245,6 +245,21 @@ struct DeviceEntry {
 /// A playback stream belonging to some application.
 struct AppStream {
     app: App,
+    /// Sent by the application to one of our voice sinks: it is already
+    /// where it should be, and moving it to the row's sink with the rest of
+    /// the application would put that person back in with everyone.
+    pinned: bool,
+}
+
+/// One person of a call, on a sink of their own that plays into the sink
+/// of the row carrying the call.
+struct Voice {
+    /// The links joining this sink to the row's. They go before the sink.
+    links: Vec<Link>,
+    sink: Node,
+    _bound: ProxyListener,
+    /// What the sink is called, which is how the call's client finds it.
+    label: String,
 }
 
 /// The key an assignment matches on: the binary when the server knows it,
@@ -271,6 +286,11 @@ pub struct Graph {
     // the mixes and sources, while context, core and registry are still
     // alive further down.
     links: HashMap<(SourceId, MixId), Stage>,
+    /// The people of a call, each on a sink playing into their row's: they
+    /// go before the rows.
+    voices: HashMap<(SourceId, String), Voice>,
+    /// Who is in the call Vesktop is in, as its plugin last said.
+    call: Vec<CallMember>,
     mixes: HashMap<MixId, Mix>,
     sources: HashMap<SourceId, Source>,
     /// Playback node name -> what it belongs to. Filled before the module is
@@ -361,6 +381,8 @@ impl Graph {
             // A converted config is written back on the first tick.
             dirty: config.migrated,
             links: HashMap::new(),
+            voices: HashMap::new(),
+            call: Vec::new(),
             mixes: HashMap::new(),
             sources: HashMap::new(),
             stage_index: HashMap::new(),
@@ -1024,6 +1046,22 @@ impl Graph {
     }
 
     pub fn remove_source(&mut self, id: SourceId) -> Result<(), EngineError> {
+        // The voices play into the row's sink, so they go before it.
+        let voices: Vec<(SourceId, String)> = self
+            .voices
+            .keys()
+            .filter(|(row, _)| *row == id)
+            .cloned()
+            .collect();
+        for key in voices {
+            if let Some(voice) = self.voices.remove(&key) {
+                self.sink_ids.remove(&id.voice_node_name(&key.1));
+                for link in voice.links {
+                    self.retired_links.hold(link);
+                }
+                self.retired.hold(voice.sink);
+            }
+        }
         let source = self
             .sources
             .remove(&id)
@@ -1787,12 +1825,17 @@ impl Graph {
                     .or_else(|| props.get("application.id"))
                     .map(str::to_owned),
             };
+            let pinned = props
+                .get("target.object")
+                .is_some_and(|target| target.starts_with(VOICE_NODE_PREFIX));
             // An application the user has assigned lands on its row's sink as
             // soon as it starts playing.
-            if let Some(source) = self.source_for_app(&app.key) {
-                self.move_stream(global.id, &app.name, Some(source));
+            if !pinned {
+                if let Some(source) = self.source_for_app(&app.key) {
+                    self.move_stream(global.id, &app.name, Some(source));
+                }
             }
-            self.streams.insert(global.id, AppStream { app });
+            self.streams.insert(global.id, AppStream { app, pinned });
             self.streams_dirty = true;
             return;
         }
@@ -1869,7 +1912,7 @@ impl Graph {
 
     /// Send every running application back to the channel it belongs to.
     fn reassign_apps(&self) {
-        for (id, stream) in &self.streams {
+        for (id, stream) in self.streams.iter().filter(|(_, s)| !s.pinned) {
             if let Some(source) = self.source_for_app(&stream.app.key) {
                 self.move_stream(*id, &stream.app.name, Some(source));
             }
@@ -2054,7 +2097,7 @@ impl Graph {
 
     /// Move every running stream of an application, or release them.
     fn move_app(&self, key: &str, source: Option<SourceId>) {
-        for (id, stream) in &self.streams {
+        for (id, stream) in self.streams.iter().filter(|(_, s)| !s.pinned) {
             if stream.app.key == key {
                 self.move_stream(*id, &stream.app.name, source);
             }
@@ -2076,6 +2119,7 @@ impl Graph {
         source.apps.push(key.clone());
         self.dirty = true;
         self.move_app(&key, Some(id));
+        self.sync_voices();
         Ok(())
     }
 
@@ -2087,6 +2131,177 @@ impl Graph {
         source.apps.retain(|app| app != key);
         self.dirty = true;
         self.move_app(key, None);
+        self.sync_voices();
+        Ok(())
+    }
+
+    // --- the people of a call -----------------------------------------------
+
+    /// Take who is in the call now, and give each a sub-track on the row
+    /// carrying Vesktop.
+    pub fn set_call(&mut self, members: Vec<CallMember>) {
+        if members != self.call {
+            log::info!("{} in the call", members.len());
+        }
+        self.call = members;
+        self.sync_voices();
+    }
+
+    /// The row the call is heard through: the one Vesktop is assigned to,
+    /// when it has a sink for the voices to play into.
+    fn call_row(&self) -> Option<SourceId> {
+        let id = self.source_for_app(VOICE_APP)?;
+        self.config
+            .source(id)
+            .is_some_and(|source| !source.is_input())
+            .then_some(id)
+    }
+
+    /// Make the graph and the config agree with the call: a sink for each
+    /// person in it on the call's row, none for anyone else.
+    fn sync_voices(&mut self) {
+        let row = self.call_row();
+        let labels = voice_labels(&self.call);
+
+        // Who is present, in the config: the level a person had last time
+        // is theirs again.
+        for source in &mut self.config.sources {
+            for voice in &mut source.voices {
+                voice.present = false;
+            }
+        }
+        if let Some(cfg) = row.and_then(|id| self.config.source_mut(id)) {
+            for member in &self.call {
+                match cfg.voices.iter_mut().find(|voice| voice.id == member.id) {
+                    Some(voice) => {
+                        voice.present = true;
+                        if voice.name != member.name {
+                            voice.name = member.name.clone();
+                            self.dirty = true;
+                        }
+                    }
+                    None => {
+                        cfg.voices.push(VoiceConfig {
+                            id: member.id.clone(),
+                            name: member.name.clone(),
+                            gain: 1.0,
+                            muted: false,
+                            present: true,
+                        });
+                        self.dirty = true;
+                    }
+                }
+            }
+        }
+
+        // On the graph: what is wanted, labelled as the client was told.
+        let wanted: Vec<((SourceId, String), String)> = match row {
+            Some(row) => self
+                .call
+                .iter()
+                .zip(labels)
+                .map(|(member, label)| ((row, member.id.clone()), label))
+                .collect(),
+            None => Vec::new(),
+        };
+        let gone: Vec<(SourceId, String)> = self
+            .voices
+            .iter()
+            .filter(|(key, voice)| {
+                !wanted
+                    .iter()
+                    .any(|(wanted, label)| wanted == *key && *label == voice.label)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in gone {
+            if let Some(voice) = self.voices.remove(&key) {
+                self.sink_ids.remove(&key.0.voice_node_name(&key.1));
+                for link in voice.links {
+                    self.retired_links.hold(link);
+                }
+                self.retired.hold(voice.sink);
+                log::info!("{} left the call", voice.label);
+            }
+        }
+        for ((row, user), label) in wanted {
+            if self.voices.contains_key(&(row, user.clone())) {
+                continue;
+            }
+            let name = row.voice_node_name(&user);
+            let sink = match self.create_sink(name.clone(), label.clone()) {
+                Ok(sink) => sink,
+                Err(e) => {
+                    log::error!("cannot make a sink for {label}: {e}");
+                    continue;
+                }
+            };
+            let state = self
+                .config
+                .source(row)
+                .and_then(|cfg| cfg.voices.iter().find(|voice| voice.id == user))
+                .map(VoiceConfig::state)
+                .unwrap_or_default();
+            apply_props(&sink, &name, &state);
+            let bound = self.watch_sink_id(&sink, name);
+            log::info!("{label} joined the call");
+            self.voices.insert(
+                (row, user),
+                Voice {
+                    links: Vec::new(),
+                    sink,
+                    _bound: bound,
+                    label,
+                },
+            );
+        }
+    }
+
+    /// Join every voice's sink to its row's, once both have their ports.
+    fn hook_up_voices(&mut self) {
+        let wanted: Vec<((SourceId, String), u32, u32)> = self
+            .voices
+            .iter()
+            .filter(|(_, voice)| voice.links.is_empty())
+            .filter_map(|((row, user), _)| {
+                let from = self.sink_ids.get(&row.voice_node_name(user)).copied()?;
+                let into = self.sink_ids.get(&row.sink_node_name()).copied()?;
+                Some(((*row, user.clone()), from, into))
+            })
+            .collect();
+        for (key, from, into) in wanted {
+            let made = self.link_ports(from, into);
+            if let Some(voice) = self.voices.get_mut(&key) {
+                if !made.is_empty() {
+                    log::debug!("{} joined to its row", voice.label);
+                }
+                voice.links = made;
+            }
+        }
+    }
+
+    /// Set one person's level on a row.
+    pub fn update_voice(
+        &mut self,
+        id: SourceId,
+        user: &str,
+        f: impl FnOnce(&mut ChainState),
+    ) -> Result<(), EngineError> {
+        let cfg = self
+            .config
+            .source_mut(id)
+            .ok_or(EngineError::UnknownSource(id))?;
+        let Some(voice) = cfg.voices.iter_mut().find(|voice| voice.id == user) else {
+            return Ok(());
+        };
+        let mut state = voice.state();
+        f(&mut state);
+        voice.gain = state.gain;
+        voice.muted = state.muted;
+        self.dirty = true;
+        if let Some(live) = self.voices.get(&(id, user.to_owned())) {
+            apply_props(&live.sink, &id.voice_node_name(user), &state);
+        }
         Ok(())
     }
 
@@ -2218,6 +2433,7 @@ impl Graph {
         self.hook_up_links();
         self.hook_up_plugins();
         self.hook_up_meters();
+        self.hook_up_voices();
         self.absorb_levels();
         self.poll_windows();
         // What the server has had time to tell us is gone leaves without a

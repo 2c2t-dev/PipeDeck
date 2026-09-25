@@ -142,6 +142,23 @@ pub enum Command {
         index: usize,
         controls: Vec<crate::types::Control>,
     },
+    /// Who is in the call Vesktop is in, as its plugin says, everyone but
+    /// the user. The row carrying Vesktop gets a sub-track for each of
+    /// them, and loses the ones who left; an empty list ends the call.
+    SetCall {
+        members: Vec<types::CallMember>,
+    },
+    /// The level of one person's sub-track on a row.
+    SetVoiceGain {
+        id: SourceId,
+        user: String,
+        gain: f32,
+    },
+    SetVoiceMute {
+        id: SourceId,
+        user: String,
+        muted: bool,
+    },
     /// Have the compressor at `index` of a row listen to what goes through
     /// it, then set itself from that: its threshold, ratio and makeup
     /// follow the voice it heard. What it is set to comes back as the
@@ -297,6 +314,13 @@ pub struct EngineHandle {
 impl EngineHandle {
     pub fn send(&self, cmd: Command) -> Result<(), EngineError> {
         self.tx.send(cmd).map_err(|_| EngineError::Stopped)
+    }
+
+    /// Take what other programs say on the control socket: who is in the
+    /// call Vesktop is in. Only the application does, so a test or an
+    /// example never answers in its place. See [`crate::control`].
+    pub fn serve_control(&self) {
+        crate::control::listen(self.tx.clone());
     }
 
     /// Ask the engine to stop and block until the thread has exited.
@@ -734,6 +758,18 @@ fn handle_command(
         } => {
             structural = false;
             g.set_effect_params(id, index, controls)
+        }
+        Command::SetCall { members } => {
+            g.set_call(members);
+            Ok(())
+        }
+        Command::SetVoiceGain { id, user, gain } => {
+            structural = false;
+            g.update_voice(id, &user, |state| state.gain = gain.clamp(0.0, 1.0))
+        }
+        Command::SetVoiceMute { id, user, muted } => {
+            structural = false;
+            g.update_voice(id, &user, |state| state.muted = muted)
         }
         Command::LearnEffect { id, index, step } => {
             structural = false;

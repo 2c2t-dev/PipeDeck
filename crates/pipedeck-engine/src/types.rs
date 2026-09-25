@@ -65,6 +65,73 @@ impl SourceId {
     pub fn effects_node_name(self) -> String {
         format!("pipedeck.fx.{}", self.0)
     }
+
+    /// `node.name` of the sink one person of a call plays into, which
+    /// plays on into this row's own.
+    pub fn voice_node_name(self, user: &str) -> String {
+        format!("{VOICE_NODE_PREFIX}{}.{user}", self.0)
+    }
+}
+
+/// What every voice sink's `node.name` starts with, so a stream already
+/// sent to one is known for what it is.
+pub const VOICE_NODE_PREFIX: &str = "pipedeck.voice.";
+
+/// The application whose row unfolds into a sub-track per person of a
+/// call: Vesktop, whose voice arrives one person to a track.
+pub const VOICE_APP: &str = "vesktop";
+
+/// One person of a call, as the call's client names them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallMember {
+    /// Their id on the service, which never changes.
+    pub id: String,
+    /// What to call them.
+    pub name: String,
+}
+
+/// One person's sub-track on a row: their own level, before the row's.
+///
+/// Kept in the config once they have been heard, so their level is what it
+/// was the next time they are in a call.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VoiceConfig {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "unity_gain")]
+    pub gain: f32,
+    #[serde(default)]
+    pub muted: bool,
+    /// Whether they are in the call right now. Never saved.
+    #[serde(skip)]
+    pub present: bool,
+}
+
+impl VoiceConfig {
+    pub fn state(&self) -> ChainState {
+        ChainState {
+            gain: self.gain,
+            muted: self.muted,
+        }
+    }
+}
+
+/// What each person of a call is called on the sink made for them: the
+/// label a client looks their output up by. Unique within the call, since
+/// two people may go by the same name.
+pub fn voice_labels(members: &[CallMember]) -> Vec<String> {
+    let mut labels: Vec<String> = Vec::with_capacity(members.len());
+    for member in members {
+        let base = format!("{} (Discord)", member.name);
+        let mut label = base.clone();
+        let mut n = 2;
+        while labels.contains(&label) {
+            label = format!("{} {n}", base);
+            n += 1;
+        }
+        labels.push(label);
+    }
+    labels
 }
 
 impl MixId {
@@ -119,6 +186,10 @@ pub struct SourceConfig {
     /// as they appear. An input row has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub apps: Vec<String>,
+    /// The people of a call heard through this row, each on a sub-track of
+    /// their own. Only the row carrying [`VOICE_APP`] has any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voices: Vec<VoiceConfig>,
 }
 
 impl Effect {
@@ -155,6 +226,7 @@ impl SourceConfig {
             icon: None,
             effects: Vec::new(),
             apps: Vec::new(),
+            voices: Vec::new(),
         }
     }
 
@@ -168,6 +240,7 @@ impl SourceConfig {
             icon: None,
             effects: Vec::new(),
             apps: Vec::new(),
+            voices: Vec::new(),
         }
     }
 

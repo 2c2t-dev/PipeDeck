@@ -109,12 +109,15 @@ fn activate(app: &adw::Application) {
     log::info!("config: {}", config_path.display());
 
     let (tx, rx) = async_channel::unbounded::<Msg>();
-    let engine = EngineLink::new(pipedeck_engine::spawn(config_path, {
+    let handle = pipedeck_engine::spawn(config_path, {
         let tx = tx.clone();
         move |event| {
             let _ = tx.send_blocking(Msg::Engine(event));
         }
-    }));
+    });
+    // Vesktop's plugin says who is in a call through this.
+    handle.serve_control();
+    let engine = EngineLink::new(handle);
     signals::spawn_watcher(move || {
         let _ = tx.send_blocking(Msg::Quit);
     });

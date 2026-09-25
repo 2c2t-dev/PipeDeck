@@ -1041,6 +1041,110 @@ fn main() -> ExitCode {
     });
     settle();
 
+    // A call in Vesktop: the channel Vesktop is assigned to gets a sink for
+    // each person, playing into its own, and loses them when the call ends.
+    let voice = |user: &str| format!("pipedeck.voice.{source}.{user}");
+    engine
+        .send(Command::AssignApp {
+            id: source,
+            app: pipedeck_engine::VOICE_APP.into(),
+        })
+        .unwrap();
+    engine
+        .send(Command::SetCall {
+            members: vec![
+                pipedeck_engine::CallMember {
+                    id: "111".into(),
+                    name: "Alice".into(),
+                },
+                pipedeck_engine::CallMember {
+                    id: "222".into(),
+                    name: "Bob".into(),
+                },
+            ],
+        })
+        .unwrap();
+    wait_state(&rx, "the call's voices", |s| {
+        s.sources
+            .iter()
+            .any(|row| row.voices.iter().filter(|v| v.present).count() == 2)
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    let dump = pw_dump();
+    let (alice, bob) = (node_id(&dump, &voice("111")), node_id(&dump, &voice("222")));
+    let row = node_id(&dump, &format!("pipedeck.src.{source}"));
+    let labelled = our_node(&dump, &voice("111"))
+        .and_then(|node| props(node)["node.description"].as_str())
+        == Some("Alice (Discord)");
+    check(
+        alice.is_some() && bob.is_some() && labelled,
+        &format!("each person of the call has a sink of their own: {alice:?} {bob:?}"),
+        &mut failures,
+    );
+    check(
+        matches!((alice, row), (Some(a), Some(r)) if links(&dump).contains(&(a, r))),
+        "a person's sink plays into the channel's",
+        &mut failures,
+    );
+    match node_serial(&dump, &voice("111")) {
+        Some(serial) => {
+            let mut player = Process::new("pw-play")
+                .arg(format!("--target={serial}"))
+                .arg(&tone)
+                .spawn()
+                .expect("pw-play must be installed");
+            drain(&rx);
+            let heard = wait_levels(&rx, source, mix, Duration::from_secs(4));
+            check(
+                heard.0 > 0.005,
+                &format!("the channel hears Alice: {:.3}", heard.0),
+                &mut failures,
+            );
+            engine
+                .send(Command::SetVoiceMute {
+                    id: source,
+                    user: "111".into(),
+                    muted: true,
+                })
+                .unwrap();
+            settle();
+            drain(&rx);
+            let muted = wait_levels(&rx, source, mix, Duration::from_secs(3));
+            let _ = player.kill();
+            let _ = player.wait();
+            check(
+                muted.0 < heard.0 / 10.0,
+                &format!("muting Alice takes her out: {:.3}", muted.0),
+                &mut failures,
+            );
+        }
+        None => check(false, "Alice's sink has no serial", &mut failures),
+    }
+    engine
+        .send(Command::SetCall {
+            members: Vec::new(),
+        })
+        .unwrap();
+    wait_state(&rx, "the call ended", |s| {
+        s.sources
+            .iter()
+            .all(|row| row.voices.iter().all(|v| !v.present))
+    });
+    std::thread::sleep(Duration::from_secs(3));
+    let dump = pw_dump();
+    check(
+        node_id(&dump, &voice("111")).is_none() && node_id(&dump, &voice("222")).is_none(),
+        "the voices go when the call ends",
+        &mut failures,
+    );
+    engine
+        .send(Command::ReleaseApp {
+            id: source,
+            app: pipedeck_engine::VOICE_APP.into(),
+        })
+        .unwrap();
+    settle();
+
     // Stereo Tool is hosted the same way, and is the one plug-in most likely
     // to be installed. It is proprietary, so this runs only where it is.
     if pipedeck_engine::stereotool::installed() {

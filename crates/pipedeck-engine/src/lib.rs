@@ -9,6 +9,7 @@
 //! the TOML config. It is meant to become a standalone daemon later.
 
 pub mod config;
+pub mod control;
 pub mod dsp;
 pub mod engine;
 pub mod error;
@@ -21,6 +22,7 @@ pub use config::Config;
 pub use engine::{spawn, Command, EngineHandle, Event, Learning, StateSnapshot};
 pub use error::EngineError;
 pub use types::{
-    new_mix, App, ChainState, Control, Device, Effect, EffectKind, LinkConfig, MixConfig, MixId,
-    MixOutput, SourceConfig, SourceId, MAX_MIXES, NEW_MIXES,
+    new_mix, voice_labels, App, CallMember, ChainState, Control, Device, Effect, EffectKind,
+    LinkConfig, MixConfig, MixId, MixOutput, SourceConfig, SourceId, VoiceConfig, MAX_MIXES,
+    NEW_MIXES, VOICE_APP,
 };
