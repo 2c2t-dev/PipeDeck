@@ -1,0 +1,30 @@
+#!/bin/sh
+# Build Vencord with Pipedeck's plugin in it, for Vesktop to load.
+#
+# Vencord is cloned once into a cache of its own and updated after; the
+# plugin is copied into its userplugins, since Vencord's build resolves a
+# plugin's imports from where it sits. Point Vesktop at the dist folder
+# printed at the end: Vesktop Settings, Vencord Location.
+set -eu
+
+here=$(dirname "$(realpath "$0")")
+dir=${PIPEDECK_VENCORD_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/pipedeck/vencord}
+
+if [ -d "$dir/.git" ]; then
+    git -C "$dir" pull --ff-only --quiet
+else
+    git clone --quiet --depth 1 https://github.com/Vendicated/Vencord "$dir"
+fi
+
+mkdir -p "$dir/src/userplugins"
+rm -rf "$dir/src/userplugins/pipedeckVoices.vesktop"
+cp -r "$here/pipedeckVoices.vesktop" "$dir/src/userplugins/"
+
+cd "$dir"
+# Vencord is built with pnpm, which this machine may not have.
+pnpm() { npx --yes "pnpm@$(sed -n 's/.*"packageManager": "pnpm@\([^"]*\)".*/\1/p' package.json)" "$@"; }
+pnpm install --frozen-lockfile --silent
+pnpm build
+
+echo
+echo "Built. In Vesktop: Settings, Vesktop Settings, Vencord Location: $dir/dist"
