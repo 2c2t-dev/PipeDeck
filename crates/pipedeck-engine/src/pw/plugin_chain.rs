@@ -284,6 +284,15 @@ impl PluginChain {
         }
     }
 
+    /// The settings, and what it heard, of the mixer's own effect at
+    /// `index`, which counts the plug-ins of the chain as for windows.
+    pub fn params(&self, index: usize) -> Option<&Arc<dsp::Params>> {
+        self.params
+            .get(index)
+            .and_then(|slot| slot.as_ref())
+            .map(|(_, params)| params)
+    }
+
     /// Close the windows whose close button has been pressed.
     ///
     /// The request waits on the window's own connection until someone reads

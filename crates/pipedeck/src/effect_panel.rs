@@ -18,7 +18,7 @@ use adw::prelude::*;
 use libadwaita as adw;
 
 use pipedeck_engine::stereotool::Status;
-use pipedeck_engine::{vst3::Plugin, Command, Effect, EffectKind, SourceId};
+use pipedeck_engine::{vst3::Plugin, Command, Effect, EffectKind, Learning, SourceId};
 
 use crate::effects;
 use crate::engine_link::EngineLink;
@@ -32,6 +32,9 @@ pub type Target = SourceId;
 /// What the tab says about where the chain runs.
 const HINT: &str = "Every mix hears this channel through these, in order. Adding or taking \
                     one off stops the audio for a moment; turning a control does not.";
+
+/// How long the compressor listens to a voice before setting itself.
+const LEARN_SECONDS: u32 = 5;
 
 /// How long after a control was last moved here the engine's answers are
 /// taken to be about that move.
@@ -400,6 +403,9 @@ impl EffectPanel {
         spec: &'static pipedeck_engine::dsp::EffectSpec,
         inner: &gtk::Box,
     ) {
+        if spec.id == "compressor" {
+            inner.append(&self.learn_row(position));
+        }
         for param in spec.params {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
 
@@ -436,6 +442,73 @@ impl EffectPanel {
             row.append(&value);
             inner.append(&row);
         }
+    }
+
+    /// A button that has the compressor listen to a voice for a few
+    /// seconds and set itself from it, which the sliders under it can then
+    /// adjust.
+    fn learn_row(self: &Rc<Self>, position: usize) -> gtk::Widget {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row.set_margin_bottom(6);
+
+        let button = gtk::Button::with_label("Learn from my voice");
+        row.append(&button);
+
+        let said = gtk::Label::new(Some("Speak as you do on air while it listens."));
+        said.add_css_class("caption");
+        said.add_css_class("dim-label");
+        said.set_xalign(0.0);
+        said.set_wrap(true);
+        said.set_hexpand(true);
+        row.append(&said);
+
+        button.connect_clicked({
+            let this = self.clone();
+            let said = said.clone();
+            move |button| {
+                let learn = |step| {
+                    this.engine.send(Command::LearnEffect {
+                        id: this.target,
+                        index: position,
+                        step,
+                    })
+                };
+                learn(Learning::Start);
+                button.set_sensitive(false);
+                let left = StdCell::new(LEARN_SECONDS);
+                said.set_text(&format!("Listening… {}", left.get()));
+                gtk::glib::timeout_add_seconds_local(1, {
+                    let this = this.clone();
+                    let button = button.clone();
+                    let said = said.clone();
+                    move || {
+                        let learn = |step| {
+                            this.engine.send(Command::LearnEffect {
+                                id: this.target,
+                                index: position,
+                                step,
+                            })
+                        };
+                        // The window closed, or was drawn again for a chain
+                        // that changed: what was being heard is dropped.
+                        if button.root().is_none() {
+                            learn(Learning::Cancel);
+                            return gtk::glib::ControlFlow::Break;
+                        }
+                        left.set(left.get() - 1);
+                        if left.get() > 0 {
+                            said.set_text(&format!("Listening… {}", left.get()));
+                            return gtk::glib::ControlFlow::Continue;
+                        }
+                        learn(Learning::Finish);
+                        button.set_sensitive(true);
+                        said.set_text("Set from your voice. The sliders can take it from there.");
+                        gtk::glib::ControlFlow::Break
+                    }
+                });
+            }
+        });
+        row.upcast()
     }
 
     /// The equaliser, as a curve with a handle on each band.

@@ -83,7 +83,10 @@ of its own, written in Rust, so nothing has to be installed:
 - **De-esser**: splits the sound at a frequency, listens for s and sh there,
   and turns only the part above down when they are too loud.
 - **Compressor**, with only a threshold, a ratio and a makeup gain. Its
-  timing is fixed at what suits a voice.
+  timing is fixed at what suits a voice. *Learn from my voice* listens for
+  five seconds while you speak and sets all three from what it heard: the
+  threshold where the voice usually is, a ratio as firm as the voice is
+  uneven, and the makeup that brings its loud moments to about -10 dB.
 
 Each one's controls open in a window of their own, from the gear on its card,
 so the ones being set can stay open beside the mixer; they close with the

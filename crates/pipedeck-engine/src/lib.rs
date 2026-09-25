@@ -18,7 +18,7 @@ pub mod types;
 pub mod vst3;
 
 pub use config::Config;
-pub use engine::{spawn, Command, EngineHandle, Event, StateSnapshot};
+pub use engine::{spawn, Command, EngineHandle, Event, Learning, StateSnapshot};
 pub use error::EngineError;
 pub use types::{
     new_mix, App, ChainState, Control, Device, Effect, EffectKind, LinkConfig, MixConfig, MixId,

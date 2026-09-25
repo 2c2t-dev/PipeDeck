@@ -949,7 +949,9 @@ fn main() -> ExitCode {
         ),
         &mut failures,
     );
-    match node_serial(&dump, &format!("pipedeck.vst.{source}")) {
+    // Played into the channel's own sink, so it goes through the chain:
+    // the sink named after the chain is what comes out of it.
+    match node_serial(&dump, &format!("pipedeck.src.{source}")) {
         Some(serial) => {
             let mut player = Process::new("pw-play")
                 .arg(format!("--target={serial}"))
@@ -958,13 +960,52 @@ fn main() -> ExitCode {
                 .expect("pw-play must be installed");
             drain(&rx);
             let heard = wait_levels(&rx, source, mix, Duration::from_secs(5));
-            let _ = player.kill();
-            let _ = player.wait();
             check(
                 heard.0 > 0.01,
                 &format!("the tone comes out of all four: {:.3}", heard.0),
                 &mut failures,
             );
+
+            // The compressor listens to the tone still playing and sets
+            // itself from it. A steady tone is as loud at its loudest as it
+            // usually is, so the threshold lands on it, nothing is squeezed,
+            // and the makeup is what brings it to -10 dB.
+            let learn = |step| {
+                engine
+                    .send(Command::LearnEffect {
+                        id: source,
+                        index: 3,
+                        step,
+                    })
+                    .unwrap()
+            };
+            learn(pipedeck_engine::Learning::Start);
+            std::thread::sleep(Duration::from_secs(2));
+            learn(pipedeck_engine::Learning::Finish);
+            let learnt = wait_for(
+                &rx,
+                "the compressor set from what it heard",
+                |e| matches!(e, Event::SourceEffects { effects, .. } if effects.len() == 4),
+            );
+            let learnt = |name: &str| match &learnt {
+                Event::SourceEffects { effects, .. } => effects[3]
+                    .controls
+                    .iter()
+                    .find(|c| c.name == name)
+                    .map_or(f32::NAN, |c| c.value),
+                _ => f32::NAN,
+            };
+            let (threshold, makeup) = (learnt("threshold"), learnt("makeup"));
+            check(
+                threshold != -20.0 && (threshold + makeup + 10.0).abs() <= 1.0,
+                &format!(
+                    "the compressor learns the tone's level: threshold {threshold}, makeup \
+                     {makeup}"
+                ),
+                &mut failures,
+            );
+            let _ = player.kill();
+            let _ = player.wait();
         }
         None => check(false, "the chain has no sink to play into", &mut failures),
     }
@@ -1031,10 +1072,11 @@ fn main() -> ExitCode {
             &mut failures,
         );
 
-        // Fed straight into the chain's own sink rather than through the
-        // channel: the chain names ids, so this holds whether or not another
-        // mixer answers to our node names.
-        match node_serial(&dump, &format!("pipedeck.vst.{source}")) {
+        // Played into the channel's own sink, so it goes through the chain:
+        // the sink named after the chain is what comes out of it. Found by
+        // our pid, so another mixer answering to the same names is left
+        // alone.
+        match node_serial(&dump, &format!("pipedeck.src.{source}")) {
             Some(serial) => {
                 let mut player = Process::new("pw-play")
                     .arg(format!("--target={serial}"))

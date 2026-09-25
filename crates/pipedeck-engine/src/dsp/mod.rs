@@ -16,7 +16,7 @@ mod denoise;
 mod dynamics;
 pub mod eq;
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use crate::types::Control;
@@ -64,6 +64,8 @@ const fn param(
         unit,
     }
 }
+
+pub use dynamics::learn_compressor;
 
 /// Every effect the mixer runs itself, in the order they are offered.
 pub const EFFECTS: &[EffectSpec] = &[
@@ -123,6 +125,61 @@ pub fn defaults(spec: &EffectSpec) -> Vec<Control> {
 /// once as it starts.
 pub struct Params {
     values: Box<[AtomicU32]>,
+    /// What the effect has heard, when asked to listen.
+    pub heard: Heard,
+}
+
+/// The quietest level [`Heard`] counts, in decibels; anything under it is
+/// counted there.
+pub const HEARD_FLOOR: i32 = -90;
+
+/// How often an effect that listens has stood at each level: one count
+/// for every hundredth of a second, a decibel apart from
+/// [`HEARD_FLOOR`] up to 0 dB.
+///
+/// Only the compressor listens, so it can be set from a voice rather than
+/// by hand. It is written on the audio thread and read by the engine, and
+/// neither waits on the other.
+pub struct Heard {
+    listening: AtomicBool,
+    counts: Box<[AtomicU32]>,
+}
+
+impl Heard {
+    fn new() -> Self {
+        Self {
+            listening: AtomicBool::new(false),
+            counts: (HEARD_FLOOR..=0).map(|_| AtomicU32::new(0)).collect(),
+        }
+    }
+
+    /// Start counting again from nothing, or stop.
+    pub fn listen(&self, listening: bool) {
+        if listening {
+            for count in self.counts.iter() {
+                count.store(0, Ordering::Relaxed);
+            }
+        }
+        self.listening.store(listening, Ordering::Release);
+    }
+
+    pub fn is_listening(&self) -> bool {
+        self.listening.load(Ordering::Acquire)
+    }
+
+    /// Count one moment at `db`.
+    pub fn count(&self, db: f32) {
+        let at = (db.floor() as i32).clamp(HEARD_FLOOR, 0) - HEARD_FLOOR;
+        self.counts[at as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Every count, quietest first.
+    pub fn counts(&self) -> Vec<u32> {
+        self.counts
+            .iter()
+            .map(|count| count.load(Ordering::Relaxed))
+            .collect()
+    }
 }
 
 impl std::fmt::Debug for Params {
@@ -143,6 +200,7 @@ impl Params {
                 .iter()
                 .map(|param| AtomicU32::new(param.default.to_bits()))
                 .collect(),
+            heard: Heard::new(),
         };
         params.set(spec, controls);
         Arc::new(params)

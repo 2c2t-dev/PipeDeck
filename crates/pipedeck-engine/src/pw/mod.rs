@@ -1459,6 +1459,68 @@ impl Graph {
         Ok(())
     }
 
+    /// Have the compressor at `index` of a row listen, then set it from
+    /// what it heard.
+    ///
+    /// The listening happens where it runs, on the audio thread, which
+    /// counts how loud the sound going into it is; the settings are worked
+    /// out from those counts when it is told to finish, and sent back as a
+    /// control moved by hand would be.
+    pub fn learn_effect(
+        &mut self,
+        id: SourceId,
+        index: usize,
+        step: crate::engine::Learning,
+    ) -> Result<(), EngineError> {
+        use crate::engine::Learning;
+
+        let effects = self
+            .config
+            .source(id)
+            .map(|cfg| cfg.effects.clone())
+            .ok_or(EngineError::UnknownSource(id))?;
+        let compressor = effects.get(index).is_some_and(|effect| {
+            effect.kind == EffectKind::Native && effect.label == "compressor"
+        });
+        if !compressor {
+            return Ok(());
+        }
+        let among_plugins = effects
+            .iter()
+            .take(index)
+            .filter(|effect| effect.is_plugin())
+            .count();
+        let Some(params) = self
+            .sources
+            .get(&id)
+            .and_then(|source| source.plugins.as_ref())
+            .and_then(|chain| chain.params(among_plugins))
+            .cloned()
+        else {
+            if step == Learning::Start {
+                let e = "the compressor is not running yet; give it a moment";
+                log::error!("{e}");
+                self.emit(Event::Error(e.into()));
+            }
+            return Ok(());
+        };
+        match step {
+            Learning::Start => params.heard.listen(true),
+            Learning::Cancel => params.heard.listen(false),
+            Learning::Finish => {
+                params.heard.listen(false);
+                match crate::dsp::learn_compressor(&params.heard.counts()) {
+                    Ok(controls) => self.set_effect_params(id, index, controls)?,
+                    Err(e) => {
+                        log::error!("{e}");
+                        self.emit(Event::Error(e));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Trim of a row, applied to its sink. An input row has no sink, so it
     /// keeps the value for the interface and changes nothing in the graph.
     pub fn update_source(

@@ -142,6 +142,15 @@ pub enum Command {
         index: usize,
         controls: Vec<crate::types::Control>,
     },
+    /// Have the compressor at `index` of a row listen to what goes through
+    /// it, then set itself from that: its threshold, ratio and makeup
+    /// follow the voice it heard. What it is set to comes back as the
+    /// row's effects, or an error if too little was heard.
+    LearnEffect {
+        id: SourceId,
+        index: usize,
+        step: Learning,
+    },
     /// Put the interface of one hosted plug-in on the screen, or take it
     /// away, by its place in the chain. Stereo Tool has one; a VST3 does
     /// not, here.
@@ -197,6 +206,17 @@ pub enum Command {
     },
     /// Tear the graph down and stop the thread.
     Shutdown,
+}
+
+/// Where a compressor learning from a voice is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Learning {
+    /// Forget what was heard and listen from now.
+    Start,
+    /// Stop, and take the settings what was heard calls for.
+    Finish,
+    /// Stop, and leave the settings as they are.
+    Cancel,
 }
 
 /// The matrix as the engine holds it.
@@ -714,6 +734,10 @@ fn handle_command(
         } => {
             structural = false;
             g.set_effect_params(id, index, controls)
+        }
+        Command::LearnEffect { id, index, step } => {
+            structural = false;
+            g.learn_effect(id, index, step)
         }
         Command::SetEffectWindow { id, index, open } => {
             structural = false;

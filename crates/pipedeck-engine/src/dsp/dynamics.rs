@@ -9,7 +9,8 @@
 use std::sync::Arc;
 
 use super::biquad::{Coeffs, State};
-use super::{from_db, to_db, Params, SAMPLE_RATE};
+use super::{from_db, to_db, Params, HEARD_FLOOR, SAMPLE_RATE};
+use crate::types::Control;
 
 /// How much of the envelope is kept from one sample to the next, for a
 /// given time to settle.
@@ -71,7 +72,12 @@ pub(super) struct Compressor {
     params: Arc<Params>,
     values: [f32; 3],
     envelope: Envelope,
+    /// Samples since the level was last counted, while listening.
+    since_heard: usize,
 }
+
+/// How many samples apart a listening compressor counts its level.
+const HEARD_EVERY: usize = SAMPLE_RATE as usize / 100;
 
 impl Compressor {
     pub fn new(params: Arc<Params>) -> Self {
@@ -79,6 +85,7 @@ impl Compressor {
             params,
             values: [0.0; 3],
             envelope: Envelope::new(0.010, 0.150),
+            since_heard: 0,
         }
     }
 }
@@ -87,18 +94,94 @@ impl super::Native for Compressor {
     fn process(&mut self, channels: &mut [&mut [f32]]) {
         self.params.read(&mut self.values);
         let [threshold, ratio, makeup] = self.values;
+        let listening = self.params.heard.is_listening();
         let frames = channels.first().map_or(0, |c| c.len());
         for frame in 0..frames {
             let peak = channels
                 .iter()
                 .fold(0.0f32, |loudest, channel| loudest.max(channel[frame].abs()));
             let level = to_db(self.envelope.follow(peak));
+            // What is counted is what the threshold is compared with, so
+            // the settings learnt from it mean what they say.
+            if listening {
+                self.since_heard += 1;
+                if self.since_heard >= HEARD_EVERY {
+                    self.since_heard = 0;
+                    self.params.heard.count(level);
+                }
+            }
             let gain = from_db(makeup - reduction(level - threshold, ratio));
             for channel in channels.iter_mut() {
                 channel[frame] *= gain;
             }
         }
     }
+}
+
+/// Settings for the compressor from a few seconds of a voice, as
+/// [`super::Heard`] counted them: the threshold where the voice usually
+/// is, a ratio as firm as it is uneven, and the makeup that brings its loud
+/// moments back up to a level made for streaming.
+///
+/// Silence is left out: the moments much quieter than the loudest are the
+/// room between words, not the voice.
+pub fn learn_compressor(counts: &[u32]) -> Result<Vec<Control>, String> {
+    /// Where the loud moments of a voice are brought, once compressed and
+    /// made up: loud enough to stream, with room left for its peaks.
+    const TARGET: f32 = -10.0;
+
+    let level = |at: usize| (at as i32 + HEARD_FLOOR) as f32 + 0.5;
+    // The loudest the voice got, leaving out a stray pop.
+    let total: u32 = counts.iter().sum();
+    let loudest = percentile(counts, 0, total, 0.99).map(level);
+    let Some(loudest) = loudest.filter(|db| *db > -60.0) else {
+        return Err("Nothing was heard. Check the microphone and speak through the count.".into());
+    };
+    let floor = ((loudest - 30.0).max(-60.0) - HEARD_FLOOR as f32).floor() as usize;
+    let voiced: u32 = counts.get(floor..).unwrap_or(&[]).iter().sum();
+    // A second of voice, in hundredths.
+    if voiced < 100 {
+        return Err("Too little was heard. Speak through the whole count.".into());
+    }
+    let at = |fraction| percentile(counts, floor, voiced, fraction).map_or(loudest, level);
+    let (quiet, usual, loud) = (at(0.10), at(0.50), at(0.90));
+
+    let half = |x: f32| (x * 2.0).round() / 2.0;
+    let threshold = half(usual).clamp(-60.0, 0.0);
+    let ratio = half(1.5 + (loud - quiet) / 10.0).clamp(2.0, 6.0);
+    let squeezed = threshold + (loud - threshold).max(0.0) / ratio;
+    let makeup = half(TARGET - squeezed).clamp(0.0, 24.0);
+    Ok(vec![
+        Control {
+            name: "threshold".into(),
+            value: threshold,
+        },
+        Control {
+            name: "ratio".into(),
+            value: ratio,
+        },
+        Control {
+            name: "makeup".into(),
+            value: makeup,
+        },
+    ])
+}
+
+/// The bucket under which `fraction` of the `total` counts from `from` on
+/// lie.
+fn percentile(counts: &[u32], from: usize, total: u32, fraction: f32) -> Option<usize> {
+    if total == 0 {
+        return None;
+    }
+    let wanted = (total as f32 * fraction).ceil().max(1.0) as u32;
+    let mut seen = 0;
+    for (at, count) in counts.iter().enumerate().skip(from) {
+        seen += count;
+        if seen >= wanted {
+            return Some(at);
+        }
+    }
+    None
 }
 
 /// A de-esser: listens to one band, where s and sh are, and turns that band
@@ -230,6 +313,59 @@ mod tests {
         let tone = sine(440.0, 0.1, 0.5);
         let gain = db(&run(&mut compressor, &tone), &tone);
         assert!((gain - 6.0).abs() < 0.2, "made up {gain} dB");
+    }
+
+    fn value(controls: &[Control], name: &str) -> f32 {
+        controls
+            .iter()
+            .find(|control| control.name == name)
+            .map(|control| control.value)
+            .expect(name)
+    }
+
+    #[test]
+    fn a_voice_heard_sets_the_compressor_around_it() {
+        // Two seconds of silence and three of a voice going between -32 and
+        // -14 dB, as the compressor itself hears it.
+        let spec = spec("compressor").expect("the compressor");
+        let params = Params::new(spec, &[]);
+        params.heard.listen(true);
+        let mut compressor = Compressor::new(params.clone());
+        let mut signal = vec![0.0; 2 * SAMPLE_RATE as usize];
+        for (i, db) in [-32.0, -26.0, -20.0, -14.0, -22.0, -28.0]
+            .iter()
+            .enumerate()
+        {
+            let part = sine(220.0 + 40.0 * i as f32, from_db(*db), 0.5);
+            signal.extend(part);
+        }
+        run(&mut compressor, &signal);
+        params.heard.listen(false);
+
+        let learnt = learn_compressor(&params.heard.counts()).expect("a voice was heard");
+        let threshold = value(&learnt, "threshold");
+        let ratio = value(&learnt, "ratio");
+        let makeup = value(&learnt, "makeup");
+        assert!(
+            (-28.0..=-18.0).contains(&threshold),
+            "threshold {threshold}"
+        );
+        assert!((2.0..=6.0).contains(&ratio), "ratio {ratio}");
+        // The loudest part, squeezed and made up, lands near the target.
+        let loud = -14.0;
+        let out = threshold + (loud - threshold) / ratio + makeup;
+        assert!((out + 10.0).abs() < 2.5, "the loud part comes out at {out}");
+    }
+
+    #[test]
+    fn silence_teaches_nothing() {
+        let spec = spec("compressor").expect("the compressor");
+        let params = Params::new(spec, &[]);
+        params.heard.listen(true);
+        let mut compressor = Compressor::new(params.clone());
+        run(&mut compressor, &vec![0.0; SAMPLE_RATE as usize * 3]);
+        assert!(learn_compressor(&params.heard.counts()).is_err());
+        assert!(learn_compressor(&[]).is_err());
     }
 
     #[test]
