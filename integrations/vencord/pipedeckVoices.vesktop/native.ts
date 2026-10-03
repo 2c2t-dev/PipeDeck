@@ -10,10 +10,10 @@
 
 import { createHash } from "crypto";
 import { IpcMainInvokeEvent } from "electron";
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "fs";
 import { createConnection, Socket } from "net";
 import { homedir, tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 
 const logDir = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "pipedeck");
 const logFile = join(logDir, "vencord-voices.log");
@@ -77,8 +77,24 @@ function send() {
     socket?.write(JSON.stringify({ call: members }) + "\n");
 }
 
+/** Is the socket's folder the user's own, and closed to others? Pipedeck
+ * makes it so; one that is not was made by someone else. */
+function trusted() {
+    try {
+        const folder = statSync(dirname(socketPath));
+        return folder.isDirectory() && folder.uid === process.getuid?.() && (folder.mode & 0o077) === 0;
+    } catch {
+        return false;
+    }
+}
+
 function connect() {
     if (socket || connecting) return;
+    if (!trusted()) {
+        clearTimeout(retry);
+        if (call.length) retry = setTimeout(connect, 3000);
+        return;
+    }
     connecting = true;
     const attempt = createConnection(socketPath);
     attempt.setEncoding("utf8");

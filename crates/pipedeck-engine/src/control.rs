@@ -55,15 +55,17 @@ struct Answer {
 /// the engine. Does nothing when another mixer already listens.
 pub fn listen(commands: pw::channel::Sender<Command>) {
     let path = socket_path();
-    if UnixStream::connect(&path).is_ok() {
-        log::info!("another mixer answers on {}", path.display());
-        return;
-    }
+    // The folder first: a socket answering in a folder that is not the
+    // user's is not another mixer of theirs, and is not to be left to.
     if let Some(dir) = path.parent() {
         if let Err(e) = private_dir(dir) {
             log::error!("not listening on {}: {e}", path.display());
             return;
         }
+    }
+    if UnixStream::connect(&path).is_ok() {
+        log::info!("another mixer answers on {}", path.display());
+        return;
     }
     // Nobody answered, so a file left there is from a mixer that is gone.
     let _ = std::fs::remove_file(&path);

@@ -177,12 +177,16 @@ async function deviceFor(user: string) {
     const label = labels[user] ?? lastLabel.get(user);
     if (!label) return null;
     const devices = await navigator.mediaDevices.enumerateDevices();
-    const found = devices.find(device => device.kind === "audiooutput" && device.label === label);
-    if (!found && !missing.has(label)) {
+    const found = devices.filter(device => device.kind === "audiooutput" && device.label === label);
+    if (!found.length && !missing.has(label)) {
         missing.add(label);
         log(`no output called ${label} among`, devices.filter(d => d.kind === "audiooutput").map(d => d.label));
     }
-    return found?.deviceId ?? null;
+    // Two of the same name for a moment: the sink of someone who left,
+    // on its way out, beside the one just made. Which is which cannot be
+    // told, so neither is used until one is gone.
+    if (found.length > 1) return null;
+    return found[0]?.deviceId ?? null;
 }
 
 /** The live track an element plays. */
