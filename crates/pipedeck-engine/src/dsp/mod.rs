@@ -145,6 +145,50 @@ pub struct Params {
     values: Box<[AtomicU32]>,
     /// What the effect has heard, when asked to listen.
     pub heard: Heard,
+    /// What it is doing right now, for the window to draw.
+    pub live: Live,
+}
+
+/// What an effect is doing right now: the loudest level it heard and the
+/// most it turned down, both in decibels, since the window last asked.
+///
+/// The audio thread writes once a block and the engine takes the values
+/// on its meters' timer, neither waiting on the other. Only the compressor
+/// says anything here.
+pub struct Live {
+    level: AtomicU32,
+    reduction: AtomicU32,
+}
+
+impl Live {
+    fn new() -> Self {
+        Self {
+            level: AtomicU32::new(f32::NEG_INFINITY.to_bits()),
+            reduction: AtomicU32::new(0f32.to_bits()),
+        }
+    }
+
+    /// Say a block's loudest level and deepest reduction, keeping the
+    /// loudest and deepest since the last take.
+    pub fn report(&self, level: f32, reduction: f32) {
+        let keep = |slot: &AtomicU32, value: f32| {
+            if value > f32::from_bits(slot.load(Ordering::Relaxed)) {
+                slot.store(value.to_bits(), Ordering::Relaxed);
+            }
+        };
+        keep(&self.level, level);
+        keep(&self.reduction, reduction);
+    }
+
+    /// The level and the reduction since the last take, and start again.
+    pub fn take(&self) -> (f32, f32) {
+        let level = f32::from_bits(
+            self.level
+                .swap(f32::NEG_INFINITY.to_bits(), Ordering::Relaxed),
+        );
+        let reduction = f32::from_bits(self.reduction.swap(0f32.to_bits(), Ordering::Relaxed));
+        (level, reduction)
+    }
 }
 
 /// The quietest level [`Heard`] counts, in decibels; anything under it is
@@ -236,6 +280,7 @@ impl Params {
                 "deesser" => dynamics::PROBES.len(),
                 _ => 0,
             }),
+            live: Live::new(),
         };
         params.set(spec, controls);
         Arc::new(params)

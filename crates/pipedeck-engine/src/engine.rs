@@ -225,6 +225,19 @@ pub enum Command {
     Shutdown,
 }
 
+/// What a running effect is doing right now, for its window to draw.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectLevel {
+    /// The row it runs on, and its place in the row's chain.
+    pub source: SourceId,
+    pub index: usize,
+    /// The loudest it heard since the last of these, in decibels, as its
+    /// threshold is compared with; minus infinity for silence.
+    pub level: f32,
+    /// The most it turned down meanwhile, in decibels.
+    pub reduction: f32,
+}
+
 /// Where a compressor learning from a voice is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Learning {
@@ -294,6 +307,8 @@ pub enum Event {
         /// Each person of a call, on their sub-track: their row, their id
         /// and their peak.
         voices: Vec<(SourceId, String, f32)>,
+        /// What each running compressor is doing.
+        effects: Vec<EffectLevel>,
     },
     /// One row's effects, settings and all, after a control moved: sent
     /// instead of the whole matrix, which nothing about a setting changes.

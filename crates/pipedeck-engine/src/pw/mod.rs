@@ -844,7 +844,35 @@ impl Graph {
                     Some((*row, user.clone(), voice.meter.as_ref()?.take()))
                 })
                 .collect(),
+            effects: self.effect_levels(),
         });
+    }
+
+    /// What every running compressor is doing: the level it hears and how
+    /// far it turns it down, by its row and its place in the row's chain.
+    fn effect_levels(&self) -> Vec<crate::engine::EffectLevel> {
+        let mut levels = Vec::new();
+        for cfg in &self.config.sources {
+            let Some(chain) = self.sources.get(&cfg.id).and_then(|s| s.plugins.as_ref()) else {
+                continue;
+            };
+            for (index, effect) in cfg.effects.iter().enumerate() {
+                if effect.kind != EffectKind::Native || effect.label != "compressor" {
+                    continue;
+                }
+                let Some(params) = chain.params(hosted_index(&cfg.effects, index)) else {
+                    continue;
+                };
+                let (level, reduction) = params.live.take();
+                levels.push(crate::engine::EffectLevel {
+                    source: cfg.id,
+                    index,
+                    level,
+                    reduction,
+                });
+            }
+        }
+        levels
     }
 
     fn forget_outputs(&mut self, id: MixId) {

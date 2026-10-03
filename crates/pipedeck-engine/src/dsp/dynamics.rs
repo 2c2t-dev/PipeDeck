@@ -214,12 +214,18 @@ impl super::Native for Compressor {
         self.params.read(&mut self.values);
         let [threshold, ratio, makeup] = self.values;
         let listening = self.params.heard.is_listening();
+        // What the window draws: the loudest the block got, as the
+        // threshold is compared with, and the most it was turned down.
+        let (mut loudest, mut deepest) = (f32::NEG_INFINITY, 0.0f32);
         let frames = channels.first().map_or(0, |c| c.len());
         for frame in 0..frames {
             let peak = channels
                 .iter()
                 .fold(0.0f32, |loudest, channel| loudest.max(channel[frame].abs()));
             let level = to_db(self.envelope.follow(peak));
+            let turned = reduction(level - threshold, ratio);
+            loudest = loudest.max(level);
+            deepest = deepest.max(turned);
             // What is counted is what the threshold is compared with, so
             // the settings learnt from it mean what they say.
             if listening {
@@ -229,11 +235,12 @@ impl super::Native for Compressor {
                     self.params.heard.count(level);
                 }
             }
-            let gain = from_db(makeup - reduction(level - threshold, ratio));
+            let gain = from_db(makeup - turned);
             for channel in channels.iter_mut() {
                 channel[frame] *= gain;
             }
         }
+        self.params.live.report(loudest, deepest);
     }
 }
 
@@ -543,6 +550,22 @@ mod tests {
         assert!(deesser_gain(100.0, -12.0) < deesser_gain(20.0, -12.0));
         assert!(deesser_gain(0.0, -40.0) == 0.0);
         assert!((strength_for(deesser_threshold(42.0)) - 42.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_compressor_says_how_loud_it_is_and_how_far_it_turns_down() {
+        let spec = spec("compressor").expect("the compressor");
+        let params = Params::new(
+            spec,
+            &controls(&[("threshold", -20.0), ("ratio", 4.0), ("makeup", 0.0)]),
+        );
+        let mut compressor = Compressor::new(params.clone());
+        run(&mut compressor, &sine(440.0, from_db(-6.0), 0.5));
+        let (level, turned) = params.live.take();
+        assert!((level + 6.0).abs() < 1.0, "heard at {level} dB");
+        assert!((turned - 10.5).abs() < 1.0, "turned down {turned} dB");
+        // Taken, it starts again from nothing.
+        assert_eq!(params.live.take(), (f32::NEG_INFINITY, 0.0));
     }
 
     #[test]

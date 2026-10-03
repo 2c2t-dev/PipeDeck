@@ -246,9 +246,19 @@ impl Window {
                 sources,
                 mixes,
                 voices,
+                effects,
             } => {
                 self.draw_levels(&sources, &mixes);
                 self.draw_voice_levels(&voices);
+                let open = self.channel_dialog.borrow().clone();
+                if let Some(dialog) = open.filter(|dialog| dialog.is_open()) {
+                    let levels: Vec<(usize, f32, f32)> = effects
+                        .iter()
+                        .filter(|effect| effect.source == dialog.id())
+                        .map(|effect| (effect.index, effect.level, effect.reduction))
+                        .collect();
+                    dialog.set_effect_levels(&levels);
+                }
             }
             Event::LinkChanged { source, mix, state } => {
                 if let Some(cell) = self.cells.borrow().get(&(source, mix)) {

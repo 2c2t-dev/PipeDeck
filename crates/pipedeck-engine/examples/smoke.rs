@@ -978,6 +978,25 @@ fn main() -> ExitCode {
                 &mut failures,
             );
 
+            // The compressor says what it is doing as it runs, for its window
+            // to draw: the level it hears, as its threshold is compared with.
+            let live = wait_for(&rx, "the compressor's own level", |e| {
+                matches!(e, Event::Levels { effects, .. }
+                    if effects.iter().any(|fx| fx.source == source && fx.index == 3 && fx.level > -60.0))
+            });
+            let level = match &live {
+                Event::Levels { effects, .. } => effects
+                    .iter()
+                    .find(|fx| fx.index == 3)
+                    .map(|fx| (fx.level, fx.reduction)),
+                _ => None,
+            };
+            check(
+                level.is_some_and(|(level, reduction)| level < 0.0 && reduction >= 0.0),
+                &format!("the compressor says what it hears as it runs: {level:?}"),
+                &mut failures,
+            );
+
             // The compressor listens to the tone still playing and sets
             // itself from it. A steady tone is as loud at its loudest as it
             // usually is, so the threshold lands on it, nothing is squeezed,

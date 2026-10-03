@@ -75,6 +75,9 @@ pub struct EffectPanel {
     stereotool: RefCell<Status>,
     /// The settings windows open, one per effect at most.
     windows: RefCell<Vec<SettingsWindow>>,
+    /// The compressors' curves drawn, by their place, to show what each is
+    /// doing as it runs.
+    live: RefCell<std::collections::HashMap<usize, std::rc::Weak<CompGraph>>>,
 }
 
 /// The window holding one effect's controls.
@@ -106,6 +109,7 @@ impl EffectPanel {
             plugins: RefCell::new(Vec::new()),
             stereotool: RefCell::new(Status::Absent),
             windows: RefCell::new(Vec::new()),
+            live: RefCell::new(std::collections::HashMap::new()),
         });
         this.build();
         this
@@ -209,6 +213,19 @@ impl EffectPanel {
             self.list.append(&row);
         }
         self.redraw_windows();
+    }
+
+    /// Show what the running compressors are doing: their place in the
+    /// chain, the level each hears and how far it turns it down.
+    pub fn set_live(&self, levels: &[(usize, f32, f32)]) {
+        let live = self.live.borrow();
+        for (position, level, reduction) in levels {
+            if let Some(graph) = live.get(position).and_then(std::rc::Weak::upgrade) {
+                if graph.root.is_mapped() {
+                    graph.set_live(*level, *reduction);
+                }
+            }
+        }
     }
 
     /// Open the controls of the effect at `position` in a window of their
@@ -627,6 +644,9 @@ impl EffectPanel {
                 let graph = CompGraph::new(&values);
                 graph.connect_changed(changed);
                 inner.append(&graph.root);
+                self.live
+                    .borrow_mut()
+                    .insert(position, Rc::downgrade(&graph));
             }
             "deesser" => {
                 let graph = DeEsserGraph::new(&values);

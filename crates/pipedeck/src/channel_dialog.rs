@@ -326,6 +326,11 @@ impl ChannelDialog {
         self.effects.set_effects(effects);
     }
 
+    /// Show what the channel's compressors are doing as they run.
+    pub fn set_effect_levels(&self, levels: &[(usize, f32, f32)]) {
+        self.effects.set_live(levels);
+    }
+
     /// Move the meter of the object this window is about.
     pub fn set_level(&self, peak: f32) {
         self.fader.set_level(peak);

@@ -110,7 +110,8 @@ of its own, written in Rust, so nothing has to be installed:
   its curve: the threshold is the bend, dragged sideways; the ratio the top
   of the curve, dragged down for more; the makeup its foot, dragged up. A
   line under it says what it does to a shout, and presets go from gentle to
-  broadcast. Its timing is fixed at what suits a voice. *Learn from my voice* listens for
+  broadcast. As it runs, a dot on the curve shows where the voice is now, and
+  a line under it how far it is turned down. Its timing is fixed at what suits a voice. *Learn from my voice* listens for
   five seconds while you speak and sets all three from what it heard: the
   threshold where the voice usually is, a ratio as firm as the voice is
   uneven, and the makeup that brings its loud moments to about -10 dB.

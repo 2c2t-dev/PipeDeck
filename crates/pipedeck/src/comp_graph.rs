@@ -65,7 +65,16 @@ pub struct CompGraph {
     /// back.
     syncing: Cell<bool>,
     changed: RefCell<Option<Changed>>,
+    /// What the compressor is doing as it runs, as drawn: the level it
+    /// hears and how far it turns it down, both in decibels, falling back
+    /// gently rather than blinking from one reading to the next.
+    live: Cell<(f32, f32)>,
 }
+
+/// How far the drawn level falls between two readings, in decibels, and
+/// how much of the drawn reduction each keeps: a meter's fall.
+const LIVE_FALL_DB: f32 = 1.5;
+const LIVE_KEEP: f32 = 0.85;
 
 impl CompGraph {
     /// A graph showing `values`: threshold, ratio and makeup.
@@ -126,11 +135,24 @@ impl CompGraph {
             hovered: Cell::new(None),
             syncing: Cell::new(false),
             changed: RefCell::new(None),
+            live: Cell::new((f32::NEG_INFINITY, 0.0)),
         });
         this.build();
         this.wire();
         this.sync();
         this
+    }
+
+    /// What the compressor is doing now: the loudest level it heard since
+    /// the last reading and the most it turned down, in decibels.
+    pub fn set_live(&self, level: f32, reduction: f32) {
+        let (shown_level, shown_reduction) = self.live.get();
+        let level = level.max(shown_level - LIVE_FALL_DB);
+        let reduction = reduction.max(shown_reduction * LIVE_KEEP);
+        if (level, reduction) != (shown_level, shown_reduction) {
+            self.live.set((level, reduction));
+            self.area.queue_draw();
+        }
     }
 
     /// Called with every value, in order, whenever one moves.
@@ -537,6 +559,34 @@ impl CompGraph {
         colour(cr, COLOURS[THRESHOLD], 0.5);
         cr.set_line_width(1.0);
         let _ = cr.stroke();
+
+        // What it is doing now: a dot where the voice is on the curve, and
+        // a line down from where it would be untouched to where it comes
+        // out, as long as it is turned down.
+        let (level, turned) = self.live.get();
+        if level > FLOOR {
+            let level = level.min(0.0);
+            let x = in_to_x(level, width);
+            let out = compressor_output(level, threshold, ratio, makeup);
+            let y = out_to_y(out, height);
+            if turned > 0.1 {
+                cr.move_to(x, out_to_y(level + makeup, height));
+                cr.line_to(x, y);
+                colour(cr, COLOURS[RATIO], 0.9);
+                cr.set_line_width(3.0);
+                let _ = cr.stroke();
+                let text = format!("−{turned:.1} dB");
+                if let Ok(extents) = cr.text_extents(&text) {
+                    cr.move_to(right - extents.width() - 4.0, ZONE_BAR + 12.0);
+                    colour(cr, COLOURS[RATIO], 1.0);
+                    let _ = cr.show_text(&text);
+                }
+            }
+            cr.new_sub_path();
+            cr.arc(x, y, 5.0, 0.0, std::f64::consts::TAU);
+            set(cr, 0.95);
+            let _ = cr.fill();
+        }
 
         for (which, handle_colour) in COLOURS.iter().enumerate() {
             let (x, y) = self.handle(which);

@@ -76,6 +76,13 @@ fn main() -> gtk::glib::ExitCode {
                 panel.open_settings(position);
             }
 
+            // The compressor, fourth in the chain, as a voice at -10 dB
+            // turned down 6 would have it: told a moment before the picture
+            // is taken, so the curve has been drawn again by then.
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(600), {
+                let panel = panel.clone();
+                move || panel.set_live(&[(3, -10.0, 6.0)])
+            });
             let out = out.clone();
             gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(900), move || {
                 let stem = out.strip_suffix(".png").unwrap_or(&out).to_owned();
@@ -107,10 +114,21 @@ fn save(window: &gtk::Window, out: &str) {
         f64::from(window.width()),
         f64::from(window.height()),
     );
-    if let (Some(node), Some(renderer)) = (snapshot.to_node(), window.renderer()) {
-        match renderer.render_texture(node, None).save_to_png(out) {
-            Ok(()) => println!("saved {out}"),
-            Err(e) => println!("cannot save {out}: {e}"),
+    match (snapshot.to_node(), window.renderer()) {
+        (Some(node), Some(renderer)) => {
+            match renderer.render_texture(node, None).save_to_png(out) {
+                Ok(()) => println!("saved {out}"),
+                Err(e) => println!("cannot save {out}: {e}"),
+            }
         }
+        (node, renderer) => println!(
+            "nothing to save for {out} ({}): drawn {}, renderer {}, {}x{}, mapped {}",
+            window.title().unwrap_or_default(),
+            node.is_some(),
+            renderer.is_some(),
+            window.width(),
+            window.height(),
+            window.is_mapped()
+        ),
     }
 }
