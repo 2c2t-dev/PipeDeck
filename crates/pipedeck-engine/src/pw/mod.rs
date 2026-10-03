@@ -501,6 +501,19 @@ impl Graph {
         self.create_node(node_name, description, "Audio/Sink")
     }
 
+    /// A sink only the mixer plays into and reads: what a channel's effects
+    /// or plug-ins hand on. Its class keeps it out of the system's list of
+    /// outputs, where nobody has any reason to pick it, as a meter's keeps
+    /// it out of the recording applications. It is played into and captured
+    /// like any other.
+    fn create_internal_sink(
+        &self,
+        node_name: String,
+        description: String,
+    ) -> Result<Node, EngineError> {
+        self.create_node(node_name, description, "Audio/Sink/Internal")
+    }
+
     /// The node a mix collects into.
     ///
     /// A mix is something you record, so it is a source: the system lists it
@@ -1130,7 +1143,7 @@ impl Graph {
         if !spec.effects.iter().any(|effect| !effect.is_plugin()) {
             return None;
         }
-        let sink = match self.create_sink(
+        let sink = match self.create_internal_sink(
             spec.node.clone(),
             format!("Pipedeck: {} effects", spec.owner),
         ) {
@@ -1168,7 +1181,7 @@ impl Graph {
         if !wanted {
             return (None, None);
         }
-        match self.create_sink(node_name.clone(), description) {
+        match self.create_internal_sink(node_name.clone(), description) {
             Ok(sink) => {
                 let bound = self.watch_sink_id(&sink, node_name);
                 (Some(sink), Some(bound))
