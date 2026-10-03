@@ -428,6 +428,9 @@ impl super::Native for DeEsser {
         }
         let threshold = deesser_threshold(strength);
         let listening = self.params.heard.is_listening();
+        // What the window draws: how loud the s got in the band it listens
+        // to, and the most they were turned down.
+        let (mut loudest, mut deepest) = (f32::NEG_INFINITY, 0.0f32);
 
         let frames = channels.first().map_or(0, |c| c.len());
         for frame in 0..frames {
@@ -460,7 +463,10 @@ impl super::Native for DeEsser {
                 hiss = hiss.max(state.run(&self.listen, channel[frame]).abs());
             }
             let level = to_db(self.envelope.follow(hiss));
-            let gain = from_db(-reduction(level - threshold, DEESSER_RATIO));
+            let turned = reduction(level - threshold, DEESSER_RATIO);
+            loudest = loudest.max(level);
+            deepest = deepest.max(turned);
+            let gain = from_db(-turned);
             let sides = self.lows.iter_mut().zip(self.highs.iter_mut());
             for (channel, (low, high)) in channels.iter_mut().zip(sides) {
                 let x = channel[frame];
@@ -471,6 +477,7 @@ impl super::Native for DeEsser {
                 channel[frame] = under + over * gain;
             }
         }
+        self.params.live.report(loudest, deepest);
     }
 }
 
@@ -671,6 +678,23 @@ mod tests {
         let voice = sine(300.0, from_db(-12.0), 1.0);
         let left = db(&run(&mut deesser, &voice), &voice);
         assert!(left.abs() < 0.5, "the voice moved {left} dB");
+    }
+
+    #[test]
+    fn the_deesser_says_how_far_it_turns_an_s_down() {
+        let spec = spec("deesser").expect("the de-esser");
+        let params = Params::new(spec, &controls(&[("freq", 6500.0), ("strength", 50.0)]));
+        let mut deesser = DeEsser::new(params.clone(), 2);
+        run(&mut deesser, &sine(7000.0, from_db(-6.0), 0.5));
+        let (_, s) = params.live.take();
+        let mut deesser = DeEsser::new(params.clone(), 2);
+        run(&mut deesser, &sine(300.0, from_db(-6.0), 0.5));
+        let (_, voice) = params.live.take();
+        assert!(s > 6.0, "an s turned down only {s} dB");
+        assert!(
+            s > voice + 6.0,
+            "an s turned down {s} dB, a voice {voice} dB"
+        );
     }
 
     #[test]

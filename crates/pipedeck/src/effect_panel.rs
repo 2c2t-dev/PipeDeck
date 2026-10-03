@@ -75,12 +75,41 @@ pub struct EffectPanel {
     stereotool: RefCell<Status>,
     /// The settings windows open, one per effect at most.
     windows: RefCell<Vec<SettingsWindow>>,
-    /// The compressors' curves drawn, by their place, to show what each is
-    /// doing as it runs.
-    live: RefCell<std::collections::HashMap<usize, std::rc::Weak<CompGraph>>>,
+    /// The graphs drawn of the effects that say what they do as they run,
+    /// by their place.
+    live: RefCell<std::collections::HashMap<usize, LiveGraph>>,
 }
 
 /// The window holding one effect's controls.
+/// A graph that draws what its effect is doing as it runs.
+enum LiveGraph {
+    Compressor(std::rc::Weak<CompGraph>),
+    DeEsser(std::rc::Weak<DeEsserGraph>),
+    Denoise(std::rc::Weak<DenoiseGraph>),
+}
+
+impl LiveGraph {
+    fn show(&self, level: f32, reduction: f32) {
+        match self {
+            LiveGraph::Compressor(graph) => {
+                if let Some(graph) = graph.upgrade().filter(|g| g.root.is_mapped()) {
+                    graph.set_live(level, reduction);
+                }
+            }
+            LiveGraph::DeEsser(graph) => {
+                if let Some(graph) = graph.upgrade().filter(|g| g.root.is_mapped()) {
+                    graph.set_live(level, reduction);
+                }
+            }
+            LiveGraph::Denoise(graph) => {
+                if let Some(graph) = graph.upgrade().filter(|g| g.root.is_mapped()) {
+                    graph.set_live(level, reduction);
+                }
+            }
+        }
+    }
+}
+
 struct SettingsWindow {
     /// Where the effect is in the chain.
     position: usize,
@@ -215,15 +244,13 @@ impl EffectPanel {
         self.redraw_windows();
     }
 
-    /// Show what the running compressors are doing: their place in the
-    /// chain, the level each hears and how far it turns it down.
+    /// Show what the running effects are doing: their place in the chain,
+    /// what each hears and how far it turns down.
     pub fn set_live(&self, levels: &[(usize, f32, f32)]) {
         let live = self.live.borrow();
         for (position, level, reduction) in levels {
-            if let Some(graph) = live.get(position).and_then(std::rc::Weak::upgrade) {
-                if graph.root.is_mapped() {
-                    graph.set_live(*level, *reduction);
-                }
+            if let Some(graph) = live.get(position) {
+                graph.show(*level, *reduction);
             }
         }
     }
@@ -646,17 +673,23 @@ impl EffectPanel {
                 inner.append(&graph.root);
                 self.live
                     .borrow_mut()
-                    .insert(position, Rc::downgrade(&graph));
+                    .insert(position, LiveGraph::Compressor(Rc::downgrade(&graph)));
             }
             "deesser" => {
                 let graph = DeEsserGraph::new(&values);
                 graph.connect_changed(changed);
                 inner.append(&graph.root);
+                self.live
+                    .borrow_mut()
+                    .insert(position, LiveGraph::DeEsser(Rc::downgrade(&graph)));
             }
             _ => {
                 let graph = DenoiseGraph::new(&values);
                 graph.connect_changed(changed);
                 inner.append(&graph.root);
+                self.live
+                    .borrow_mut()
+                    .insert(position, LiveGraph::Denoise(Rc::downgrade(&graph)));
             }
         }
     }

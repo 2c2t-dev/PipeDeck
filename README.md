@@ -89,7 +89,8 @@ of its own, written in Rust, so nothing has to be installed:
   hiss behind a voice. It holds the sound back 10 ms, and its strength mixes
   the treated sound with the untouched one. Its window draws a voice over a
   room, the room as loud as it is left; dragging the noise's level down
-  takes more out, and presets go from off to full.
+  takes more out, and presets go from off to full. As it runs, its corner says
+  whether it hears a voice now, or how far it takes the room down.
 - **Equaliser**, five bands shaped for a voice — a low cut, a low shelf, two
   bells and a high shelf — set by dragging them on a curve. Each band has
   its colour and draws its own shape under the curve; scroll over a bell to
@@ -102,7 +103,9 @@ of its own, written in Rust, so nothing has to be installed:
   and turns only the part above down when they are too loud. Its window
   draws what it does to a loud s across the top of the range; one handle
   sets both controls, sideways for where the s start and down to take them
-  further, and presets suit a light touch, a deep voice or a high one. *Learn from my
+  further, and presets suit a light touch, a deep voice or a high one. As it
+  runs, the curve of what it is doing now is drawn over it, with how far the s
+  are going down. *Learn from my
   voice* listens for five seconds of speech with s in it, finds where they
   are loudest, splits just under, and sets the strength so the s go over
   its threshold and the rest of the voice does not.

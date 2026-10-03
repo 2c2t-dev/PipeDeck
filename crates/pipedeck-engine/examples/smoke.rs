@@ -996,6 +996,35 @@ fn main() -> ExitCode {
                 &format!("the compressor says what it hears as it runs: {level:?}"),
                 &mut failures,
             );
+            // So do the de-esser, of the s it hears, and noise suppression,
+            // of how sure it is of a voice: a chance, between 0 and 1.
+            let said = wait_for(&rx, "the de-esser and noise suppression say", |e| {
+                matches!(e, Event::Levels { effects, .. }
+                    if effects.iter().any(|fx| fx.index == 0 && fx.level.is_finite())
+                        && effects.iter().any(|fx| fx.index == 2 && fx.level.is_finite()))
+            });
+            let (denoise, deesser) = match &said {
+                Event::Levels { effects, .. } => (
+                    effects
+                        .iter()
+                        .find(|fx| fx.index == 0)
+                        .map(|fx| (fx.level, fx.reduction)),
+                    effects
+                        .iter()
+                        .find(|fx| fx.index == 2)
+                        .map(|fx| (fx.level, fx.reduction)),
+                ),
+                _ => (None, None),
+            };
+            check(
+                denoise
+                    .is_some_and(|(voice, removed)| (0.0..=1.0).contains(&voice) && removed >= 0.0)
+                    && deesser.is_some_and(|(level, reduction)| level < 0.0 && reduction >= 0.0),
+                &format!(
+                    "the de-esser and noise suppression say what they do: {deesser:?} {denoise:?}"
+                ),
+                &mut failures,
+            );
 
             // The compressor listens to the tone still playing and sets
             // itself from it. A steady tone is as loud at its loudest as it

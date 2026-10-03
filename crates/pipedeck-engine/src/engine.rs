@@ -231,10 +231,14 @@ pub struct EffectLevel {
     /// The row it runs on, and its place in the row's chain.
     pub source: SourceId,
     pub index: usize,
-    /// The loudest it heard since the last of these, in decibels, as its
-    /// threshold is compared with; minus infinity for silence.
+    /// What it heard since the last of these. For the compressor, the
+    /// loudest level, in decibels, as its threshold is compared with; for
+    /// the de-esser, the loudest its s got in the band it listens to; for
+    /// noise suppression, how sure it was of a voice, from 0 to 1. Minus
+    /// infinity for silence.
     pub level: f32,
-    /// The most it turned down meanwhile, in decibels.
+    /// The most it turned down meanwhile, in decibels: the sound, the s
+    /// over its frequency, or the room.
     pub reduction: f32,
 }
 
@@ -307,7 +311,8 @@ pub enum Event {
         /// Each person of a call, on their sub-track: their row, their id
         /// and their peak.
         voices: Vec<(SourceId, String, f32)>,
-        /// What each running compressor is doing.
+        /// What each running compressor, de-esser and noise suppression
+        /// is doing.
         effects: Vec<EffectLevel>,
     },
     /// One row's effects, settings and all, after a control moved: sent

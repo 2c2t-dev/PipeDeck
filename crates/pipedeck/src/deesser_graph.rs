@@ -67,7 +67,13 @@ pub struct DeEsserGraph {
     /// back.
     syncing: Cell<bool>,
     changed: RefCell<Option<Changed>>,
+    /// How far the s are being turned down right now, in decibels, falling
+    /// back gently between readings.
+    live: Cell<f32>,
 }
+
+/// How much of the drawn reduction each reading keeps: a meter's fall.
+const LIVE_KEEP: f32 = 0.85;
 
 impl DeEsserGraph {
     /// A graph showing `values`: frequency and strength.
@@ -128,11 +134,24 @@ impl DeEsserGraph {
             hovered: Cell::new(false),
             syncing: Cell::new(false),
             changed: RefCell::new(None),
+            live: Cell::new(0.0),
         });
         this.build();
         this.wire();
         this.sync();
         this
+    }
+
+    /// What the de-esser is doing now: how loud the s got and how far it
+    /// turned them down since the last reading, in decibels.
+    pub fn set_live(&self, _level: f32, reduction: f32) {
+        let shown = self.live.get();
+        let reduction = reduction.max(shown * LIVE_KEEP);
+        if (reduction - shown).abs() > 0.01 {
+            self.live
+                .set(if reduction < 0.05 { 0.0 } else { reduction });
+            self.area.queue_draw();
+        }
     }
 
     /// Called with every value, in order, whenever one moves.
@@ -506,6 +525,33 @@ impl DeEsserGraph {
         cr.set_line_width(2.5);
         set(cr, 0.92);
         let _ = cr.stroke();
+
+        // What it is doing now: the same curve, as far down as the s are
+        // being turned right now, and by how much.
+        let now = self.live.get();
+        if now > 0.1 {
+            let gain = 10f32.powf(-now / 20.0);
+            for (i, x) in curve.iter().map(|(x, _)| *x).enumerate() {
+                let f = x_to_freq(x, width);
+                let under = 10f32.powf(low.response_db(f) * 2.0 / 20.0);
+                let over = 10f32.powf(high.response_db(f) * 2.0 / 20.0);
+                let y = db_to_y(20.0 * (under + gain * over).max(1e-6).log10(), height);
+                if i == 0 {
+                    cr.move_to(x, y);
+                } else {
+                    cr.line_to(x, y);
+                }
+            }
+            cr.set_line_width(3.0);
+            colour(cr, 1.0);
+            let _ = cr.stroke();
+            let text = format!("s −{now:.1} dB");
+            if let Ok(extents) = cr.text_extents(&text) {
+                cr.move_to(right - extents.width() - 4.0, ZONE_BAR + 14.0);
+                colour(cr, 1.0);
+                let _ = cr.show_text(&text);
+            }
+        }
 
         // The split, and the handle on it.
         cr.move_to(split.round() + 0.5, top);

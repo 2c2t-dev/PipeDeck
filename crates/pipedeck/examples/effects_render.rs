@@ -76,12 +76,13 @@ fn main() -> gtk::glib::ExitCode {
                 panel.open_settings(position);
             }
 
-            // The compressor, fourth in the chain, as a voice at -10 dB
-            // turned down 6 would have it: told a moment before the picture
-            // is taken, so the curve has been drawn again by then.
+            // What the effects would say of a voice: the compressor, fourth,
+            // at -10 dB turned down 6; the de-esser taking an s down 8; noise
+            // suppression sure of a voice. Told a moment before the picture
+            // is taken, so the graphs have been drawn again by then.
             gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(600), {
                 let panel = panel.clone();
-                move || panel.set_live(&[(3, -10.0, 6.0)])
+                move || panel.set_live(&[(3, -10.0, 6.0), (2, -20.0, 8.0), (0, 0.9, 4.0)])
             });
             let out = out.clone();
             gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(900), move || {

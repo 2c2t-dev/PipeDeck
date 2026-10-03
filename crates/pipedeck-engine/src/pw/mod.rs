@@ -848,8 +848,8 @@ impl Graph {
         });
     }
 
-    /// What every running compressor is doing: the level it hears and how
-    /// far it turns it down, by its row and its place in the row's chain.
+    /// What every running compressor, de-esser and noise suppression is
+    /// doing, by its row and its place in the row's chain.
     fn effect_levels(&self) -> Vec<crate::engine::EffectLevel> {
         let mut levels = Vec::new();
         for cfg in &self.config.sources {
@@ -857,7 +857,8 @@ impl Graph {
                 continue;
             };
             for (index, effect) in cfg.effects.iter().enumerate() {
-                if effect.kind != EffectKind::Native || effect.label != "compressor" {
+                let says = matches!(effect.label.as_str(), "compressor" | "deesser" | "denoise");
+                if effect.kind != EffectKind::Native || !says {
                     continue;
                 }
                 let Some(params) = chain.params(hosted_index(&cfg.effects, index)) else {

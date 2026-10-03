@@ -58,6 +58,11 @@ struct Channel {
     output: Box<[f32; FRAME]>,
     dry: Box<[f32; FRAME]>,
     scratch: Box<[f32; FRAME]>,
+    /// How sure RNNoise was that the last frame done was a voice, from 0
+    /// to 1, and how far that frame was turned down once mixed with the
+    /// untouched sound, in decibels: what the window draws.
+    voice: f32,
+    removed: f32,
 }
 
 impl Channel {
@@ -69,6 +74,8 @@ impl Channel {
             output: Box::new([0.0; FRAME]),
             dry: Box::new([0.0; FRAME]),
             scratch: Box::new([0.0; FRAME]),
+            voice: 0.0,
+            removed: 0.0,
         }
     }
 
@@ -83,8 +90,24 @@ impl Channel {
         self.input[self.filled] = x * SCALE;
         self.filled += 1;
         if self.filled == FRAME {
-            self.state
+            self.voice = self
+                .state
                 .process_frame(&mut self.scratch[..], &self.input[..]);
+            // How much quieter the frame comes out than it went in, as it is
+            // heard: the treated sound mixed back with the untouched one.
+            let (mut before, mut after) = (0.0f32, 0.0f32);
+            for (out, dry) in self.scratch.iter().zip(self.input.iter()) {
+                let heard = out * wet + dry * (1.0 - wet);
+                before += dry * dry;
+                after += heard * heard;
+            }
+            // Under some -70 dB there is nothing to take out.
+            let quiet = FRAME as f32 * (SCALE * 3e-4).powi(2);
+            self.removed = if before > quiet {
+                (10.0 * (before / after.max(1e-9)).log10()).max(0.0)
+            } else {
+                0.0
+            };
             std::mem::swap(&mut self.output, &mut self.scratch);
             std::mem::swap(&mut self.dry, &mut self.input);
             self.filled = 0;
@@ -118,6 +141,15 @@ impl super::Native for Denoise {
                 *sample = state.run(*sample, wet);
             }
         }
+        let voice = self
+            .channels
+            .iter()
+            .fold(0.0f32, |most, c| most.max(c.voice));
+        let removed = self
+            .channels
+            .iter()
+            .fold(0.0f32, |most, c| most.max(c.removed));
+        self.params.live.report(voice, removed);
     }
 }
 
@@ -142,6 +174,20 @@ mod tests {
                 (seed as f32 / u32::MAX as f32 - 0.5) * 0.06
             })
             .collect()
+    }
+
+    #[test]
+    fn it_says_how_far_it_takes_a_room_down() {
+        let spec = spec("denoise").expect("noise suppression");
+        let params = Params::new(spec, &[]);
+        let mut denoise = Denoise::new(params.clone(), 2);
+        run(&mut denoise, &hiss(1.0));
+        let (voice, removed) = params.live.take();
+        assert!(removed > 6.0, "the room only went down {removed} dB");
+        assert!(
+            (0.0..=1.0).contains(&voice),
+            "a chance of a voice of {voice}"
+        );
     }
 
     #[test]

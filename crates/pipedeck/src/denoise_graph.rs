@@ -56,7 +56,16 @@ pub struct DenoiseGraph {
     /// back.
     syncing: Cell<bool>,
     changed: RefCell<Option<Changed>>,
+    /// What it is doing right now: how sure it is of a voice, from 0 to 1,
+    /// and how far it takes the room down, in decibels; minus infinity
+    /// until it has said, falling back gently between readings.
+    live: Cell<(f32, f32)>,
 }
+
+/// How much of what is drawn live each reading keeps: a meter's fall.
+const LIVE_KEEP: f32 = 0.8;
+/// How sure of a voice it has to be for the window to say it hears one.
+const VOICE: f32 = 0.5;
 
 impl DenoiseGraph {
     /// A graph showing `values`: the strength.
@@ -101,11 +110,24 @@ impl DenoiseGraph {
             hovered: Cell::new(false),
             syncing: Cell::new(false),
             changed: RefCell::new(None),
+            live: Cell::new((f32::NEG_INFINITY, 0.0)),
         });
         this.build(param.label);
         this.wire();
         this.sync();
         this
+    }
+
+    /// What noise suppression is doing now: how sure it was of a voice
+    /// since the last reading, and how far it took the room down.
+    pub fn set_live(&self, voice: f32, removed: f32) {
+        let (shown_voice, shown_removed) = self.live.get();
+        let voice = voice.max(shown_voice * LIVE_KEEP);
+        let removed = removed.max(shown_removed * LIVE_KEEP);
+        if (voice, removed) != (shown_voice, shown_removed) {
+            self.live.set((voice, removed));
+            self.area.queue_draw();
+        }
     }
 
     /// Called with the strength whenever it moves.
@@ -387,6 +409,34 @@ impl DenoiseGraph {
         let _ = cr.show_text("Voice");
         cr.move_to(MARGIN + 2.0, height - MARGIN - 2.0);
         let _ = cr.show_text("Room noise");
+
+        // What it hears now: a voice, lit, or the room and how far it goes
+        // down, in the corner.
+        let (voice, removed) = self.live.get();
+        if voice.is_finite() {
+            let hearing = voice >= VOICE;
+            let text = if hearing {
+                "Voice".to_owned()
+            } else if removed > 0.5 {
+                format!("Room −{removed:.0} dB")
+            } else {
+                "Room".to_owned()
+            };
+            if let Ok(extents) = cr.text_extents(&text) {
+                let x = width - MARGIN - extents.width() - 2.0;
+                if hearing {
+                    // A light beside the word, lit while a voice is heard.
+                    cr.new_sub_path();
+                    cr.arc(x - 8.0, MARGIN + 4.5, 3.5, 0.0, std::f64::consts::TAU);
+                    colour(cr, 1.0);
+                    let _ = cr.fill();
+                } else {
+                    set(cr, 0.6);
+                }
+                cr.move_to(x, MARGIN + 8.0);
+                let _ = cr.show_text(&text);
+            }
+        }
 
         let active = self.hovered.get();
         // The text leaves the pen where it ended; the handle starts afresh.
