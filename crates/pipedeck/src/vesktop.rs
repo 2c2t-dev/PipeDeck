@@ -15,6 +15,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -29,6 +30,36 @@ const PLUGIN_NATIVE: &str =
 const PLUGIN_DIR: &str = "pipedeckVoices.vesktop";
 const PLUGIN_NAME: &str = "PipedeckVoices";
 const VENCORD_REPO: &str = "https://github.com/Vendicated/Vencord";
+/// Left in the build once it has been checked to hold the plugin, so that
+/// is known without reading megabytes of it again.
+const MARKER: &str = "pipedeck-voices";
+
+/// Set while an install or a removal runs: two at once would build in the
+/// same folder and write the same files.
+static BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Is an install or a removal running? The settings window can be closed
+/// and opened again while one does.
+pub fn busy() -> bool {
+    BUSY.load(Ordering::Acquire)
+}
+
+/// Holds [`BUSY`] for as long as it lives.
+struct Busy;
+
+impl Busy {
+    fn take() -> Result<Self, String> {
+        BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Busy)
+            .map_err(|_| "Pipedeck is already at it.".to_owned())
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        BUSY.store(false, Ordering::Release);
+    }
+}
 
 /// Where Vesktop stands with the plugin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,8 +113,7 @@ pub fn state() -> State {
     let pointed = read_json(&config_dir().join("state.json"))
         .ok()
         .and_then(|state| state.get("vencordDir")?.as_str().map(PathBuf::from));
-    let built = std::fs::read_to_string(dist().join("vencordDesktopRenderer.js"))
-        .is_ok_and(|renderer| renderer.contains(PLUGIN_NAME));
+    let built = dist().join("vencordDesktopRenderer.js").is_file() && dist().join(MARKER).is_file();
     if pointed.as_deref() == Some(dist().as_path()) && built {
         State::Installed
     } else {
@@ -91,14 +121,25 @@ pub fn state() -> State {
     }
 }
 
-/// Is Vesktop running? Its processes are all called so.
+/// Is Vesktop running? Its own build's processes are called so; one run
+/// on the system's Electron, as distributions package it, is an electron
+/// process with Vesktop on its command line.
 pub fn is_running() -> bool {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return false;
     };
     entries.flatten().any(|entry| {
-        std::fs::read_to_string(entry.path().join("comm"))
-            .is_ok_and(|comm| comm.trim() == "vesktop")
+        let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) else {
+            return false;
+        };
+        let comm = comm.trim();
+        comm == "vesktop"
+            || (comm.starts_with("electron")
+                && std::fs::read(entry.path().join("cmdline")).is_ok_and(|line| {
+                    String::from_utf8_lossy(&line)
+                        .to_lowercase()
+                        .contains("vesktop")
+                }))
     })
 }
 
@@ -106,6 +147,7 @@ pub fn is_running() -> bool {
 /// goes along the way. Also what updating is: Vencord is fetched again and
 /// the plugin put back in.
 pub fn install(say: impl Fn(&str)) -> Result<(), String> {
+    let _busy = Busy::take()?;
     for program in ["git", "npx"] {
         if !on_path(program) {
             return Err(format!(
@@ -150,6 +192,7 @@ pub fn install(say: impl Fn(&str)) -> Result<(), String> {
     if !renderer.contains(PLUGIN_NAME) {
         return Err("the build left the plugin out".into());
     }
+    std::fs::write(dist().join(MARKER), PLUGIN_NAME).map_err(|e| e.to_string())?;
 
     wait_for_vesktop(&say);
     say("Pointing Vesktop at it…");
@@ -174,6 +217,7 @@ pub fn install(say: impl Fn(&str)) -> Result<(), String> {
 
 /// Point Vesktop back at its own Vencord.
 pub fn remove(say: impl Fn(&str)) -> Result<(), String> {
+    let _busy = Busy::take()?;
     wait_for_vesktop(&say);
     edit_json(&config_dir().join("state.json"), |state| {
         if let Some(state) = state.as_object_mut() {

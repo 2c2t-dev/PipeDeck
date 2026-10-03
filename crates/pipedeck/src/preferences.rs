@@ -277,6 +277,35 @@ fn vesktop_group() -> adw::PreferencesGroup {
         }
     };
     show();
+    // One started from a window closed since is still running: this one
+    // says so rather than offering to start another.
+    if vesktop::busy() {
+        install.set_sensitive(false);
+        remove.set_sensitive(false);
+        spinner.set_visible(true);
+        status.set_label("Already at it, from when the settings were last open.");
+        status.set_visible(true);
+        gtk::glib::timeout_add_local(std::time::Duration::from_secs(1), {
+            let (install, remove, spinner, status) = (
+                install.clone(),
+                remove.clone(),
+                spinner.clone(),
+                status.clone(),
+            );
+            let show = show.clone();
+            move || {
+                if vesktop::busy() {
+                    return gtk::glib::ControlFlow::Continue;
+                }
+                install.set_sensitive(true);
+                remove.set_sensitive(true);
+                spinner.set_visible(false);
+                status.set_label("Finished.");
+                show();
+                gtk::glib::ControlFlow::Break
+            }
+        });
+    }
 
     // The work runs on a thread of its own, since building takes a while
     // and waiting for Vesktop to close takes as long as the user does.
