@@ -18,9 +18,9 @@
 //! A connection that closes ends the call: Vesktop has gone, and so have
 //! the voices it was playing.
 //!
-//! The socket is `$XDG_RUNTIME_DIR/pipedeck/control.sock`, which only the
-//! user can reach. A second mixer finds it answering and leaves it to the
-//! first.
+//! The socket is `$XDG_RUNTIME_DIR/pipedeck/control.sock`, in a folder
+//! only the user can reach. A second mixer finds it answering and leaves it
+//! to the first.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -60,8 +60,8 @@ pub fn listen(commands: pw::channel::Sender<Command>) {
         return;
     }
     if let Some(dir) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            log::error!("cannot make {}: {e}", dir.display());
+        if let Err(e) = private_dir(dir) {
+            log::error!("not listening on {}: {e}", path.display());
             return;
         }
     }
@@ -93,6 +93,33 @@ pub fn listen(commands: pw::channel::Sender<Command>) {
     if let Err(e) = spawned {
         log::error!("cannot start listening: {e}");
     }
+}
+
+/// Make the socket's folder for the user alone, or check one already
+/// there is: under the runtime directory it is anyway, but without one it
+/// is in the shared temporary directory, where someone else could have made
+/// it first.
+fn private_dir(dir: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    if !dir.exists() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    }
+    let meta = std::fs::symlink_metadata(dir).map_err(|e| e.to_string())?;
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let me = unsafe { libc::getuid() };
+    if !meta.is_dir() || meta.uid() != me {
+        return Err(format!("{} is not a folder of this user's", dir.display()));
+    }
+    if meta.permissions().mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("cannot close {} to others: {e}", dir.display()))?;
+    }
+    Ok(())
 }
 
 /// Answer one client until it goes.
