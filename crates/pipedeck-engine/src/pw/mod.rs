@@ -294,6 +294,16 @@ fn app_key(props: &DictRef) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Which of a row's hosted plug-ins the effect at `index` is: the chain
+/// counts only the effects the mixer hosts, the user sees all of them.
+fn hosted_index(effects: &[Effect], index: usize) -> usize {
+    effects
+        .iter()
+        .take(index)
+        .filter(|effect| effect.is_plugin())
+        .count()
+}
+
 fn app_name(props: &DictRef) -> String {
     props
         .get("application.name")
@@ -381,6 +391,8 @@ pub struct Graph {
     /// renegotiates the streams at either end, and their ports go with it —
     /// and a cell whose link has gone is a cell nobody hears.
     link_owner: HashMap<u32, (SourceId, MixId)>,
+    /// The same for the links joining a person's sink to their row's.
+    voice_link_owner: HashMap<u32, (SourceId, String)>,
     /// The clients this process holds on the server. A node's `client.id`
     /// says whether it is ours, which its name cannot: another mixer's
     /// nodes answer to the same names.
@@ -434,6 +446,7 @@ impl Graph {
             retired_metadata: Quarantine::new(),
             retired_links: Quarantine::new(),
             link_owner: HashMap::new(),
+            voice_link_owner: HashMap::new(),
             own_clients: std::collections::HashSet::new(),
             registry,
             core,
@@ -1101,13 +1114,7 @@ impl Graph {
             .cloned()
             .collect();
         for key in voices {
-            if let Some(voice) = self.voices.remove(&key) {
-                self.sink_ids.remove(&id.voice_node_name(&key.1));
-                for link in voice.links {
-                    self.retired_links.hold(link);
-                }
-                self.retired.hold(voice.sink);
-            }
+            self.drop_voice(&key);
         }
         let source = self
             .sources
@@ -1471,11 +1478,7 @@ impl Graph {
             .source(id)
             .map(|cfg| cfg.effects.clone())
             .ok_or(EngineError::UnknownSource(id))?;
-        let among_plugins = effects
-            .iter()
-            .take(index)
-            .filter(|effect| effect.is_plugin())
-            .count();
+        let among_plugins = hosted_index(&effects, index);
         let Some(chain) = self
             .sources
             .get(&id)
@@ -1572,11 +1575,7 @@ impl Graph {
         else {
             return Ok(());
         };
-        let among_plugins = effects
-            .iter()
-            .take(index)
-            .filter(|effect| effect.is_plugin())
-            .count();
+        let among_plugins = hosted_index(&effects, index);
         let Some(params) = self
             .sources
             .get(&id)
@@ -2012,13 +2011,15 @@ impl Graph {
                 continue;
             };
             // The node says what it is again on every change of state; only
-            // a change of target is news.
-            if stream.placed && stream.pinned == pinned {
+            // a change of target is news, including from one voice sink to
+            // another.
+            let voice = target.clone().filter(|_| pinned);
+            if stream.placed && stream.pinned == pinned && stream.voice == voice {
                 continue;
             }
             stream.placed = true;
             stream.pinned = pinned;
-            stream.voice = target.clone().filter(|_| pinned);
+            stream.voice = voice;
             let name = stream.app.name.clone();
             if let Some(voice) = target.filter(|_| pinned) {
                 // Said again where it goes, over whatever moved it before
@@ -2078,6 +2079,15 @@ impl Graph {
             .map(|(cell, _)| *cell);
         if let Some(cell) = owner {
             self.link_owner.insert(global.id, cell);
+            return;
+        }
+        let voice = self
+            .voices
+            .keys()
+            .find(|(row, user)| self.sink_ids.get(&row.voice_node_name(user)) == Some(&from))
+            .cloned();
+        if let Some(key) = voice {
+            self.voice_link_owner.insert(global.id, key);
         }
     }
 
@@ -2154,6 +2164,20 @@ impl Graph {
             self.metadata_id = None;
             if let Some(dead) = self.metadata.take() {
                 self.retired_metadata.hold(dead);
+            }
+        }
+        if let Some(key) = self.voice_link_owner.remove(&global_id) {
+            // A person's join went without being asked to: made again, both
+            // channels, on the next tick.
+            self.voice_link_owner.retain(|_, owner| *owner != key);
+            if let Some(voice) = self.voices.get_mut(&key) {
+                log::info!(
+                    "{} came unjoined from its row; joining it again",
+                    voice.label
+                );
+                for link in voice.links.drain(..) {
+                    self.retired_links.hold(link);
+                }
             }
         }
         if let Some(cell) = self.link_owner.remove(&global_id) {
@@ -2274,12 +2298,17 @@ impl Graph {
 
     /// Take who is in the call now, and give each a sub-track on the row
     /// carrying Vesktop.
-    pub fn set_call(&mut self, members: Vec<CallMember>) {
-        if members != self.call {
-            log::info!("{} in the call", members.len());
+    ///
+    /// Says whether anything changed: the plugin says the call again
+    /// whenever it reconnects, and the same call again is no news.
+    pub fn set_call(&mut self, members: Vec<CallMember>) -> bool {
+        if members == self.call {
+            return false;
         }
+        log::info!("{} in the call", members.len());
         self.call = members;
         self.sync_voices();
+        true
     }
 
     /// The row the call is heard through: the one Vesktop is assigned to,
@@ -2347,6 +2376,9 @@ impl Graph {
         // Someone gone from the call keeps their sink a while; one whose
         // name changed gets a new one at once, since the client looks
         // their output up by it.
+        // A sink kept for someone who left goes at once when someone in the
+        // call needs its name: two outputs called the same, and the client
+        // could pick the one nobody listens to.
         let now = std::time::Instant::now();
         let mut gone: Vec<(SourceId, String)> = Vec::new();
         for (key, voice) in &mut self.voices {
@@ -2355,20 +2387,16 @@ impl Graph {
                 Some(_) => gone.push(key.clone()),
                 None => {
                     let since = *voice.gone_since.get_or_insert(now);
-                    if now.duration_since(since) >= VOICE_GRACE {
+                    let needed = wanted.iter().any(|(_, label)| *label == voice.label);
+                    if needed || now.duration_since(since) >= VOICE_GRACE {
                         gone.push(key.clone());
                     }
                 }
             }
         }
         for key in gone {
-            if let Some(voice) = self.voices.remove(&key) {
-                self.sink_ids.remove(&key.0.voice_node_name(&key.1));
-                for link in voice.links {
-                    self.retired_links.hold(link);
-                }
-                self.retired.hold(voice.sink);
-                log::info!("{} left the call", voice.label);
+            if let Some(label) = self.drop_voice(&key) {
+                log::info!("{label} left the call");
             }
         }
         for ((row, user), label) in wanted {
@@ -2404,6 +2432,19 @@ impl Graph {
                 },
             );
         }
+    }
+
+    /// Take one person's sink off the graph, and what joins and measures
+    /// it. Says what it was called, if there was one.
+    fn drop_voice(&mut self, key: &(SourceId, String)) -> Option<String> {
+        let voice = self.voices.remove(key)?;
+        self.sink_ids.remove(&key.0.voice_node_name(&key.1));
+        self.voice_link_owner.retain(|_, owner| owner != key);
+        for link in voice.links {
+            self.retired_links.hold(link);
+        }
+        self.retired.hold(voice.sink);
+        Some(voice.label)
     }
 
     /// Join every voice's sink to its row's, once both have their ports,
@@ -2442,11 +2483,25 @@ impl Graph {
             })
             .collect();
         for (key, from, into) in wanted {
+            // Both channels or none: the ports of a new sink are announced
+            // one by one, and a join made with the first alone would leave
+            // the person on one side for good.
+            let outputs = self
+                .ports
+                .get(&from)
+                .map_or(0, |ports| ports.iter().filter(|port| !port.input).count());
+            if outputs < CHANNELS {
+                continue;
+            }
             let made = self.link_ports(from, into);
-            if let Some(voice) = self.voices.get_mut(&key) {
-                if !made.is_empty() {
-                    log::debug!("{} joined to its row", voice.label);
+            if made.len() < outputs {
+                for link in made {
+                    self.retired_links.hold(link);
                 }
+                continue;
+            }
+            if let Some(voice) = self.voices.get_mut(&key) {
+                log::debug!("{} joined to its row", voice.label);
                 voice.links = made;
             }
         }

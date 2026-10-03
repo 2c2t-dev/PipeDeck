@@ -763,7 +763,8 @@ fn handle_command(
             g.set_effect_params(id, index, controls)
         }
         Command::SetCall { members } => {
-            g.set_call(members);
+            // The matrix is sent again only when the call changed.
+            structural = g.set_call(members);
             Ok(())
         }
         Command::SetVoiceGain { id, user, gain } => {

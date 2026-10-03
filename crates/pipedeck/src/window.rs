@@ -66,6 +66,8 @@ pub struct Window {
     expanded: RefCell<HashSet<SourceId>>,
     /// The faders of the sub-tracks drawn, to move their meters.
     voice_faders: RefCell<HashMap<(SourceId, String), widgets::MeterFader>>,
+    /// People's pictures, by file, read once rather than at every redraw.
+    avatars: RefCell<HashMap<String, gtk::gdk::Texture>>,
 }
 
 impl Window {
@@ -147,6 +149,7 @@ impl Window {
             channel_dialog: RefCell::new(None),
             expanded: RefCell::new(HashSet::new()),
             voice_faders: RefCell::new(HashMap::new()),
+            avatars: RefCell::new(HashMap::new()),
         });
 
         settings.connect_clicked({
@@ -367,7 +370,7 @@ impl Window {
             // spans the mixes rather than having a cell in each.
             if self.expanded.borrow().contains(&source.id) {
                 for voice in source.voices.iter().filter(|voice| voice.present) {
-                    self.grid.attach(&voice_header(voice), 0, row, 1, 1);
+                    self.grid.attach(&self.voice_header(voice), 0, row, 1, 1);
                     let span = state.mixes.len().max(1) as i32;
                     self.grid
                         .attach(&self.voice_level(source.id, voice), 1, row, span, 1);
@@ -719,6 +722,52 @@ impl Window {
         }
     }
 
+    /// The name of a person of a call, set in from its channel's.
+    fn voice_header(&self, voice: &VoiceConfig) -> gtk::Widget {
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        content.set_margin_start(26);
+        content.set_margin_end(10);
+        // Their picture, or their initials until the client has fetched it.
+        let avatar = adw::Avatar::new(26, Some(&voice.name), true);
+        if let Some(texture) = voice.avatar.as_deref().and_then(|path| self.avatar(path)) {
+            avatar.set_custom_image(Some(&texture));
+        }
+        content.append(&avatar);
+        let name = gtk::Label::new(Some(&voice.name));
+        name.set_xalign(0.0);
+        name.set_hexpand(true);
+        name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        content.append(&name);
+        content.set_valign(gtk::Align::Center);
+
+        let card = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        card.add_css_class("card");
+        card.add_css_class("pd-voice");
+        card.set_size_request(SOURCE_COLUMN_WIDTH, VOICE_ROW_HEIGHT);
+        card.set_tooltip_text(Some(&voice.name));
+        card.append(&content);
+        card.upcast()
+    }
+
+    /// A person's picture, read from its file the first time it is shown.
+    fn avatar(&self, path: &str) -> Option<gtk::gdk::Texture> {
+        if let Some(texture) = self.avatars.borrow().get(path) {
+            return Some(texture.clone());
+        }
+        match gtk::gdk::Texture::from_filename(path) {
+            Ok(texture) => {
+                self.avatars
+                    .borrow_mut()
+                    .insert(path.to_owned(), texture.clone());
+                Some(texture)
+            }
+            Err(e) => {
+                log::debug!("cannot show {path}: {e}");
+                None
+            }
+        }
+    }
+
     /// Change one person as the window last heard of them.
     fn with_voice(&self, id: SourceId, user: &str, f: impl FnOnce(&mut VoiceConfig)) {
         let mut state = self.state.borrow_mut();
@@ -780,36 +829,6 @@ impl Window {
         row.set_valign(gtk::Align::Center);
         holder.upcast()
     }
-}
-
-/// The name of a person of a call, set in from its channel's.
-fn voice_header(voice: &VoiceConfig) -> gtk::Widget {
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    content.set_margin_start(26);
-    content.set_margin_end(10);
-    // Their picture, or their initials until the client has fetched it.
-    let avatar = adw::Avatar::new(26, Some(&voice.name), true);
-    if let Some(path) = &voice.avatar {
-        match gtk::gdk::Texture::from_filename(path) {
-            Ok(texture) => avatar.set_custom_image(Some(&texture)),
-            Err(e) => log::debug!("cannot show {path}: {e}"),
-        }
-    }
-    content.append(&avatar);
-    let name = gtk::Label::new(Some(&voice.name));
-    name.set_xalign(0.0);
-    name.set_hexpand(true);
-    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    content.append(&name);
-    content.set_valign(gtk::Align::Center);
-
-    let card = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    card.add_css_class("card");
-    card.add_css_class("pd-voice");
-    card.set_size_request(SOURCE_COLUMN_WIDTH, VOICE_ROW_HEIGHT);
-    card.set_tooltip_text(Some(&voice.name));
-    card.append(&content);
-    card.upcast()
 }
 
 /// A card whose whole surface acts as a button, showing a pencil on hover to
