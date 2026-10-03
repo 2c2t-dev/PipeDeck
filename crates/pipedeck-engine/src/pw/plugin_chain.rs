@@ -219,6 +219,18 @@ struct Processing {
 /// What the playback side needs.
 struct Playing {
     ring: Arc<Ring>,
+    /// One buffer per channel, allocated once, as on the capture side.
+    scratch: Vec<Vec<f32>>,
+}
+
+/// The first `frames` of each of the two channels' buffers, as a block the
+/// plug-ins and the ring take. A fixed array rather than a vector: the
+/// real-time thread must not ask for memory, even this little.
+fn block(planes: &mut [Vec<f32>], frames: usize) -> Option<[&mut [f32]; CHANNELS]> {
+    match planes {
+        [left, right] => Some([&mut left[..frames], &mut right[..frames]]),
+        _ => None,
+    }
 }
 
 /// A channel's or a mix's plug-ins, running in the graph.
@@ -428,11 +440,9 @@ impl PluginChain {
                     }
                 }
 
-                let (first, rest) = state.scratch.split_at_mut(1);
-                let mut block: Vec<&mut [f32]> = vec![&mut first[0][..frames]];
-                for plane in rest.iter_mut().take(CHANNELS - 1) {
-                    block.push(&mut plane[..frames]);
-                }
+                let Some(mut block) = block(&mut state.scratch, frames) else {
+                    return;
+                };
                 for plugin in &mut state.plugins {
                     if plugin.process(&mut block).is_err() {
                         return;
@@ -443,7 +453,10 @@ impl PluginChain {
             .register()?;
 
         let playback_listener = playback
-            .add_local_listener_with_user_data(Playing { ring })
+            .add_local_listener_with_user_data(Playing {
+                ring,
+                scratch: vec![vec![0.0; MAX_BLOCK]; CHANNELS],
+            })
             .process(|stream, state| {
                 let Some(mut buffer) = stream.dequeue_buffer() else {
                     return;
@@ -459,12 +472,11 @@ impl PluginChain {
                     return;
                 }
 
-                let mut planes: Vec<Vec<f32>> = vec![vec![0.0; frames]; CHANNELS];
-                {
-                    let mut block: Vec<&mut [f32]> =
-                        planes.iter_mut().map(|plane| &mut plane[..]).collect();
-                    state.ring.read(&mut block, frames);
-                }
+                let Some(mut block) = block(&mut state.scratch, frames) else {
+                    return;
+                };
+                state.ring.read(&mut block, frames);
+                let planes = &state.scratch;
                 for (channel, data) in datas.iter_mut().enumerate().take(CHANNELS) {
                     let stride = std::mem::size_of::<f32>();
                     let wrote = frames * stride;
