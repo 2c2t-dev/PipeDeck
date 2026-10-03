@@ -2071,14 +2071,25 @@ impl Graph {
         let (Some(outputs), Some(inputs)) = (self.ports.get(&from), self.ports.get(&into)) else {
             return Vec::new();
         };
+        // Every channel or none: the ports of a new node are announced one
+        // by one, and a join made with the first alone would leave the other
+        // side silent for good, since a joined node is not joined again.
+        let pairs: Vec<(&Port, &Port)> = outputs
+            .iter()
+            .filter(|port| !port.input)
+            .filter_map(|output| {
+                inputs
+                    .iter()
+                    .find(|port| port.input && port.channel == output.channel)
+                    .map(|input| (output, input))
+            })
+            .collect();
+        let outputs = outputs.iter().filter(|port| !port.input).count();
+        if outputs < CHANNELS || pairs.len() < outputs {
+            return Vec::new();
+        }
         let mut made = Vec::new();
-        for output in outputs.iter().filter(|port| !port.input) {
-            let Some(input) = inputs
-                .iter()
-                .find(|port| port.input && port.channel == output.channel)
-            else {
-                continue;
-            };
+        for (output, input) in pairs {
             let link = self.core.create_object::<Link>(
                 "link-factory",
                 &properties! {

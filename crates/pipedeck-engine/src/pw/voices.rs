@@ -16,7 +16,6 @@ use pipewire::proxy::ProxyListener;
 use pipewire::registry::GlobalObject;
 use pipewire::spa::utils::dict::DictRef;
 
-use super::loopback::CHANNELS;
 use super::meter::Meter;
 use super::{apply_props, Graph};
 use crate::error::EngineError;
@@ -316,23 +315,9 @@ impl Graph {
             })
             .collect();
         for (key, from, into) in wanted {
-            // Both channels or none: the ports of a new sink are announced
-            // one by one, and a join made with the first alone would leave
-            // the person on one side for good.
-            let count = |node: u32, input: bool| {
-                self.ports.get(&node).map_or(0, |ports| {
-                    ports.iter().filter(|port| port.input == input).count()
-                })
-            };
-            let outputs = count(from, false);
-            if outputs < CHANNELS || count(into, true) < CHANNELS {
-                continue;
-            }
+            // Joined with every channel or not yet: see `link_ports`.
             let made = self.link_ports(from, into);
-            if made.len() < outputs {
-                for link in made {
-                    self.retired_links.hold(link);
-                }
+            if made.is_empty() {
                 continue;
             }
             if let Some(voice) = self.voices.get_mut(&key) {
