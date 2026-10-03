@@ -185,12 +185,12 @@ impl LoopbackSpec {
 
 /// `node.name` of the playback node of a cell, the node carrying its fader.
 pub fn link_node_name(source: SourceId, mix: MixId) -> String {
-    format!("pipedeck.link.{source}.{mix}")
+    format!("{}.link.{source}.{mix}", crate::types::node_prefix())
 }
 
 /// `node.name` of the playback node of one output of a mix.
 pub fn output_node_name(mix: MixId, index: usize) -> String {
-    format!("pipedeck.out.{mix}.{index}")
+    format!("{}.out.{mix}.{index}", crate::types::node_prefix())
 }
 
 #[cfg(test)]

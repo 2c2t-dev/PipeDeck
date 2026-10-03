@@ -54,7 +54,7 @@ fn node_names(dump: &[serde_json::Value]) -> Vec<String> {
     let mut names: Vec<String> = our_nodes(dump)
         .iter()
         .filter_map(|n| props(n)["node.name"].as_str())
-        .filter(|name| !name.starts_with("pipedeck.meter."))
+        .filter(|name| !name.starts_with("pipedeck-smoke.meter."))
         .map(str::to_owned)
         .collect();
     names.sort();
@@ -167,7 +167,7 @@ fn another_mixer_running(dump: &[serde_json::Value]) -> bool {
         .filter(|o| {
             props(o)["node.name"]
                 .as_str()
-                .is_some_and(|name| name.starts_with("pipedeck."))
+                .is_some_and(|name| name.starts_with("pipedeck-smoke."))
         })
         .any(|o| o["id"].as_i64().is_some_and(|id| !ours.contains(&id)))
 }
@@ -320,7 +320,17 @@ fn settle() {
     std::thread::sleep(Duration::from_millis(900));
 }
 
+/// The prefix this test's nodes go by, which the user's own mixer, running
+/// beside it, does not: neither is taken for the other.
+const PREFIX: &str = "pipedeck-smoke";
+/// The application this test plays a call as, which is not the user's own
+/// Vesktop, so the call's streams are neither moved by the user's mixer
+/// nor the user's moved by this one.
+const VOICE_APP: &str = "pipedeck-smoke-vesktop";
+
 fn main() -> ExitCode {
+    std::env::set_var("PIPEDECK_NODE_PREFIX", PREFIX);
+    std::env::set_var("PIPEDECK_VOICE_APP", VOICE_APP);
     env_logger::init();
     let mut failures = 0;
 
@@ -348,11 +358,11 @@ fn main() -> ExitCode {
     settle();
     let nodes = node_names(&pw_dump());
     check(
-        nodes == [format!("pipedeck.mix.{mix}")],
+        nodes == [format!("pipedeck-smoke.mix.{mix}")],
         &format!("a fresh config yields one mix and nothing else: {nodes:?}"),
         &mut failures,
     );
-    let offered = our_node(&pw_dump(), &format!("pipedeck.mix.{mix}")).map(|node| {
+    let offered = our_node(&pw_dump(), &format!("pipedeck-smoke.mix.{mix}")).map(|node| {
         (
             props(node)["media.class"].as_str().unwrap_or("").to_owned(),
             props(node)["node.description"]
@@ -389,8 +399,8 @@ fn main() -> ExitCode {
     check(
         nodes
             == [
-                format!("pipedeck.mix.{mix}"),
-                format!("pipedeck.src.{source}"),
+                format!("pipedeck-smoke.mix.{mix}"),
+                format!("pipedeck-smoke.src.{source}"),
             ],
         &format!("the source sink appears, unlinked: {nodes:?}"),
         &mut failures,
@@ -421,7 +431,7 @@ fn main() -> ExitCode {
         .unwrap();
     settle();
     let dump = pw_dump();
-    let link_node = format!("pipedeck.link.{source}.{mix}");
+    let link_node = format!("pipedeck-smoke.link.{source}.{mix}");
     check(
         node_names(&dump).contains(&link_node),
         &format!("the cell node exists: {link_node}"),
@@ -450,7 +460,7 @@ fn main() -> ExitCode {
     settle();
     let nodes = node_names(&pw_dump());
     check(
-        nodes.contains(&format!("pipedeck.out.{mix}.0")),
+        nodes.contains(&format!("pipedeck-smoke.out.{mix}.0")),
         &format!("the mix output node exists: {nodes:?}"),
         &mut failures,
     );
@@ -476,7 +486,7 @@ fn main() -> ExitCode {
         .unwrap();
     settle();
     let dump = pw_dump();
-    let master = node_volume(&dump, &format!("pipedeck.mix.{mix}"));
+    let master = node_volume(&dump, &format!("pipedeck-smoke.mix.{mix}"));
     check(
         master
             .as_ref()
@@ -484,7 +494,7 @@ fn main() -> ExitCode {
         &format!("the mix sink carries the master level: {master:?}"),
         &mut failures,
     );
-    let output = node_volume(&dump, &format!("pipedeck.out.{mix}.0"));
+    let output = node_volume(&dump, &format!("pipedeck-smoke.out.{mix}.0"));
     check(
         output
             .as_ref()
@@ -511,7 +521,7 @@ fn main() -> ExitCode {
         })
         .unwrap();
     let sink_serial =
-        node_serial(&pw_dump(), &format!("pipedeck.src.{source}")).expect("the channel sink");
+        node_serial(&pw_dump(), &format!("pipedeck-smoke.src.{source}")).expect("the channel sink");
     let mut player = Process::new("pw-play")
         .arg(format!("--target={sink_serial}"))
         .arg(&tone)
@@ -546,7 +556,7 @@ fn main() -> ExitCode {
     // What a capture client gets, taken the way one takes it: by naming the
     // device and recording it. The mix is heard through the cell and the
     // master alike, so this is the same signal its meter reads.
-    let recorded = node_serial(&pw_dump(), &format!("pipedeck.mix.{mix}"))
+    let recorded = node_serial(&pw_dump(), &format!("pipedeck-smoke.mix.{mix}"))
         .map(|serial| record_peak(serial, 3, &dir.join("recorded.wav")))
         .unwrap_or(0.0);
     let what = format!("a recorder hears the mix on its input device: {recorded:.3}");
@@ -602,7 +612,8 @@ fn main() -> ExitCode {
 
     // A channel's trim is the volume of its sink, which is also the volume
     // the system shows. Moving it from outside has to reach the mixer.
-    let sink_id = node_id(&pw_dump(), &format!("pipedeck.src.{source}")).expect("the channel sink");
+    let sink_id =
+        node_id(&pw_dump(), &format!("pipedeck-smoke.src.{source}")).expect("the channel sink");
     let outside = Process::new("wpctl")
         .args(["set-volume", &sink_id.to_string(), "0.4"])
         .status();
@@ -629,7 +640,7 @@ fn main() -> ExitCode {
         })
         .unwrap();
     settle();
-    let trim = node_volume(&pw_dump(), &format!("pipedeck.src.{source}"));
+    let trim = node_volume(&pw_dump(), &format!("pipedeck-smoke.src.{source}"));
     check(
         trim.as_ref()
             .is_some_and(|(v, _)| v.iter().all(|x| (x - 0.125).abs() < 1e-3)),
@@ -666,7 +677,7 @@ fn main() -> ExitCode {
     settle();
     let dump = pw_dump();
     let player_node = any_node_id(&dump, "pw-play");
-    let sink_node = node_id(&dump, &format!("pipedeck.src.{source}"));
+    let sink_node = node_id(&dump, &format!("pipedeck-smoke.src.{source}"));
     let plugged = match (player_node, sink_node) {
         (Some(player), Some(sink)) => links(&dump).contains(&(player, sink)),
         _ => false,
@@ -731,18 +742,18 @@ fn main() -> ExitCode {
     let dump = pw_dump();
     let names = node_names(&dump);
     check(
-        names.contains(&format!("pipedeck.fx.{source}")),
+        names.contains(&format!("pipedeck-smoke.fx.{source}")),
         &format!("the effects chain offers a sink of its own: {names:?}"),
         &mut failures,
     );
-    let reading = our_node(&dump, &format!("pipedeck.link.{source}.{mix}.in")).map(|node| {
+    let reading = our_node(&dump, &format!("pipedeck-smoke.link.{source}.{mix}.in")).map(|node| {
         props(node)["target.object"]
             .as_str()
             .unwrap_or("")
             .to_owned()
     });
     check(
-        reading.as_deref() == Some(format!("pipedeck.fx.{source}").as_str()),
+        reading.as_deref() == Some(format!("pipedeck-smoke.fx.{source}").as_str()),
         &format!("the cell reads the chain rather than the raw channel: {reading:?}"),
         &mut failures,
     );
@@ -818,18 +829,18 @@ fn main() -> ExitCode {
     settle();
     let dump = pw_dump();
     check(
-        !node_names(&dump).contains(&format!("pipedeck.fx.{source}")),
+        !node_names(&dump).contains(&format!("pipedeck-smoke.fx.{source}")),
         "removing the last effect takes the chain with it",
         &mut failures,
     );
-    let reading = our_node(&dump, &format!("pipedeck.link.{source}.{mix}.in")).map(|node| {
+    let reading = our_node(&dump, &format!("pipedeck-smoke.link.{source}.{mix}.in")).map(|node| {
         props(node)["target.object"]
             .as_str()
             .unwrap_or("")
             .to_owned()
     });
     check(
-        reading.as_deref() == Some(format!("pipedeck.src.{source}").as_str()),
+        reading.as_deref() == Some(format!("pipedeck-smoke.src.{source}").as_str()),
         &format!("the cell reads the channel again: {reading:?}"),
         &mut failures,
     );
@@ -857,18 +868,19 @@ fn main() -> ExitCode {
         let dump = pw_dump();
         let names = node_names(&dump);
         check(
-            names.contains(&format!("pipedeck.vst.{source}")),
+            names.contains(&format!("pipedeck-smoke.vst.{source}")),
             &format!("{} runs on its own sink: {names:?}", plugin.name),
             &mut failures,
         );
-        let reading = our_node(&dump, &format!("pipedeck.link.{source}.{mix}.in")).map(|node| {
-            props(node)["target.object"]
-                .as_str()
-                .unwrap_or("")
-                .to_owned()
-        });
+        let reading =
+            our_node(&dump, &format!("pipedeck-smoke.link.{source}.{mix}.in")).map(|node| {
+                props(node)["target.object"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned()
+            });
         check(
-            reading.as_deref() == Some(format!("pipedeck.vst.{source}").as_str()),
+            reading.as_deref() == Some(format!("pipedeck-smoke.vst.{source}").as_str()),
             &format!("the cell reads the plug-in: {reading:?}"),
             &mut failures,
         );
@@ -937,7 +949,7 @@ fn main() -> ExitCode {
     });
     std::thread::sleep(Duration::from_secs(2));
     let dump = pw_dump();
-    let chain_in = node_id(&dump, &format!("pipedeck.vst.{source}.in"));
+    let chain_in = node_id(&dump, &format!("pipedeck-smoke.vst.{source}.in"));
     check(
         chain_in.is_some(),
         &format!(
@@ -951,7 +963,7 @@ fn main() -> ExitCode {
     );
     // Played into the channel's own sink, so it goes through the chain:
     // the sink named after the chain is what comes out of it.
-    match node_serial(&dump, &format!("pipedeck.src.{source}")) {
+    match node_serial(&dump, &format!("pipedeck-smoke.src.{source}")) {
         Some(serial) => {
             let mut player = Process::new("pw-play")
                 .arg(format!("--target={serial}"))
@@ -1024,7 +1036,7 @@ fn main() -> ExitCode {
             if effects.get(1).is_some_and(|eq| eq.controls.iter().any(|c| c.name == "mid_gain" && c.value == 9.0)))
     });
     settle();
-    let after = node_id(&pw_dump(), &format!("pipedeck.vst.{source}.in"));
+    let after = node_id(&pw_dump(), &format!("pipedeck-smoke.vst.{source}.in"));
     check(
         chain_in.is_some() && after == chain_in,
         &format!("a control moved reloads nothing: {chain_in:?} then {after:?}"),
@@ -1048,11 +1060,11 @@ fn main() -> ExitCode {
     if alone {
         // A call in Vesktop: the channel Vesktop is assigned to gets a sink for
         // each person, playing into its own, and loses them when the call ends.
-        let voice = |user: &str| format!("pipedeck.voice.{source}.{user}");
+        let voice = |user: &str| format!("pipedeck-smoke.voice.{source}.{user}");
         engine
             .send(Command::AssignApp {
                 id: source,
-                app: pipedeck_engine::VOICE_APP.into(),
+                app: VOICE_APP.into(),
             })
             .unwrap();
         engine
@@ -1079,7 +1091,7 @@ fn main() -> ExitCode {
         std::thread::sleep(Duration::from_secs(2));
         let dump = pw_dump();
         let (alice, bob) = (node_id(&dump, &voice("111")), node_id(&dump, &voice("222")));
-        let row = node_id(&dump, &format!("pipedeck.src.{source}"));
+        let row = node_id(&dump, &format!("pipedeck-smoke.src.{source}"));
         let labelled = our_node(&dump, &voice("111"))
             .and_then(|node| props(node)["node.description"].as_str())
             == Some("Alice (Discord)");
@@ -1141,13 +1153,13 @@ fn main() -> ExitCode {
         let mut aimed = Process::new("pw-play")
             .arg(format!("--target={}", voice("111")))
             .arg("-P")
-            .arg(r#"{ "application.process.binary": "vesktop", "application.name": "vesktop", "node.name": "pipedeck-smoke-voice" }"#)
+            .arg(format!(r#"{{ "application.process.binary": "{VOICE_APP}", "application.name": "{VOICE_APP}", "node.name": "smoke-voice-player" }}"#))
             .arg(&tone)
             .spawn()
             .expect("pw-play must be installed");
         std::thread::sleep(Duration::from_secs(3));
         let dump = pw_dump();
-        let player = any_node_id(&dump, "pipedeck-smoke-voice");
+        let player = any_node_id(&dump, "smoke-voice-player");
         let alice = node_id(&dump, &voice("111"));
         let stayed =
             matches!((player, alice), (Some(p), Some(a)) if links(&dump).contains(&(p, a)));
@@ -1187,7 +1199,7 @@ fn main() -> ExitCode {
         engine
             .send(Command::ReleaseApp {
                 id: source,
-                app: pipedeck_engine::VOICE_APP.into(),
+                app: VOICE_APP.into(),
             })
             .unwrap();
         settle();
@@ -1221,7 +1233,7 @@ fn main() -> ExitCode {
         let dump = pw_dump();
         let names = node_names(&dump);
         check(
-            names.contains(&format!("pipedeck.vst.{source}")),
+            names.contains(&format!("pipedeck-smoke.vst.{source}")),
             &format!("Stereo Tool runs on a sink of its own: {names:?}"),
             &mut failures,
         );
@@ -1230,7 +1242,7 @@ fn main() -> ExitCode {
         // the sink named after the chain is what comes out of it. Found by
         // our pid, so another mixer answering to the same names is left
         // alone.
-        match node_serial(&dump, &format!("pipedeck.src.{source}")) {
+        match node_serial(&dump, &format!("pipedeck-smoke.src.{source}")) {
             Some(serial) => {
                 let mut player = Process::new("pw-play")
                     .arg(format!("--target={serial}"))
@@ -1332,11 +1344,11 @@ fn main() -> ExitCode {
         let dump = pw_dump();
         let names = node_names(&dump);
         check(
-            names.contains(&format!("pipedeck.fx.{mic}")),
+            names.contains(&format!("pipedeck-smoke.fx.{mic}")),
             &format!("a microphone's effects run on a sink of their own: {names:?}"),
             &mut failures,
         );
-        let reading = our_node(&dump, &format!("pipedeck.fx.{mic}.in")).map(|node| {
+        let reading = our_node(&dump, &format!("pipedeck-smoke.fx.{mic}.in")).map(|node| {
             (
                 props(node)["target.object"]
                     .as_str()
@@ -1356,7 +1368,7 @@ fn main() -> ExitCode {
         wait_state(&rx, "the microphone row removed", |s| s.sources.len() == 1);
         settle();
         check(
-            !node_names(&pw_dump()).contains(&format!("pipedeck.fx.{mic}")),
+            !node_names(&pw_dump()).contains(&format!("pipedeck-smoke.fx.{mic}")),
             "and go when the row does",
             &mut failures,
         );
@@ -1373,12 +1385,13 @@ fn main() -> ExitCode {
         .unwrap();
     wait_state(&rx, "the new quantum", |s| s.latency == "1024/48000");
     settle();
-    let reloaded = our_node(&pw_dump(), &format!("pipedeck.link.{source}.{mix}")).map(|node| {
-        props(node)["node.latency"]
-            .as_str()
-            .unwrap_or("")
-            .to_owned()
-    });
+    let reloaded =
+        our_node(&pw_dump(), &format!("pipedeck-smoke.link.{source}.{mix}")).map(|node| {
+            props(node)["node.latency"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned()
+        });
     check(
         reloaded.as_deref() == Some("1024/48000"),
         &format!("the routes came back at the new quantum: {reloaded:?}"),
@@ -1402,7 +1415,7 @@ fn main() -> ExitCode {
     settle();
     let names = node_names(&pw_dump());
     check(
-        !names.contains(&format!("pipedeck.out.{mix}.0")),
+        !names.contains(&format!("pipedeck-smoke.out.{mix}.0")),
         &format!("an output switched off lets go of its device: {names:?}"),
         &mut failures,
     );
@@ -1420,13 +1433,13 @@ fn main() -> ExitCode {
     });
     settle();
     let dump = pw_dump();
-    let back = our_node(&dump, &format!("pipedeck.out.{mix}.0")).map(|node| {
+    let back = our_node(&dump, &format!("pipedeck-smoke.out.{mix}.0")).map(|node| {
         props(node)["target.object"]
             .as_str()
             .unwrap_or("")
             .to_owned()
     });
-    let level = node_volume(&dump, &format!("pipedeck.out.{mix}.0"));
+    let level = node_volume(&dump, &format!("pipedeck-smoke.out.{mix}.0"));
     check(
         back.as_deref() == Some(device.name.as_str())
             && level
@@ -1452,7 +1465,7 @@ fn main() -> ExitCode {
     check(
         !names
             .iter()
-            .any(|n| n.starts_with(&format!("pipedeck.out.{mix}."))),
+            .any(|n| n.starts_with(&format!("pipedeck-smoke.out.{mix}."))),
         &format!("with its ear off, the mix is not heard: {names:?}"),
         &mut failures,
     );
@@ -1466,7 +1479,7 @@ fn main() -> ExitCode {
         s.mixes.iter().any(|m| m.outputs.iter().any(|o| o.enabled))
     });
     settle();
-    let back = our_node(&pw_dump(), &format!("pipedeck.out.{mix}.0")).map(|node| {
+    let back = our_node(&pw_dump(), &format!("pipedeck-smoke.out.{mix}.0")).map(|node| {
         props(node)["target.object"]
             .as_str()
             .unwrap_or("")
@@ -1500,7 +1513,7 @@ fn main() -> ExitCode {
             .unwrap_or_default();
         let dump = pw_dump();
         let playing: Vec<String> = (0..outputs.len())
-            .filter_map(|index| our_node(&dump, &format!("pipedeck.out.{mix}.{index}")))
+            .filter_map(|index| our_node(&dump, &format!("pipedeck-smoke.out.{mix}.{index}")))
             .filter_map(|node| props(node)["target.object"].as_str().map(str::to_owned))
             .collect();
         check(
@@ -1542,7 +1555,7 @@ fn main() -> ExitCode {
     settle();
     let nodes = node_names(&pw_dump());
     check(
-        !nodes.iter().any(|n| n.starts_with("pipedeck.link.")),
+        !nodes.iter().any(|n| n.starts_with("pipedeck-smoke.link.")),
         &format!("the cell is gone, the rest stays: {nodes:?}"),
         &mut failures,
     );

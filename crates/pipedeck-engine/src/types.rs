@@ -51,35 +51,68 @@ pub struct MixId(pub u32);
 impl SourceId {
     /// `node.name` of the virtual sink backing this source.
     pub fn sink_node_name(self) -> String {
-        format!("pipedeck.src.{}", self.0)
+        format!("{}.src.{}", node_prefix(), self.0)
     }
 
     /// `node.name` of the sink carrying this source once its plug-ins have
     /// run, which is what the cells read when it has any.
     pub fn plugins_node_name(self) -> String {
-        format!("pipedeck.vst.{}", self.0)
+        format!("{}.vst.{}", node_prefix(), self.0)
     }
 
     /// `node.name` of the sink carrying this source once its effects have
     /// been applied. Cells capture this one instead when there are any.
     pub fn effects_node_name(self) -> String {
-        format!("pipedeck.fx.{}", self.0)
+        format!("{}.fx.{}", node_prefix(), self.0)
     }
 
     /// `node.name` of the sink one person of a call plays into, which
     /// plays on into this row's own.
     pub fn voice_node_name(self, user: &str) -> String {
-        format!("{VOICE_NODE_PREFIX}{}.{user}", self.0)
+        format!("{}{}.{user}", voice_node_prefix(), self.0)
     }
+}
+
+/// What every node of this mixer's `node.name` starts with: `pipedeck`, or
+/// what `PIPEDECK_NODE_PREFIX` says, read once.
+///
+/// The names come from ids, and another mixer on the same graph answers to
+/// the same ones. A test running beside the user's own mixer takes a prefix
+/// of its own, so neither is taken for the other.
+pub fn node_prefix() -> &'static str {
+    static PREFIX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PREFIX.get_or_init(|| {
+        std::env::var("PIPEDECK_NODE_PREFIX")
+            .ok()
+            .filter(|prefix| {
+                !prefix.is_empty()
+                    && prefix
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            })
+            .unwrap_or_else(|| "pipedeck".to_owned())
+    })
 }
 
 /// What every voice sink's `node.name` starts with, so a stream already
 /// sent to one is known for what it is.
-pub const VOICE_NODE_PREFIX: &str = "pipedeck.voice.";
+pub fn voice_node_prefix() -> String {
+    format!("{}.voice.", node_prefix())
+}
 
 /// The application whose row unfolds into a sub-track per person of a
-/// call: Vesktop, whose voice arrives one person to a track.
-pub const VOICE_APP: &str = "vesktop";
+/// call: Vesktop, whose voice arrives one person to a track, or what
+/// `PIPEDECK_VOICE_APP` says, for a test that must not take the user's own
+/// Vesktop for the one it plays.
+pub fn voice_app() -> &'static str {
+    static APP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    APP.get_or_init(|| {
+        std::env::var("PIPEDECK_VOICE_APP")
+            .ok()
+            .filter(|app| !app.is_empty())
+            .unwrap_or_else(|| "vesktop".to_owned())
+    })
+}
 
 /// One person of a call, as the call's client names them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,7 +179,7 @@ impl MixId {
     /// the mix runs happens before it, so a capture client hears the treated
     /// signal and not the raw one.
     pub fn sink_node_name(self) -> String {
-        format!("pipedeck.mix.{}", self.0)
+        format!("{}.mix.{}", node_prefix(), self.0)
     }
 }
 
@@ -193,7 +226,7 @@ pub struct SourceConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub apps: Vec<String>,
     /// The people of a call heard through this row, each on a sub-track of
-    /// their own. Only the row carrying [`VOICE_APP`] has any.
+    /// their own. Only the row carrying [`voice_app`] has any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub voices: Vec<VoiceConfig>,
 }

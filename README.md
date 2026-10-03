@@ -346,3 +346,9 @@ Apache License 2.0, see that directory.
 the live PipeWire daemon: it builds a matrix, checks the nodes and volumes it
 creates, attaches a real output device, then tears everything down and
 verifies that nothing is left behind.
+
+It runs beside your own Pipedeck. Its nodes go by a prefix of their own
+(`PIPEDECK_NODE_PREFIX=pipedeck-smoke`) and it plays its call as an
+application of its own (`PIPEDECK_VOICE_APP`), so neither mixer takes the
+other's nodes for its own, and your own applications and Vesktop are left
+where they are.

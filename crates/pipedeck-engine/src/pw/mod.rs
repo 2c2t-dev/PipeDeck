@@ -44,9 +44,10 @@ use pipewire::types::ObjectType;
 use crate::config::Config;
 use crate::engine::{Event, StateSnapshot};
 use crate::error::EngineError;
+use crate::types::{node_prefix, voice_app, voice_node_prefix};
 use crate::types::{
     voice_labels, App, CallMember, ChainState, Device, Effect, EffectKind, LinkConfig, MixConfig,
-    MixId, MixOutput, SourceConfig, SourceId, VoiceConfig, VOICE_APP, VOICE_NODE_PREFIX,
+    MixId, MixOutput, SourceConfig, SourceId, VoiceConfig,
 };
 use crate::vst3::Plugin;
 
@@ -56,7 +57,10 @@ use meter::Meter;
 use module::LoadedModule;
 use plugin_chain::{PluginChain, Request};
 
-const NODE_PREFIX: &str = "pipedeck.";
+/// What the nodes of every Pipedeck start with, whatever prefix each was
+/// given: a mixer's nodes are never an application's, this one's or
+/// another's.
+const NODE_PREFIX: &str = "pipedeck";
 /// Marks the nodes of this mixer. Node names come from ids that are private
 /// to each mixer, so two Pipedecks on one graph answer to the same names;
 /// this says which ones are ours.
@@ -784,7 +788,7 @@ impl Graph {
             // A mix is a source, so its meter reads it straight rather than
             // through the monitor of a sink.
             if let Some(meter) = self.watch_level(
-                &format!("pipedeck.meter.mix.{id}"),
+                &format!("{}.meter.mix.{id}", node_prefix()),
                 &name,
                 Some(global_id),
                 false,
@@ -811,7 +815,7 @@ impl Graph {
             }
             self.source_meters.remove(&cfg.id);
             if let Some(meter) = self.watch_level(
-                &format!("pipedeck.meter.src.{}", cfg.id),
+                &format!("{}.meter.src.{}", node_prefix(), cfg.id),
                 &target,
                 global_id,
                 from_sink,
@@ -1852,7 +1856,7 @@ impl Graph {
             self.bind_stage(owner, global);
             return;
         }
-        if name.starts_with(NODE_PREFIX) {
+        if name.starts_with(NODE_PREFIX) || name.starts_with(node_prefix()) {
             return;
         }
 
@@ -1875,7 +1879,7 @@ impl Graph {
             // theirs, and its own mix wherever the user assigned it. Which
             // is which is in the stream's own properties, which the registry
             // leaves out: the node is bound to read them before it is moved.
-            let watch = if app.key == VOICE_APP {
+            let watch = if app.key == voice_app() {
                 self.watch_stream_target(global)
             } else {
                 // An application the user has assigned lands on its row's
@@ -2006,7 +2010,7 @@ impl Graph {
         for (id, target) in read {
             let pinned = target
                 .as_deref()
-                .is_some_and(|target| target.starts_with(VOICE_NODE_PREFIX));
+                .is_some_and(|target| target.starts_with(&voice_node_prefix()));
             let Some(stream) = self.streams.get_mut(&id) else {
                 continue;
             };
@@ -2025,7 +2029,7 @@ impl Graph {
                 // Said again where it goes, over whatever moved it before
                 // this was known: a move outlives the mixer that made it.
                 self.pin_stream(id, &name, &voice);
-            } else if let Some(source) = self.source_for_app(VOICE_APP) {
+            } else if let Some(source) = self.source_for_app(voice_app()) {
                 self.move_stream(id, &name, Some(source));
             }
         }
@@ -2036,7 +2040,7 @@ impl Graph {
         for (id, stream) in &self.streams {
             if let Some(voice) = &stream.voice {
                 self.pin_stream(*id, &stream.app.name, voice);
-            } else if stream.app.key == VOICE_APP && !stream.placed {
+            } else if stream.app.key == voice_app() && !stream.placed {
                 // Where it was sent is not known yet; it is placed then.
             } else if let Some(source) = self.source_for_app(&stream.app.key) {
                 self.move_stream(*id, &stream.app.name, Some(source));
@@ -2350,7 +2354,7 @@ impl Graph {
     /// The row the call is heard through: the one Vesktop is assigned to,
     /// when it has a sink for the voices to play into.
     fn call_row(&self) -> Option<SourceId> {
-        let id = self.source_for_app(VOICE_APP)?;
+        let id = self.source_for_app(voice_app())?;
         self.config
             .source(id)
             .is_some_and(|source| !source.is_input())
@@ -2498,7 +2502,7 @@ impl Graph {
         for ((row, user), id) in unmeasured {
             let name = row.voice_node_name(&user);
             let meter = self.watch_level(
-                &format!("pipedeck.meter.voice.{}.{user}", row.0),
+                &format!("{}.meter.voice.{}.{user}", node_prefix(), row.0),
                 &name,
                 Some(id),
                 true,
