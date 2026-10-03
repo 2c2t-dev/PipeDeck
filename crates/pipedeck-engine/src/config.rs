@@ -106,10 +106,21 @@ struct LegacyConfig {
 struct LegacySource {
     id: SourceId,
     name: String,
-    #[serde(default)]
-    stream: ChainState,
-    #[serde(default)]
-    monitor: ChainState,
+    stream: Option<ChainState>,
+    monitor: Option<ChainState>,
+}
+
+impl LegacyConfig {
+    /// Is this the layout of before the matrix? Its sources carry the faders
+    /// of the two buses it had, which no source has had since. A config of
+    /// today with every mix deleted is not one, and is left as it is.
+    fn is_legacy(&self) -> bool {
+        !self.sources.is_empty()
+            && self
+                .sources
+                .iter()
+                .any(|source| source.stream.is_some() || source.monitor.is_some())
+    }
 }
 
 impl Config {
@@ -142,7 +153,7 @@ impl Config {
         })?;
         if config.mixes.is_empty() && config.links.is_empty() {
             if let Ok(legacy) = toml::from_str::<LegacyConfig>(&text) {
-                if !legacy.sources.is_empty() {
+                if legacy.is_legacy() {
                     log::info!("converting the pre-matrix config at {}", path.display());
                     return Ok(Self::from_legacy(legacy, config.latency));
                 }
@@ -172,7 +183,10 @@ impl Config {
         let mut links = Vec::with_capacity(legacy.sources.len() * 2);
         let mut sources = Vec::with_capacity(legacy.sources.len());
         for source in legacy.sources {
-            for (mix, state) in [(stream, source.stream), (monitor, source.monitor)] {
+            for (mix, state) in [
+                (stream, source.stream.unwrap_or_default()),
+                (monitor, source.monitor.unwrap_or_default()),
+            ] {
                 let mut link = LinkConfig::new(source.id, mix);
                 link.set_state(state);
                 links.push(link);
@@ -308,6 +322,23 @@ mod tests {
         assert!(text.contains("[[mix]]"), "{text}");
         assert!(text.contains("[[link]]"), "{text}");
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);
+    }
+
+    #[test]
+    fn a_config_with_every_mix_deleted_is_not_taken_for_an_old_one() {
+        let mut cfg = Config::default();
+        cfg.sources
+            .push(SourceConfig::input(SourceId(2), "Mic", "alsa_input.x"));
+        cfg.stereotool_license = Some("KEY".into());
+        let dir = std::env::temp_dir().join(format!("pipedeck-config-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        cfg.save(&path).unwrap();
+        let loaded = Config::load(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!loaded.migrated);
+        assert!(loaded.mixes.is_empty());
+        assert_eq!(loaded.sources, cfg.sources);
+        assert_eq!(loaded.stereotool_license.as_deref(), Some("KEY"));
     }
 
     #[test]
