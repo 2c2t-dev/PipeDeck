@@ -16,6 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -42,6 +43,31 @@ static BUSY: AtomicBool = AtomicBool::new(false);
 /// and opened again while one does.
 pub fn busy() -> bool {
     BUSY.load(Ordering::Acquire)
+}
+
+/// The last thing said by an install or a removal, and how it ended: kept
+/// here, so a settings window opened while one runs, or after, can say it
+/// too.
+static SAID: Mutex<Option<String>> = Mutex::new(None);
+
+/// What the install or removal running, or the last one, last said.
+pub fn last_said() -> Option<String> {
+    SAID.lock().ok().and_then(|said| said.clone())
+}
+
+fn note(said: &str) {
+    if let Ok(mut kept) = SAID.lock() {
+        *kept = Some(said.to_owned());
+    }
+}
+
+/// Keep how it ended, in the words the window shows.
+fn ended(result: Result<(), String>, done: &str) -> Result<(), String> {
+    note(&match &result {
+        Ok(()) => done.to_owned(),
+        Err(e) => format!("It did not work: {e}"),
+    });
+    result
 }
 
 /// Holds [`BUSY`] for as long as it lives.
@@ -113,7 +139,14 @@ pub fn state() -> State {
     let pointed = read_json(&config_dir().join("state.json"))
         .ok()
         .and_then(|state| state.get("vencordDir")?.as_str().map(PathBuf::from));
-    let built = dist().join("vencordDesktopRenderer.js").is_file() && dist().join(MARKER).is_file();
+    let renderer = dist().join("vencordDesktopRenderer.js");
+    let built = renderer.is_file()
+        && (dist().join(MARKER).is_file()
+            // Built before the marker was left: read once, and marked.
+            || std::fs::read_to_string(&renderer).is_ok_and(|text| {
+                text.contains(PLUGIN_NAME)
+                    && std::fs::write(dist().join(MARKER), PLUGIN_NAME).is_ok()
+            }));
     if pointed.as_deref() == Some(dist().as_path()) && built {
         State::Installed
     } else {
@@ -133,12 +166,15 @@ pub fn is_running() -> bool {
             return false;
         };
         let comm = comm.trim();
+        // Vesktop's own archive, as the electron runs it: not any electron
+        // application that has a path with Vesktop in it open.
         comm == "vesktop"
             || (comm.starts_with("electron")
                 && std::fs::read(entry.path().join("cmdline")).is_ok_and(|line| {
-                    String::from_utf8_lossy(&line)
-                        .to_lowercase()
-                        .contains("vesktop")
+                    String::from_utf8_lossy(&line).split('\0').any(|arg| {
+                        let arg = arg.to_lowercase();
+                        arg.contains("vesktop") && arg.ends_with(".asar")
+                    })
                 }))
     })
 }
@@ -148,6 +184,17 @@ pub fn is_running() -> bool {
 /// the plugin put back in.
 pub fn install(say: impl Fn(&str)) -> Result<(), String> {
     let _busy = Busy::take()?;
+    let say = |said: &str| {
+        note(said);
+        say(said);
+    };
+    ended(
+        build_and_point(&say),
+        "Done. Start Vesktop: the plugin is on.",
+    )
+}
+
+fn build_and_point(say: &impl Fn(&str)) -> Result<(), String> {
     for program in ["git", "npx"] {
         if !on_path(program) {
             return Err(format!(
@@ -156,6 +203,8 @@ pub fn install(say: impl Fn(&str)) -> Result<(), String> {
         }
     }
     let dir = vencord_dir();
+    // Not marked as holding the plugin until this build is checked to.
+    let _ = std::fs::remove_file(dist().join(MARKER));
     if dir.join(".git").is_dir() {
         say("Updating Vencord…");
         run(Command::new("git")
@@ -194,7 +243,7 @@ pub fn install(say: impl Fn(&str)) -> Result<(), String> {
     }
     std::fs::write(dist().join(MARKER), PLUGIN_NAME).map_err(|e| e.to_string())?;
 
-    wait_for_vesktop(&say);
+    wait_for_vesktop(say);
     say("Pointing Vesktop at it…");
     edit_json(&config_dir().join("state.json"), |state| {
         state["vencordDir"] = json!(dist());
@@ -218,7 +267,18 @@ pub fn install(say: impl Fn(&str)) -> Result<(), String> {
 /// Point Vesktop back at its own Vencord.
 pub fn remove(say: impl Fn(&str)) -> Result<(), String> {
     let _busy = Busy::take()?;
-    wait_for_vesktop(&say);
+    let say = |said: &str| {
+        note(said);
+        say(said);
+    };
+    ended(
+        point_back(&say),
+        "Removed. Vesktop runs its own Vencord again.",
+    )
+}
+
+fn point_back(say: &impl Fn(&str)) -> Result<(), String> {
+    wait_for_vesktop(say);
     edit_json(&config_dir().join("state.json"), |state| {
         if let Some(state) = state.as_object_mut() {
             state.remove("vencordDir");

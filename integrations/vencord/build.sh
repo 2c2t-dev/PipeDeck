@@ -17,6 +17,7 @@ else
 fi
 
 mkdir -p "$dir/src/userplugins"
+rm -f "$dir/dist/pipedeck-voices"
 rm -rf "$dir/src/userplugins/pipedeckVoices.vesktop"
 cp -r "$here/pipedeckVoices.vesktop" "$dir/src/userplugins/"
 
@@ -31,6 +32,8 @@ if ! grep -q PipedeckVoices dist/vencordDesktopRenderer.js; then
     echo "The build left the plugin out of Vesktop's files." >&2
     exit 1
 fi
+# The mark Pipedeck reads to know this build holds the plugin.
+printf PipedeckVoices > dist/pipedeck-voices
 
 echo
 echo "Built. In Vesktop: Settings, Vesktop Settings, Vencord Location: $dir/dist"

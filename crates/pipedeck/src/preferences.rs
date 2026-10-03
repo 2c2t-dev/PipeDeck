@@ -283,7 +283,10 @@ fn vesktop_group() -> adw::PreferencesGroup {
         install.set_sensitive(false);
         remove.set_sensitive(false);
         spinner.set_visible(true);
-        status.set_label("Already at it, from when the settings were last open.");
+        status.set_label(
+            &vesktop::last_said()
+                .unwrap_or_else(|| "Already at it, from when the settings were last open.".into()),
+        );
         status.set_visible(true);
         gtk::glib::timeout_add_local(std::time::Duration::from_secs(1), {
             let (install, remove, spinner, status) = (
@@ -293,14 +296,18 @@ fn vesktop_group() -> adw::PreferencesGroup {
                 status.clone(),
             );
             let show = show.clone();
+            // What the work says reaches the window that started it; this
+            // one reads it from where the work keeps it, and how it ended.
             move || {
+                if let Some(said) = vesktop::last_said() {
+                    status.set_label(&said);
+                }
                 if vesktop::busy() {
                     return gtk::glib::ControlFlow::Continue;
                 }
                 install.set_sensitive(true);
                 remove.set_sensitive(true);
                 spinner.set_visible(false);
-                status.set_label("Finished.");
                 show();
                 gtk::glib::ControlFlow::Break
             }
@@ -348,15 +355,12 @@ fn vesktop_group() -> adw::PreferencesGroup {
                         match work {
                             Work::Says(said) => status.set_label(&said),
                             Work::Done(result) => {
-                                status.set_label(&match (result, removing) {
-                                    (Ok(()), false) => {
-                                        "Done. Start Vesktop: the plugin is on.".to_owned()
+                                status.set_label(&vesktop::last_said().unwrap_or_else(|| {
+                                    match result {
+                                        Ok(()) => "Done.".to_owned(),
+                                        Err(e) => format!("It did not work: {e}"),
                                     }
-                                    (Ok(()), true) => {
-                                        "Removed. Vesktop runs its own Vencord again.".to_owned()
-                                    }
-                                    (Err(e), _) => format!("It did not work: {e}"),
-                                });
+                                }));
                                 spinner.set_visible(false);
                                 install.set_sensitive(true);
                                 remove.set_sensitive(true);
