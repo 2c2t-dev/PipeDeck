@@ -65,9 +65,10 @@ pub struct EffectPanel {
     /// The compressor that has just been told to set itself from what it
     /// heard, until its window is drawn again with the result.
     learnt: StdCell<Option<usize>>,
-    /// How many times listening has been started, so a count left behind by
-    /// a window drawn again knows it is not the latest.
-    sessions: StdCell<u64>,
+    /// How many times each effect has been told to listen, by its place,
+    /// so a count left behind by a window drawn again knows it is not that
+    /// effect's latest.
+    sessions: RefCell<std::collections::HashMap<usize, u64>>,
     /// The plug-ins the engine found installed.
     plugins: RefCell<Vec<Plugin>>,
     /// Where Stereo Tool stands, which decides whether it is offered at all.
@@ -101,7 +102,7 @@ impl EffectPanel {
             drawn: StdCell::new(false),
             touched: StdCell::new(None),
             learnt: StdCell::new(None),
-            sessions: StdCell::new(0),
+            sessions: RefCell::new(std::collections::HashMap::new()),
             plugins: RefCell::new(Vec::new()),
             stereotool: RefCell::new(Status::Absent),
             windows: RefCell::new(Vec::new()),
@@ -517,8 +518,12 @@ impl EffectPanel {
                 // Which listening this is: a newer one, started from the
                 // button of a window drawn again since, is not this one's
                 // to cancel.
-                let session = this.sessions.get() + 1;
-                this.sessions.set(session);
+                let session = {
+                    let mut sessions = this.sessions.borrow_mut();
+                    let session = sessions.entry(position).or_default();
+                    *session += 1;
+                    *session
+                };
                 button.set_sensitive(false);
                 let left = StdCell::new(LEARN_SECONDS);
                 said.set_text(&format!("Listening… {}", left.get()));
@@ -538,7 +543,7 @@ impl EffectPanel {
                         // that changed: what was being heard is dropped,
                         // unless listening has started again since.
                         if button.root().is_none() {
-                            if this.sessions.get() == session {
+                            if this.sessions.borrow().get(&position) == Some(&session) {
                                 learn(Learning::Cancel);
                             }
                             return gtk::glib::ControlFlow::Break;
@@ -559,10 +564,16 @@ impl EffectPanel {
                             let button = button.clone();
                             let said = said.clone();
                             move || {
-                                if button.root().is_none() {
+                                // The answer, or none: either way this
+                                // effect is no longer waiting, even with its
+                                // window closed meanwhile.
+                                let waiting = this.learnt.get() == Some(position);
+                                if waiting {
+                                    this.learnt.set(None);
+                                }
+                                if button.root().is_none() || !waiting {
                                     return;
                                 }
-                                this.learnt.set(None);
                                 button.set_sensitive(true);
                                 said.set_text(
                                     "Too little was heard. Try again, speaking through the \
