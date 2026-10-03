@@ -236,6 +236,14 @@ made again on the next tick. `examples/relink_check` shows it: a cell and an
 application, a WirePlumber restarted under them, and the two whole again two
 seconds later.
 
+Closing the mixer hands the applications it moved back to the session
+manager. A move lives in the server's metadata, not in the mixer, and left
+there it would keep an application aimed at a channel that is gone, or at
+another mixer's that answers to the same name: the mixer takes its moves
+back, and waits for the server to have heard before it disconnects. An
+application then plays where it would without Pipedeck, and goes back to its
+channel the next time Pipedeck starts.
+
 `cargo run -p pipedeck-engine --example reconnect_check` watches that happen.
 Point `PIPEWIRE_REMOTE` at a server you are willing to kill — a private one,
 started with `PIPEWIRE_RUNTIME_DIR=/tmp/pdw PIPEWIRE_CORE=pdtest pipewire`,

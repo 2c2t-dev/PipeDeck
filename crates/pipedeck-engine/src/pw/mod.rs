@@ -2044,6 +2044,27 @@ impl Graph {
         }
     }
 
+    /// Take back every move the mixer made, as it closes: each application
+    /// it put on a row, and each person of a call it kept on their sink.
+    /// The session manager places them again as it would have, on the
+    /// default output. Says whether there was any to take back.
+    pub fn release_streams(&self) -> bool {
+        let Some(metadata) = &self.metadata else {
+            return false;
+        };
+        let mut any = false;
+        for (id, stream) in &self.streams {
+            if stream.voice.is_some() || self.source_for_app(&stream.app.key).is_some() {
+                metadata.set_property(*id, "target.object", None, None);
+                any = true;
+            }
+        }
+        if any {
+            log::info!("applications handed back to the session manager");
+        }
+        any
+    }
+
     /// Keep a stream on the voice sink it was sent to, by saying so where
     /// a move would be said.
     fn pin_stream(&self, stream: u32, name: &str, voice: &str) {

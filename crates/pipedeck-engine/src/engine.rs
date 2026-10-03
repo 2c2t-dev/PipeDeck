@@ -566,6 +566,34 @@ fn serve(
     mainloop.run();
     log::info!("session ending");
 
+    // Closed on purpose: the applications the mixer moved are handed back
+    // to the session manager, and the server is waited on until it has
+    // heard so. A move lives in the server's metadata, not in the mixer,
+    // and left there it keeps an application aimed at a sink that is about
+    // to go — or at one of another mixer's that answers to the same name.
+    if ending.get() == Ending::Asked && graph.borrow().release_streams() {
+        let _done = {
+            let mainloop = mainloop.clone();
+            core.add_listener_local()
+                .done(move |id, _| {
+                    if id == pw::core::PW_ID_CORE {
+                        mainloop.quit();
+                    }
+                })
+                .register()
+        };
+        // The server answers within a moment; a second is plenty, and the
+        // mixer closes then whatever it said.
+        let fallback = {
+            let quit = mainloop.clone();
+            mainloop.loop_().add_timer(move |_| quit.quit())
+        };
+        fallback.update_timer(Some(Duration::from_secs(1)), None);
+        if core.sync(0).is_ok() {
+            mainloop.run();
+        }
+    }
+
     // The mixer is not the graph: what it was goes to the next session.
     let saved = {
         let mut g = graph.borrow_mut();
