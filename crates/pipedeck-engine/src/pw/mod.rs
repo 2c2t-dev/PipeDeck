@@ -2081,11 +2081,24 @@ impl Graph {
             self.link_owner.insert(global.id, cell);
             return;
         }
+        // A person's join to their row: from their sink into the row's. The
+        // sink's monitor feeds others too — its meter, a level applet — and
+        // their links coming and going is none of the join's business. One
+        // announced while the person has no join is a partial one already
+        // let go.
+        let into = props
+            .get("link.input.node")
+            .and_then(|id| id.parse::<u32>().ok());
         let voice = self
             .voices
-            .keys()
-            .find(|(row, user)| self.sink_ids.get(&row.voice_node_name(user)) == Some(&from))
-            .cloned();
+            .iter()
+            .find(|((row, user), voice)| {
+                !voice.links.is_empty()
+                    && self.sink_ids.get(&row.voice_node_name(user)) == Some(&from)
+                    && into.is_some()
+                    && self.sink_ids.get(&row.sink_node_name()).copied() == into
+            })
+            .map(|(key, _)| key.clone());
         if let Some(key) = voice {
             self.voice_link_owner.insert(global.id, key);
         }
@@ -2302,13 +2315,15 @@ impl Graph {
     /// Says whether anything changed: the plugin says the call again
     /// whenever it reconnects, and the same call again is no news.
     pub fn set_call(&mut self, members: Vec<CallMember>) -> bool {
-        if members == self.call {
-            return false;
+        let changed = members != self.call;
+        if changed {
+            log::info!("{} in the call", members.len());
         }
-        log::info!("{} in the call", members.len());
         self.call = members;
+        // Even the same call again: a sink that could not be made last time
+        // is tried again.
         self.sync_voices();
-        true
+        changed
     }
 
     /// The row the call is heard through: the one Vesktop is assigned to,
@@ -2486,11 +2501,13 @@ impl Graph {
             // Both channels or none: the ports of a new sink are announced
             // one by one, and a join made with the first alone would leave
             // the person on one side for good.
-            let outputs = self
-                .ports
-                .get(&from)
-                .map_or(0, |ports| ports.iter().filter(|port| !port.input).count());
-            if outputs < CHANNELS {
+            let count = |node: u32, input: bool| {
+                self.ports.get(&node).map_or(0, |ports| {
+                    ports.iter().filter(|port| port.input == input).count()
+                })
+            };
+            let outputs = count(from, false);
+            if outputs < CHANNELS || count(into, true) < CHANNELS {
                 continue;
             }
             let made = self.link_ports(from, into);
