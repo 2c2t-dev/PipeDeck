@@ -23,6 +23,7 @@ use crate::listen::Listen;
 use crate::mix_dialog::MixDialog;
 use crate::preferences;
 use crate::presets;
+use crate::vesktop;
 use crate::widgets;
 
 const MIX_COLUMN_WIDTH: i32 = 240;
@@ -154,23 +155,56 @@ impl Window {
 
         settings.connect_clicked({
             let this = this.clone();
-            move |_| {
-                let state = this.state.borrow();
-                let latency = state.latency.clone();
-                let license = state.stereotool_license.clone();
-                drop(state);
-                let plugins = preferences::PluginState {
-                    installed: this.plugins.borrow().len(),
-                    stereotool: &this.stereotool.borrow(),
-                    license: license.as_deref(),
-                };
-                let open = preferences::present(&this.window, &this.engine, &latency, &plugins);
-                *this.preferences.borrow_mut() = Some(open);
-            }
+            move |_| this.open_preferences(false)
         });
 
         this.rebuild();
+        this.check_vesktop_plugin();
         this
+    }
+
+    /// Open the settings, on the plug-ins' page when asked.
+    fn open_preferences(self: &Rc<Self>, on_plugins: bool) {
+        let state = self.state.borrow();
+        let latency = state.latency.clone();
+        let license = state.stereotool_license.clone();
+        drop(state);
+        let plugins = preferences::PluginState {
+            installed: self.plugins.borrow().len(),
+            stereotool: &self.stereotool.borrow(),
+            license: license.as_deref(),
+        };
+        let open = preferences::present(&self.window, &self.engine, &latency, &plugins, on_plugins);
+        *self.preferences.borrow_mut() = Some(open);
+    }
+
+    /// Say so when the plugin built into Vesktop is behind: Vesktop was
+    /// updated under it, or this Pipedeck carries a newer one. Checked once,
+    /// off the main thread, as the window opens.
+    fn check_vesktop_plugin(self: &Rc<Self>) {
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(vesktop::stale());
+        });
+        gtk::glib::spawn_future_local({
+            let this = self.clone();
+            async move {
+                let Ok(Some(stale)) = rx.recv().await else {
+                    return;
+                };
+                let toast = adw::Toast::new(&format!(
+                    "{}. Update Pipedeck's plugin for Vesktop from the settings.",
+                    stale.reason()
+                ));
+                toast.set_timeout(0);
+                toast.set_button_label(Some("Settings"));
+                toast.connect_button_clicked({
+                    let this = this.clone();
+                    move |_| this.open_preferences(true)
+                });
+                this.toasts.add_toast(toast);
+            }
+        });
     }
 
     pub fn present(&self) {

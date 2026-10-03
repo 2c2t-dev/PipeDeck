@@ -25,8 +25,14 @@ runs the plugins built into it, so Pipedeck clones Vencord into
 `~/.cache/pipedeck/vencord`, puts the plugin in, builds it (with git and
 Node.js; pnpm is fetched through npx), points Vesktop at the result and
 turns the plugin on. Vesktop writes its settings when it quits, so the last
-step waits for it to be closed. Update does the same again after Vesktop or
-Vencord has been updated; Remove points Vesktop back at its own Vencord.
+step waits for it to be closed. Update does the same again; Remove points
+Vesktop back at its own Vencord.
+
+Pipedeck says when an update is due. The build is marked with the plugin it
+holds and the Vesktop it was made for — when and how big Vesktop's archive
+was written, since packages keep a file's build date rather than the day it
+was installed — and when either has changed since, a notice says so as
+Pipedeck starts, with the way to the settings.
 
 The plugin's sources are built into Pipedeck, so it installs them from
 wherever it runs. `build.sh` does the build alone, from this directory, for

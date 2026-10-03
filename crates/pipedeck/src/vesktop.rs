@@ -241,7 +241,10 @@ fn build_and_point(say: &impl Fn(&str)) -> Result<(), String> {
     if !renderer.contains(PLUGIN_NAME) {
         return Err("the build left the plugin out".into());
     }
-    std::fs::write(dist().join(MARKER), PLUGIN_NAME).map_err(|e| e.to_string())?;
+    // What was built, and against which Vesktop: either changing is what
+    // tells an update is due.
+    let mark = json!({ "plugin": plugin_fingerprint(), "vesktop": vesktop_fingerprint() });
+    std::fs::write(dist().join(MARKER), mark.to_string()).map_err(|e| e.to_string())?;
 
     wait_for_vesktop(say);
     say("Pointing Vesktop at it…");
@@ -262,6 +265,109 @@ fn build_and_point(say: &impl Fn(&str)) -> Result<(), String> {
         },
     )?;
     Ok(())
+}
+
+/// Why the plugin installed in Vesktop should be built again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stale {
+    /// This Pipedeck carries a newer plugin than the one built.
+    Plugin,
+    /// Vesktop was installed again, or updated, since the build.
+    Vesktop,
+    /// Built before Pipedeck kept track, so what it was built from is not
+    /// known.
+    Unknown,
+}
+
+impl Stale {
+    /// Why, in the words the window shows.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Stale::Plugin => "This Pipedeck carries a newer version of the plugin",
+            Stale::Vesktop => "Vesktop was updated since the plugin was built",
+            Stale::Unknown => "The plugin was built before Pipedeck kept track of it",
+        }
+    }
+}
+
+/// Whether the plugin should be built again, and why: when it is installed
+/// and either the plugin this Pipedeck carries or Vesktop has changed since.
+/// Reads a few files; nothing is fetched.
+pub fn stale() -> Option<Stale> {
+    if state() != State::Installed {
+        return None;
+    }
+    let Ok(mark) = read_json(&dist().join(MARKER)) else {
+        return Some(Stale::Unknown);
+    };
+    if mark["plugin"].as_str() != Some(plugin_fingerprint().as_str()) {
+        return Some(Stale::Plugin);
+    }
+    let vesktop = vesktop_fingerprint();
+    if vesktop.is_some() && mark["vesktop"].as_str() != vesktop.as_deref() {
+        return Some(Stale::Vesktop);
+    }
+    None
+}
+
+/// The plugin this program carries, as a short hash of its sources.
+fn plugin_fingerprint() -> String {
+    // FNV-1a: small, and the same from one build of Pipedeck to the next.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in PLUGIN_INDEX.bytes().chain(PLUGIN_NATIVE.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Vesktop's installation, as when and how big its archive was written.
+///
+/// Packages keep the date a file was built, not the one it was installed:
+/// the time the file itself last changed on this disk is what moves when
+/// Vesktop is installed again.
+fn vesktop_fingerprint() -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let archive = vesktop_archive()?;
+    let meta = std::fs::metadata(&archive).ok()?;
+    Some(format!("{}:{}", meta.ctime(), meta.size()))
+}
+
+/// Where Vesktop's app.asar is: beside the program the `vesktop` on the
+/// path runs, which is a script that starts it for most packages.
+fn vesktop_archive() -> Option<PathBuf> {
+    let mut programs: Vec<PathBuf> = Vec::new();
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let launcher = dir.join("vesktop");
+            if !launcher.is_file() {
+                continue;
+            }
+            programs.push(launcher.canonicalize().unwrap_or(launcher.clone()));
+            // The script's own target: `exec /opt/vesktop/vesktop …`.
+            if let Ok(script) = std::fs::read_to_string(&launcher) {
+                for word in script.split_whitespace() {
+                    if word.starts_with('/') && word.ends_with("vesktop") {
+                        programs.push(PathBuf::from(word));
+                    }
+                }
+            }
+        }
+    }
+    let mut candidates: Vec<PathBuf> = programs
+        .iter()
+        .filter_map(|program| program.parent())
+        .flat_map(|dir| [dir.join("resources/app.asar"), dir.join("app.asar")])
+        .collect();
+    candidates.extend(
+        [
+            "/opt/vesktop/resources/app.asar",
+            "/usr/lib/vesktop/app.asar",
+            "/usr/lib/vesktop/resources/app.asar",
+        ]
+        .map(PathBuf::from),
+    );
+    candidates.into_iter().find(|archive| archive.is_file())
 }
 
 /// Point Vesktop back at its own Vencord.
@@ -346,6 +452,22 @@ mod tests {
     fn the_plugin_is_carried_whole() {
         assert!(PLUGIN_INDEX.contains(&format!("name: \"{PLUGIN_NAME}\"")));
         assert!(PLUGIN_NATIVE.contains("export function setCall"));
+    }
+
+    #[test]
+    fn the_plugin_has_one_fingerprint() {
+        let print = plugin_fingerprint();
+        assert_eq!(print, plugin_fingerprint());
+        assert_eq!(print.len(), 16);
+    }
+
+    #[test]
+    fn vesktop_is_found_where_its_package_puts_it() {
+        // Only where Vesktop is installed the way vesktop-bin does it.
+        if Path::new("/opt/vesktop/resources/app.asar").is_file() {
+            assert!(vesktop_archive().is_some());
+            assert!(vesktop_fingerprint().is_some_and(|print| print.contains(':')));
+        }
     }
 
     #[test]

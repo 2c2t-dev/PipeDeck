@@ -106,6 +106,7 @@ pub fn present(
     engine: &EngineLink,
     latency: &str,
     plugins: &PluginState<'_>,
+    on_plugins: bool,
 ) -> Rc<Preferences> {
     let dialog = adw::PreferencesDialog::new();
     dialog.set_title("Settings");
@@ -118,6 +119,10 @@ pub fn present(
     dialog.add(&plugins_page(parent, engine, plugins, &count, &found, &key));
 
     dialog.add(&about_page());
+    // Opened from a notice about the plug-ins, straight on their page.
+    if on_plugins {
+        dialog.set_visible_page_name("plugins");
+    }
 
     let closed = Rc::new(std::cell::Cell::new(false));
     dialog.connect_closed({
@@ -145,6 +150,7 @@ fn plugins_page(
     let installed = state.installed;
     let page = adw::PreferencesPage::new();
     page.set_title("Plug-ins");
+    page.set_name(Some("plugins"));
     page.set_icon_name(Some("pd-sfx-symbolic"));
 
     let group = adw::PreferencesGroup::new();
@@ -266,7 +272,10 @@ fn vesktop_group() -> adw::PreferencesGroup {
             let installed = vesktop::state() == vesktop::State::Installed;
             if installed {
                 row.set_title("Installed in Vesktop");
-                row.set_subtitle("Update it when Vesktop or Vencord has been updated");
+                row.set_subtitle(&match vesktop::stale() {
+                    Some(stale) => format!("{}: update it.", stale.reason()),
+                    None => "Up to date with this Vesktop and this Pipedeck".to_owned(),
+                });
                 install.set_label("Update");
             } else {
                 row.set_title("Not installed");
