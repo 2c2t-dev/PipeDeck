@@ -340,7 +340,9 @@ impl PluginChain {
         into: u32,
         latency: &str,
     ) -> Result<Self, EngineError> {
-        let rate = 48_000.0;
+        // What every plug-in is opened for, and what the streams are asked
+        // to run at: see `format_param`.
+        let rate = f64::from(dsp::SAMPLE_RATE);
         let mut opened = Vec::new();
         let mut names = Vec::new();
         // One slot per plug-in asked for, whether or not it opened, so the
@@ -539,13 +541,19 @@ impl PluginChain {
     }
 }
 
-/// The format both streams accept: whatever the graph runs, in floats.
+/// The format both streams accept: floats, at the rate the plug-ins run at.
 ///
 /// The bytes are handed back with the pod because a pod is a view into them
 /// and must not outlive them.
+///
+/// The rate is fixed at the one the plug-ins are opened for, and every
+/// filter of the mixer's own effects is designed for: on a graph running at
+/// another, PipeWire converts on the way in and out, rather than the
+/// effects running at a rate their frequencies and times are wrong for.
 fn format_param() -> Vec<u8> {
     let mut info = AudioInfoRaw::new();
     info.set_format(AudioFormat::F32P);
+    info.set_rate(dsp::SAMPLE_RATE as u32);
     let object = Object {
         type_: SpaTypes::ObjectParamFormat.as_raw(),
         id: ParamType::EnumFormat.as_raw(),
