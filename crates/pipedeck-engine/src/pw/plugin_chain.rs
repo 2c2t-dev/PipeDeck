@@ -322,7 +322,7 @@ impl PluginChain {
         core: &CoreRc,
         node: &str,
         owner: &str,
-        plugins: &[Request],
+        plugins: &[Option<Request>],
         from: u32,
         from_sink: bool,
         into: u32,
@@ -335,6 +335,11 @@ impl PluginChain {
         // caller can point at "the third effect" and be understood.
         let mut windows: Vec<Option<Arc<stereotool::Handle>>> = Vec::new();
         for plugin in plugins {
+            // Asked for and not to be had: its slot stays, empty.
+            let Some(plugin) = plugin else {
+                windows.push(None);
+                continue;
+            };
             match Processor::open(plugin, rate, MAX_BLOCK) {
                 Ok(instance) => {
                     names.push(instance.name().to_owned());
@@ -506,7 +511,7 @@ impl PluginChain {
         let params = plugins
             .iter()
             .map(|request| match request {
-                Request::Native { id, params } => Some((id.clone(), params.clone())),
+                Some(Request::Native { id, params }) => Some((id.clone(), params.clone())),
                 _ => None,
             })
             .collect();

@@ -1090,6 +1090,60 @@ fn main() -> ExitCode {
         &format!("a control moved reloads nothing: {chain_in:?} then {after:?}"),
         &mut failures,
     );
+
+    // A plug-in uninstalled since it was chosen keeps its place in the chain:
+    // the compressor after it is still the second effect, and says so.
+    engine
+        .send(Command::SetEffects {
+            id: source,
+            effects: vec![
+                pipedeck_engine::Effect {
+                    name: "Gone".into(),
+                    kind: pipedeck_engine::EffectKind::Vst3,
+                    plugin: None,
+                    label: "00000000000000000000000000000000".into(),
+                    controls: Vec::new(),
+                },
+                native("compressor", &[]),
+            ],
+        })
+        .unwrap();
+    wait_state(&rx, "a missing plug-in and a compressor", |s| {
+        s.sources.iter().any(|row| row.effects.len() == 2)
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    let kept = match node_serial(&pw_dump(), &format!("pipedeck-smoke.src.{source}")) {
+        Some(serial) => {
+            let mut player = Process::new("pw-play")
+                .arg(format!("--target={serial}"))
+                .arg(&tone)
+                .spawn()
+                .expect("pw-play must be installed");
+            drain(&rx);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut found = false;
+            while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+                if let Ok(Event::Levels { effects, .. }) = rx.recv_timeout(left) {
+                    if effects
+                        .iter()
+                        .any(|fx| fx.source == source && fx.index == 1 && fx.level.is_finite())
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            let _ = player.kill();
+            let _ = player.wait();
+            found
+        }
+        None => false,
+    };
+    check(
+        kept,
+        "an effect after a missing plug-in keeps its place",
+        &mut failures,
+    );
     engine
         .send(Command::SetEffects {
             id: source,

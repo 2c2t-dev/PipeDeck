@@ -1222,12 +1222,17 @@ impl Graph {
     }
 
     /// The plug-ins an object asks for, resolved against what is installed.
-    fn wanted_plugins(&self, effects: &[Effect]) -> Vec<Request> {
+    ///
+    /// One slot per hosted effect, empty for one that cannot be had — a
+    /// plug-in uninstalled since — so that the effects after it keep their
+    /// place: the chain is told "the third" by counting the hosted effects,
+    /// and an effect left out would hand its settings to the next one.
+    fn wanted_plugins(&self, effects: &[Effect]) -> Vec<Option<Request>> {
         let license = self.config.stereotool_license.as_deref();
         effects
             .iter()
             .filter(|effect| effect.is_plugin())
-            .filter_map(|effect| Request::resolve(effect, &self.plugins, license))
+            .map(|effect| Request::resolve(effect, &self.plugins, license))
             .collect()
     }
 
@@ -1271,7 +1276,7 @@ impl Graph {
             };
 
             let plugins = self.wanted_plugins(&cfg.effects);
-            if plugins.is_empty() {
+            if plugins.iter().all(Option::is_none) {
                 continue;
             }
             let chain = PluginChain::new(
