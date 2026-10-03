@@ -65,6 +65,9 @@ pub struct EffectPanel {
     /// The compressor that has just been told to set itself from what it
     /// heard, until its window is drawn again with the result.
     learnt: StdCell<Option<usize>>,
+    /// How many times listening has been started, so a count left behind by
+    /// a window drawn again knows it is not the latest.
+    sessions: StdCell<u64>,
     /// The plug-ins the engine found installed.
     plugins: RefCell<Vec<Plugin>>,
     /// Where Stereo Tool stands, which decides whether it is offered at all.
@@ -98,6 +101,7 @@ impl EffectPanel {
             drawn: StdCell::new(false),
             touched: StdCell::new(None),
             learnt: StdCell::new(None),
+            sessions: StdCell::new(0),
             plugins: RefCell::new(Vec::new()),
             stereotool: RefCell::new(Status::Absent),
             windows: RefCell::new(Vec::new()),
@@ -161,8 +165,17 @@ impl EffectPanel {
     /// Redraw the chain, unless it is already what is on screen.
     fn show(self: &Rc<Self>, effects: &[Effect]) {
         if self.drawn.get() {
+            // An effect told to set itself from a voice answers with its
+            // settings, and that answer is drawn whatever was touched just
+            // before, and even when it is what was there already: the
+            // window drawn again is how it says it learnt.
+            let learning = self.learnt.get().is_some();
             let shown = self.shown.borrow();
             if shown.as_slice() == effects {
+                drop(shown);
+                if learning {
+                    self.redraw_windows();
+                }
                 return;
             }
             // The same chain set otherwise: the cards show no control, so
@@ -170,7 +183,7 @@ impl EffectPanel {
             // control is being moved here.
             if same_chain(&shown, effects) {
                 drop(shown);
-                if self.touched.get().is_some_and(|at| at.elapsed() < SETTLE) {
+                if !learning && self.touched.get().is_some_and(|at| at.elapsed() < SETTLE) {
                     return;
                 }
                 *self.shown.borrow_mut() = effects.to_vec();
@@ -422,9 +435,6 @@ impl EffectPanel {
         spec: &'static pipedeck_engine::dsp::EffectSpec,
         inner: &gtk::Box,
     ) {
-        if pipedeck_engine::dsp::learns(spec.id) {
-            inner.append(&self.learn_row(position, spec.id));
-        }
         for param in spec.params {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
 
@@ -504,6 +514,11 @@ impl EffectPanel {
                     })
                 };
                 learn(Learning::Start);
+                // Which listening this is: a newer one, started from the
+                // button of a window drawn again since, is not this one's
+                // to cancel.
+                let session = this.sessions.get() + 1;
+                this.sessions.set(session);
                 button.set_sensitive(false);
                 let left = StdCell::new(LEARN_SECONDS);
                 said.set_text(&format!("Listening… {}", left.get()));
@@ -520,9 +535,12 @@ impl EffectPanel {
                             })
                         };
                         // The window closed, or was drawn again for a chain
-                        // that changed: what was being heard is dropped.
+                        // that changed: what was being heard is dropped,
+                        // unless listening has started again since.
                         if button.root().is_none() {
-                            learn(Learning::Cancel);
+                            if this.sessions.get() == session {
+                                learn(Learning::Cancel);
+                            }
                             return gtk::glib::ControlFlow::Break;
                         }
                         left.set(left.get() - 1);
