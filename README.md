@@ -171,6 +171,10 @@ Checks against the live PipeWire server, all run with
 | `plugins`, `plugin_check [name]` | Lists the VST3 plug-ins, runs a tone through one. |
 | `stereotool_check [preset.sts]` | Runs a tone through Stereo Tool; `--window` also shows its window. |
 
+`site/` is the website, [2c2t-dev.github.io/PipeDeck](https://2c2t-dev.github.io/PipeDeck/),
+published with the README's pictures by the Pages workflow whenever it
+changes on `main`.
+
 `packaging/package.sh deb|rpm|appimage` builds a package into `dist`, on
 the system it is for; the release workflow runs it on every tag.
 

@@ -26,7 +26,7 @@ jobs:
           rustup default stable
           rustup component add clippy rustfmt
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: Swatinem/rust-cache@v2
 

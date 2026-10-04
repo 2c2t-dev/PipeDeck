@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipedeck</title>
+<meta name="description" content="A PipeWire mixer for Linux streamers: channels in rows, mixes in columns, a fader in every cell, effects per channel, and Stream Deck and Discord integrations.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:title" content="Pipedeck">
+<meta property="og:description" content="The PipeWire mixer for Linux streamers.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://2c2t-dev.github.io/PipeDeck/">
+<meta property="og:image" content="https://2c2t-dev.github.io/PipeDeck/assets/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Nunito:wght@700;800&display=swap">
+<style>
+  :root {
+    --ground: #f6f5f9;
+    --surface: #ffffff;
+    --raised: #efedf4;
+    --line: #e1dee9;
+    --text: #241f31;
+    --muted: #5e5c64;
+    --faint: #8b8794;
+    --pink: #c4378f;
+    --yellow: #b8860b;
+    --blue: #1c71d8;
+    --pink-fill: #e35db5;
+    --yellow-fill: #f6d32d;
+    --blue-fill: #62a0ea;
+    --button: #241f31;
+    --button-text: #ffffff;
+    --code: #241f31;
+    --code-text: #f6f5f4;
+    --shadow: 0 24px 60px -24px rgb(36 31 49 / 0.35);
+    --display: "Nunito", ui-rounded, "Segoe UI", system-ui, sans-serif;
+    --body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", "DejaVu Sans Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #17141d;
+      --surface: #211d29;
+      --raised: #2a2534;
+      --line: #342e40;
+      --text: #f6f5f4;
+      --muted: #c0bfbc;
+      --faint: #8b8794;
+      --pink: #f08fcd;
+      --yellow: #f8e45c;
+      --blue: #99c1f1;
+      --button: #f6f5f4;
+      --button-text: #17141d;
+      --code: #0f0d13;
+      --code-text: #f6f5f4;
+      --shadow: 0 30px 80px -30px rgb(0 0 0 / 0.8);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font: 400 17px/1.6 var(--body);
+    -webkit-font-smoothing: antialiased;
+  }
+  img { max-width: 100%; height: auto; display: block; }
+  a { color: inherit; }
+  .wrap { width: min(1120px, 100%); margin: 0 auto; padding-inline: 24px; }
+
+  h1, h2, h3 { font-family: var(--display); line-height: 1.12; margin: 0; text-wrap: balance; }
+  h2 { font-size: clamp(30px, 4vw, 42px); font-weight: 800; letter-spacing: -0.01em; }
+  h3 { font-size: 20px; font-weight: 800; }
+  p { margin: 0; }
+  .lead { color: var(--muted); font-size: 19px; max-width: 62ch; }
+  .eyebrow {
+    font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--faint);
+  }
+
+  /* The bar along the top. */
+  .bar { padding-block: 20px; }
+  .bar .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font: 800 22px var(--display); }
+  .brand img { width: 36px; height: 36px; }
+  .bar nav { display: flex; gap: 22px; font-size: 15px; font-weight: 500; }
+  .bar nav a { text-decoration: none; color: var(--muted); }
+  .bar nav a:hover { color: var(--text); }
+
+  /* The opening. */
+  .hero { padding-block: 56px 24px; text-align: center; }
+  .hero h1 { font-size: clamp(38px, 6.2vw, 68px); font-weight: 800; letter-spacing: -0.02em; max-width: 17ch; margin: 18px auto 0; }
+  .hero .lead { margin: 22px auto 0; }
+  .faders { display: inline-flex; gap: 8px; }
+  .faders span { width: 34px; height: 8px; border-radius: 4px; }
+  .faders span:nth-child(1) { background: var(--pink-fill); }
+  .faders span:nth-child(2) { background: var(--yellow-fill); }
+  .faders span:nth-child(3) { background: var(--blue-fill); }
+  .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 32px; }
+  .button {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 13px 22px; border-radius: 999px;
+    font-weight: 600; font-size: 16px; text-decoration: none;
+    border: 1px solid var(--line);
+  }
+  .button.primary { background: var(--button); color: var(--button-text); border-color: transparent; }
+  .button:hover { filter: brightness(1.08); }
+  .button svg { width: 18px; height: 18px; }
+  .shot { margin-top: 48px; }
+  .shot img { border-radius: 16px; box-shadow: var(--shadow); margin-inline: auto; }
+
+  section { padding-block: 72px; }
+  .section-head { display: grid; gap: 14px; margin-bottom: 40px; }
+
+  /* What it does. */
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .feature { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 24px; display: grid; gap: 10px; align-content: start; }
+  .feature p { color: var(--muted); font-size: 16px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+
+  /* The matrix, drawn small. */
+  .matrix-section .wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 56px; align-items: center; }
+  .terms { display: grid; gap: 22px; margin-top: 28px; }
+  .terms div { display: grid; gap: 4px; }
+  .terms dt { font: 800 18px var(--display); }
+  .terms dd { margin: 0; color: var(--muted); font-size: 16px; }
+  .matrix {
+    display: grid; grid-template-columns: 1.1fr repeat(3, 1fr); gap: 8px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 16px;
+    font-size: 14px;
+  }
+  .matrix > div { border-radius: 10px; min-height: 52px; display: flex; align-items: center; padding: 0 12px; background: var(--raised); }
+  .matrix .corner { background: none; }
+  .matrix .mix { font-weight: 600; justify-content: center; }
+  .matrix .row { font-weight: 600; gap: 8px; }
+  .matrix .row i { width: 22px; height: 22px; border-radius: 6px; flex: none; }
+  .matrix .cell { gap: 8px; }
+  .matrix .cell b { height: 6px; border-radius: 3px; background: var(--blue-fill); }
+  .matrix .cell s { flex: 1; height: 6px; border-radius: 3px; background: var(--line); text-decoration: none; }
+  .matrix .empty { justify-content: center; color: var(--faint); font-size: 22px; font-weight: 300; }
+
+  /* Effects. */
+  .effects .wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 56px; align-items: center; }
+  .effect-list { list-style: none; padding: 0; margin: 28px 0 0; display: grid; gap: 18px; }
+  .effect-list li { display: grid; grid-template-columns: 12px 1fr; gap: 14px; align-items: baseline; }
+  .effect-list strong { font-weight: 600; }
+  .effect-list span { color: var(--muted); }
+  .effects img { border-radius: 14px; box-shadow: var(--shadow); }
+  .note { margin-top: 22px; color: var(--faint); font-size: 15px; }
+
+  /* Integrations. */
+  .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .pair .feature a { font-weight: 600; color: var(--blue); text-decoration: none; }
+  .pair .feature a:hover { text-decoration: underline; }
+
+  /* Install. */
+  .install { display: grid; gap: 12px; }
+  .package {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px;
+    display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 2fr); gap: 10px 28px; align-items: center;
+  }
+  .package h3 { margin-bottom: 4px; }
+  /* A grid item keeps its content's width unless told otherwise: the
+     commands scroll inside their card instead of spilling out of it. */
+  .package, .package > *, .source, .source > *, .command { min-width: 0; }
+  .package .for { color: var(--muted); font-size: 15px; }
+  .command { display: flex; gap: 8px; align-items: flex-start; }
+  pre {
+    flex: 1; margin: 0; padding: 13px 16px;
+    background: var(--code); color: var(--code-text); color-scheme: dark;
+    border-radius: 10px; font: 14px/1.55 var(--mono); overflow-x: auto;
+    scrollbar-width: thin; scrollbar-color: #5e5c64 transparent;
+  }
+  .copy {
+    flex: none; font: 500 13px var(--body); color: var(--text);
+    background: var(--raised); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; cursor: pointer;
+  }
+  .copy:hover { filter: brightness(1.06); }
+  .source { margin-top: 28px; display: grid; gap: 12px; }
+  .source p { color: var(--muted); font-size: 16px; }
+
+  footer { padding-block: 40px 56px; border-top: 1px solid var(--line); color: var(--faint); font-size: 14px; }
+  footer .wrap { display: grid; gap: 8px; }
+  footer a { color: var(--muted); }
+
+  @media (max-width: 860px) {
+    .package { grid-template-columns: 1fr; }
+    .matrix-section .wrap, .effects .wrap { grid-template-columns: 1fr; gap: 36px; }
+    .bar nav a:not(.keep) { display: none; }
+    section { padding-block: 52px; }
+  }
+  @media (max-width: 480px) {
+    .wrap { padding-inline: 16px; }
+    .matrix { gap: 6px; padding: 10px; font-size: 12px; }
+    .matrix > div { padding: 0 8px; min-height: 44px; }
+    .matrix .row i { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="#"><img src="assets/icon.svg" alt="">Pipedeck</a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#effects">Effects</a>
+      <a class="keep" href="#install">Install</a>
+      <a class="keep" href="https://github.com/2c2t-dev/PipeDeck">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <div class="wrap">
+      <div class="faders" aria-hidden="true"><span></span><span></span><span></span></div>
+      <h1>Your stream doesn't have to hear what you hear.</h1>
+      <p class="lead">Pipedeck is a PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link. Send each application to a channel, then set how loud every channel is in each mix: your headphones, your stream and your call each get a balance of their own.</p>
+      <div class="actions">
+        <a class="button primary" href="https://github.com/2c2t-dev/PipeDeck/releases/latest">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>
+          Download
+        </a>
+        <a class="button" href="https://github.com/2c2t-dev/PipeDeck">Source on GitHub</a>
+      </div>
+      <div class="shot">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="assets/mixer-dark.png">
+          <img src="assets/mixer-light.png" width="1024" height="520" alt="The mixer: five channels in rows, three mixes in columns, a fader in each cell that links them.">
+        </picture>
+      </div>
+    </div>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">What it does</span>
+        <h2>A sound desk for everything that plays.</h2>
+      </div>
+      <div class="features">
+        <div class="feature">
+          <span class="dot" style="background: var(--pink-fill)"></span>
+          <h3>A matrix mixer</h3>
+          <p>Channels in rows, mixes in columns, and a fader and a mute in every cell between them. Up to five mixes: Personal, Chat, Stream, Record and Aux.</p>
+        </div>
+        <div class="feature">
+          <span class="dot" style="background: var(--yellow-fill)"></span>
+          <h3>Apps go where you put them</h3>
+          <p>Attach an application to a channel once, and Pipedeck moves its sound there whenever it starts playing.</p>
+        </div>
+        <div class="feature">
+          <span class="dot" style="background: var(--blue-fill)"></span>
+          <h3>Ready for OBS</h3>
+          <p>Every mix is an input device named after it, so OBS, Discord or a browser list it with the microphones.</p>
+        </div>
+        <div class="feature">
+          <span class="dot" style="background: var(--pink-fill)"></span>
+          <h3>Meters everywhere</h3>
+          <p>Every channel, mix and cell shows what it passes on, as it plays.</p>
+        </div>
+        <div class="feature">
+          <span class="dot" style="background: var(--yellow-fill)"></span>
+          <h3>Follows your volume keys</h3>
+          <p>A level is the volume of its PipeWire node, so a media key or the desktop's volume applet moves the fader too.</p>
+        </div>
+        <div class="feature">
+          <span class="dot" style="background: var(--blue-fill)"></span>
+          <h3>Keeps going</h3>
+          <p>PipeWire or WirePlumber restarting? The mixer puts itself back together, and sends every application back to its channel.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="matrix-section">
+    <div class="wrap">
+      <div>
+        <span class="eyebrow">How it works</span>
+        <h2 style="margin-top: 14px">Rows are what you play into. Columns are what you record.</h2>
+        <dl class="terms">
+          <div><dt>Channels</dt><dd>Where sound comes from: a virtual output any application can pick, or a microphone.</dd></div>
+          <div><dt>Mixes</dt><dd>Where sound goes: an input device for OBS or a call, which can also play to your headphones.</dd></div>
+          <div><dt>Cells</dt><dd>Link a channel to a mix, with that pair's own fader and mute. A cell exists only once you add it.</dd></div>
+        </dl>
+      </div>
+      <div class="matrix" role="img" aria-label="A small matrix: the microphone goes to the chat and stream mixes, music to all three at different levels, and the game to the personal and stream mixes.">
+        <div class="corner"></div>
+        <div class="mix">Personal</div>
+        <div class="mix">Chat</div>
+        <div class="mix">Stream</div>
+
+        <div class="row"><i style="background: #e66151"></i>Mic</div>
+        <div class="empty">+</div>
+        <div class="cell"><b style="width: 92%"></b></div>
+        <div class="cell"><b style="width: 92%"></b></div>
+
+        <div class="row"><i style="background: var(--pink-fill)"></i>Music</div>
+        <div class="cell"><b style="width: 55%"></b><s></s></div>
+        <div class="cell"><b style="width: 22%"></b><s></s></div>
+        <div class="cell"><b style="width: 32%"></b><s></s></div>
+
+        <div class="row"><i style="background: #ed333b"></i>Game</div>
+        <div class="cell"><b style="width: 82%"></b><s></s></div>
+        <div class="empty">+</div>
+        <div class="cell"><b style="width: 64%"></b><s></s></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="effects" class="effects">
+    <div class="wrap">
+      <div>
+        <span class="eyebrow">Effects</span>
+        <h2 style="margin-top: 14px">Treat a voice once, and every mix hears it.</h2>
+        <ul class="effect-list">
+          <li><span class="dot" style="background: var(--pink-fill)"></span><p><strong>Noise suppression</strong> <span>takes fans, keyboards and hiss out from behind a voice.</span></p></li>
+          <li><span class="dot" style="background: var(--yellow-fill)"></span><p><strong>Equaliser</strong> <span>with five bands shaped for a voice, set by dragging them on a curve.</span></p></li>
+          <li><span class="dot" style="background: var(--blue-fill)"></span><p><strong>De-esser</strong> <span>turns down harsh s sounds, and learns where yours are.</span></p></li>
+          <li><span class="dot" style="background: #57e389"></span><p><strong>Compressor</strong> <span>evens out loud and quiet moments, set from five seconds of your voice.</span></p></li>
+        </ul>
+        <p class="note">Built in, nothing to install. VST3 plug-ins and Thimeo's Stereo Tool run on a channel too.</p>
+      </div>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="assets/equaliser-dark.png">
+        <img src="assets/equaliser-light.png" width="720" height="468" alt="The equaliser's window: five bands on a curve, over the zones a voice is talked about in.">
+      </picture>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Integrations</span>
+        <h2>On your Stream Deck, and in your calls.</h2>
+      </div>
+      <div class="pair">
+        <div class="feature">
+          <h3>Stream Deck</h3>
+          <p>Mutes, levels, the mix in your headphones, effects and more on keys and dials, drawn the way the mixer draws them, meters and all. Through OpenDeck or StreamController, with ready-made layouts for the Stream Deck, Stream Deck + and XL.</p>
+          <p><a href="https://github.com/2c2t-dev/PipeDeck/tree/main/integrations/opendeck">OpenDeck plugin</a> · <a href="https://github.com/2c2t-dev/PipeDeck/tree/main/integrations/streamcontroller">StreamController plugin</a></p>
+        </div>
+        <div class="feature">
+          <h3>Discord, one voice at a time</h3>
+          <p>With Vesktop, a Discord call unfolds into a sub-track per person, each with a level and a mute of their own, remembered for the next call.</p>
+          <p><a href="https://github.com/2c2t-dev/PipeDeck/tree/main/integrations/vencord">Vesktop plugin</a></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Install</span>
+        <h2>Get Pipedeck.</h2>
+        <p class="lead">Download a package from the <a href="https://github.com/2c2t-dev/PipeDeck/releases/latest">latest release</a>. Pipedeck needs GTK 4.18, libadwaita 1.7 and PipeWire 1.2 or later.</p>
+      </div>
+      <div class="install">
+        <div class="package">
+          <div><h3>.deb</h3><p class="for">Debian 13, Ubuntu 25.04 and later</p></div>
+          <div class="command"><pre><code>sudo apt install ./pipedeck_*_amd64.deb</code></pre><button class="copy" type="button">Copy</button></div>
+        </div>
+        <div class="package">
+          <div><h3>.rpm</h3><p class="for">Fedora 42 and later</p></div>
+          <div class="command"><pre><code>sudo dnf install ./pipedeck-*.x86_64.rpm</code></pre><button class="copy" type="button">Copy</button></div>
+        </div>
+        <div class="package">
+          <div><h3>AppImage</h3><p class="for">Other distributions with glibc 2.41 or later</p></div>
+          <div class="command"><pre><code>chmod +x Pipedeck-*-x86_64.AppImage
+./Pipedeck-*-x86_64.AppImage</code></pre><button class="copy" type="button">Copy</button></div>
+        </div>
+      </div>
+      <div class="source">
+        <h3>From source</h3>
+        <p>With PipeWire, GTK and libadwaita headers, clang, pkg-config and Rust 1.92 or later:</p>
+        <div class="command"><pre><code>git clone https://github.com/2c2t-dev/PipeDeck.git
+cd PipeDeck
+cargo build --release
+./target/release/pipedeck</code></pre><button class="copy" type="button">Copy</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Pipedeck is free software under the <a href="https://github.com/2c2t-dev/PipeDeck/blob/main/LICENSE">MIT License</a>. Interface icons from <a href="https://fonts.google.com/icons">Material Symbols</a>, Apache License 2.0.</p>
+    <p>Not affiliated with Elgato or Corsair. Wave Link and Stream Deck are their trademarks.</p>
+  </div>
+</footer>
+
+<script>
+  for (const button of document.querySelectorAll(".copy")) {
+    button.addEventListener("click", async () => {
+      const text = button.parentElement.querySelector("code").textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        button.textContent = "Copied";
+      } catch {
+        const range = document.createRange();
+        range.selectNodeContents(button.parentElement.querySelector("code"));
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        button.textContent = "Selected";
+      }
+      setTimeout(() => (button.textContent = "Copy"), 1600);
+    });
+  }
+</script>
+</body>
+</html>
