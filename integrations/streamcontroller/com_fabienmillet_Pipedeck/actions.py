@@ -1,9 +1,24 @@
 """The keys and dials: what each sends Pipedeck, and what it shows.
 
-Every action aims at one thing in the mixer, picked in its settings from
-what Pipedeck has now, and kept by id: a channel renamed is still the same
-key. It shows that thing as Pipedeck says it is, whoever changed it.
+The actions are Wave Link's, as its Stream Deck plugin has them, and as
+the OpenDeck plugin has them too (`integrations/opendeck/src/deck.rs`):
+
+- **Channel Level**: a channel's level, its own or in one mix, or a
+  person's of a call. A key mutes it, sets it, or moves it by a step; a
+  dial moves it and mutes it when pressed.
+- **Mix Level**: the same for a mix.
+- **Monitor Mix**: the mix heard in the headphones, one, or the other of
+  two.
+- **Main Output Device**: the device it is heard on, one, or the other of
+  two.
+
+Everything is kept by id, so renaming a channel does not lose its key, and
+shown as Pipedeck says it is, whoever changed it.
 """
+
+import json
+import threading
+import time
 
 import gi
 
@@ -18,42 +33,71 @@ from src.backend.PluginManager.EventAssigner import EventAssigner  # noqa: E402
 
 from . import draw  # noqa: E402
 
-GONE = [160, 160, 160, 255]
-RED = [237, 51, 59, 255]
+GONE = "(gone)"
+FADES = [(0, "None"), (500, "0.5 s"), (1000, "1 s"), (2000, "2 s"), (5000, "5 s")]
+
+# A fader on its way somewhere, by its target, so a new fade replaces it.
+_fades: dict = {}
+_fades_lock = threading.Lock()
+
+
+def fade(pipedeck, target: dict, start: float, end: float, seconds: float) -> None:
+    """Move a level from `start` to `end` over `seconds`, a step every 40 ms."""
+    key = json.dumps(target, sort_keys=True)
+    token = object()
+    with _fades_lock:
+        _fades[key] = token
+
+    def run():
+        began = time.monotonic()
+        while True:
+            with _fades_lock:
+                if _fades.get(key) is not token:
+                    return
+            part = 1.0 if seconds <= 0 else min(1.0, (time.monotonic() - began) / seconds)
+            pipedeck.do(dict(target, volume=start + (end - start) * part))
+            if part >= 1.0:
+                with _fades_lock:
+                    if _fades.get(key) is token:
+                        del _fades[key]
+                return
+            time.sleep(0.04)
+
+    threading.Thread(target=run, name="pipedeck-fade", daemon=True).start()
 
 
 class PipedeckAction(ActionCore):
-    """What every Pipedeck key has: a target, picked in its settings, and a
-    picture kept up with the mixer."""
-
-    # The kinds of thing this action can aim at.
-    KINDS: tuple = ()
-    # What the picker says before anything is picked.
-    PICK = "Pick what this controls"
+    """What every Pipedeck key has: settings picked from the mixer, and a
+    picture kept up with it."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.has_configuration = True
         self.pipedeck = self.plugin_base.pipedeck
         self.pipedeck.listen(self.changed)
-        self._picker = None
         # What the picture was last drawn from, so a change elsewhere in the
-        # mixer does not redraw every key.
+        # mixer, or a meter elsewhere, does not redraw every key.
         self._shown = None
         self.create_event_assigners()
 
     def create_event_assigners(self) -> None:
-        pass
+        """Each action says what its key and dial do."""
 
-    # -- The target ----------------------------------------------------------
+    def on_dial(self) -> bool:
+        return isinstance(self.input_ident, Input.Dial)
 
-    def target(self):
-        return self.get_settings().get("target")
+    def settings(self) -> dict:
+        return self.get_settings() or {}
 
-    def send(self, **change) -> None:
-        target = self.target()
-        if not target or not self.pipedeck.do(dict(target, **change)):
-            self.show_error(1)
+    def save(self, **changes) -> None:
+        settings = self.settings()
+        for name, value in changes.items():
+            if value is None:
+                settings.pop(name, None)
+            else:
+                settings[name] = value
+        self.set_settings(settings)
+        self.redraw()
 
     # -- Drawing -------------------------------------------------------------
 
@@ -70,262 +114,389 @@ class PipedeckAction(ActionCore):
     def redraw(self, always: bool = True) -> bool:
         if not self.on_ready_called or not self.get_is_present():
             return False
-        settings = self.get_settings()
-        shown = (self.pipedeck.state is None, repr(settings), repr(self.pipedeck.find(settings.get("target"))))
-        if shown == self._shown and not always:
-            return False
-        self._shown = shown
         try:
-            self.draw()
+            size = self.get_input().get_image_size()
+            if not size or not size[0]:
+                return False
+            picture = self.now()
+            if (picture, size) == self._shown and not always:
+                return False
+            self._shown = (picture, size)
+            self.set_media(image=draw.picture(picture, size), size=1.0)
         except Exception as e:
             log.exception(f"pipedeck: cannot draw {self.action_id}: {e}")
         return False
 
-    def draw(self) -> None:
-        settings = self.get_settings()
-        found = self.pipedeck.find(settings.get("target"))
-        if found is None:
-            # Not running, nothing picked, or picked and since removed.
-            if self.pipedeck.state is None:
-                why = "Offline"
-            elif settings.get("target"):
-                why = "Gone"
-            else:
-                why = "Pick one"
-            self.picture(icon=draw.look(None)[0], color=draw.GREY, lit=False)
-            self.caption(settings.get("label", ""), why, GONE)
-            return
-        self.show(found)
+    def now(self) -> draw.Picture:
+        """What the key shows now."""
+        settings = self.settings()
+        label = settings.get("label", "")
+        if self.pipedeck.state is None:
+            return draw.waiting(label, "Offline")
+        try:
+            return self.picture(settings)
+        except LookupError as why:
+            return draw.waiting(label, why.args[0])
 
-    def show(self, found: dict) -> None:
+    def picture(self, settings: dict) -> draw.Picture:
+        """What the key shows, or LookupError saying why it cannot."""
         raise NotImplementedError
-
-    def picture(self, icon, color, level=None, muted=False, lit=True) -> None:
-        size = self.get_input().get_image_size()
-        if not size or not size[0]:
-            return
-        self.set_media(image=draw.render(size, icon, color, level, muted, lit), size=1.0, update=False)
-
-    def caption(self, top: str, bottom: str, bottom_color=None) -> None:
-        width = (self.get_input().get_image_size() or (72, 72))[0]
-        self.set_top_label(shorten(top, max(width // 8, 6)), font_size=11, update=False)
-        self.set_bottom_label(bottom, color=bottom_color, font_size=11, update=True)
-
-    def look_of(self, found: dict):
-        """The badge an object wears: a mix white, anything else in colour."""
-        icon, color = draw.look(found.get("icon"), found.get("input", False))
-        if self.target().get("what") == "mix":
-            color = draw.WHITE
-        return icon, color
 
     # -- Settings ------------------------------------------------------------
 
-    def get_config_rows(self) -> list:
-        model = Gtk.StringList()
-        self._picker = Adw.ComboRow(model=model, title="Controls")
-        self._choices = []
-        settings = self.get_settings()
-        saved = settings.get("target")
-        choices = self.pipedeck.targets(self.KINDS)
-        if saved and not any(target == saved for target, _ in choices):
-            # Kept while Pipedeck is away, or the thing gone, so it is not
-            # lost by opening the settings.
-            choices.append((saved, settings.get("label") or "(gone)"))
-        if not choices:
-            choices = [(None, "Start Pipedeck to pick" if self.pipedeck.state is None else "Nothing to pick")]
-        elif not saved:
-            choices.insert(0, (None, self.PICK))
-        for target, label in choices:
-            model.append(label)
-            self._choices.append((target, label))
-        selected = next((i for i, (target, _) in enumerate(self._choices) if target == saved), 0)
-        self._picker.set_selected(selected)
-        self._picker.connect("notify::selected", self.on_pick)
-        return [self._picker] + self.more_rows()
+    def combo(self, title: str, options: list, chosen, missing: str = GONE) -> Adw.ComboRow:
+        """A list to pick from, as (value, label) pairs. What was chosen is
+        kept even while the mixer does not have it, so opening the settings
+        loses nothing."""
+        options = list(options)
+        if chosen is not None and not any(value == chosen for value, _ in options):
+            options.append((chosen, missing))
+        if chosen is None:
+            options.insert(0, (None, "Pick one"))
+        row = Adw.ComboRow(title=title)
+        self.fill(row, options, chosen)
+        return row
 
-    def more_rows(self) -> list:
-        return []
+    @staticmethod
+    def fill(row: Adw.ComboRow, options: list, chosen) -> None:
+        row._options = options
+        row._filling = True
+        row.set_model(Gtk.StringList.new([label for _, label in options]))
+        row.set_selected(next((i for i, (value, _) in enumerate(options) if value == chosen), 0))
+        row._filling = False
 
-    def on_pick(self, row, *_):
-        index = row.get_selected()
-        if index >= len(self._choices):
-            return
-        target, label = self._choices[index]
-        if target is None:
-            return
-        settings = self.get_settings()
-        settings["target"] = target
-        settings["label"] = label
-        self.set_settings(settings)
-        self.redraw()
+    @staticmethod
+    def picked(row: Adw.ComboRow, callback) -> None:
+        """Call `callback` with the value picked, when one is."""
+
+        def on_selected(row, *_):
+            if getattr(row, "_filling", False):
+                return
+            index = row.get_selected()
+            if index < len(row._options) and row._options[index][0] is not None:
+                callback(*row._options[index])
+
+        row.connect("notify::selected", on_selected)
 
 
-def shorten(text: str, length: int) -> str:
-    return text if len(text) <= length else text[: length - 1] + "…"
+class LevelAction(PipedeckAction):
+    """A level: muted, set or moved by a key, turned by a dial."""
 
-
-class Mute(PipedeckAction):
-    KINDS = ("channel", "mix", "cell", "voice")
+    def target(self, settings: dict):
+        raise NotImplementedError
 
     def create_event_assigners(self) -> None:
         self.add_event_assigner(
             EventAssigner(
-                id="toggle-mute",
-                ui_label="Mute or unmute",
-                default_events=[
-                    Input.Key.Events.DOWN,
-                    Input.Dial.Events.DOWN,
-                    Input.Dial.Events.SHORT_TOUCH_PRESS,
-                ],
-                callback=lambda data=None: self.send(mute="toggle"),
-            )
-        )
-
-    def show(self, found: dict) -> None:
-        icon, color = self.look_of(found)
-        self.picture(icon, color, muted=found["muted"])
-        self.caption(found["name"], "Muted" if found["muted"] else "", RED)
-
-
-class Volume(PipedeckAction):
-    """A key moves the level by its step; a dial moves it either way and
-    mutes when pressed."""
-
-    KINDS = ("channel", "mix", "cell", "voice")
-
-    def create_event_assigners(self) -> None:
-        self.add_event_assigner(
-            EventAssigner(
-                id="step",
-                ui_label="Move by the step",
+                id="key-press",
+                ui_label="Key press (mute, set or adjust)",
                 default_event=Input.Key.Events.DOWN,
-                callback=lambda data=None: self.nudge(self.step()),
+                callback=lambda data=None: self.press(),
             )
         )
         self.add_event_assigner(
             EventAssigner(
-                id="up",
+                id="turn-up",
                 ui_label="Turn up",
                 default_event=Input.Dial.Events.TURN_CW,
-                callback=lambda data=None: self.nudge(abs(self.step())),
+                callback=lambda data=None: self.turn(1),
             )
         )
         self.add_event_assigner(
             EventAssigner(
-                id="down",
+                id="turn-down",
                 ui_label="Turn down",
                 default_event=Input.Dial.Events.TURN_CCW,
-                callback=lambda data=None: self.nudge(-abs(self.step())),
+                callback=lambda data=None: self.turn(-1),
             )
         )
         self.add_event_assigner(
             EventAssigner(
-                id="toggle-mute",
+                id="mute",
                 ui_label="Mute or unmute",
                 default_events=[Input.Dial.Events.DOWN, Input.Dial.Events.SHORT_TOUCH_PRESS],
                 callback=lambda data=None: self.send(mute="toggle"),
             )
         )
 
-    def step(self) -> int:
-        return int(self.get_settings().get("step", 5))
+    def step(self) -> float:
+        return float(self.settings().get("step", 5)) / 100
 
-    def nudge(self, percent: int) -> None:
-        self.send(nudge=percent / 100)
+    def send(self, **change) -> None:
+        target = self.target(self.settings())
+        if not target or not self.pipedeck.do(dict(target, **change)):
+            self.show_error(1)
 
-    def show(self, found: dict) -> None:
-        icon, color = self.look_of(found)
-        self.picture(icon, color, level=found["volume"], muted=found["muted"])
-        if found["muted"]:
-            self.caption(found["name"], "Muted", RED)
+    def turn(self, way: int) -> None:
+        self.send(nudge=abs(self.step()) * way)
+
+    def press(self) -> None:
+        settings = self.settings()
+        mode = settings.get("mode", "mute")
+        if mode == "adjust":
+            self.send(nudge=self.step())
+        elif mode == "set":
+            target = self.target(settings)
+            found = self.pipedeck.find(target)
+            if not found:
+                self.show_error(1)
+                return
+            end = max(0.0, min(100.0, float(settings.get("volume", 100)))) / 100
+            fade(self.pipedeck, target, found["volume"], end, settings.get("fade", 0) / 1000)
         else:
-            self.caption(found["name"], draw.percent(found["volume"]))
+            self.send(mute="toggle")
 
-    def more_rows(self) -> list:
-        row = Adw.SpinRow.new_with_range(-100, 100, 1)
-        row.set_title("Step")
-        row.set_subtitle("How far a press moves the level, in percent; below zero lowers it. A dial turns by as much either way.")
-        row.set_value(self.step())
-        row.connect("notify::value", self.on_step)
-        return [row]
+    def picture(self, settings: dict) -> draw.Picture:
+        target = self.target(settings)
+        if not target:
+            raise LookupError("Pick one")
+        found = self.pipedeck.find(target)
+        if not found:
+            raise LookupError("Gone")
+        meter = None
+        if settings.get("display") != "volume":
+            # In steps a key can show, so a meter that barely moved is not
+            # drawn again.
+            meter = round(draw.meter_position(self.pipedeck.meter(target)) * 40) / 40
+        within = found.get("within")
+        return draw.Picture(
+            name=found["name"],
+            look=draw.look(found.get("icon"), found["input"], found["mix"]),
+            corner=within and draw.look(within.get("icon"), mix=True)[0],
+            level=found["volume"],
+            meter=meter,
+            muted=found["muted"],
+            below=("Muted", draw.RED) if found["muted"] else (draw.percent(found["volume"]), draw.TEXT),
+        )
 
-    def on_step(self, row, *_):
-        settings = self.get_settings()
-        settings["step"] = int(row.get_value())
-        self.set_settings(settings)
+    def level_rows(self) -> list:
+        settings = self.settings()
+        display = self.combo(
+            "Display",
+            [("meter", "Level meter"), ("volume", "Volume only")],
+            "volume" if settings.get("display") == "volume" else "meter",
+        )
+        self.picked(display, lambda value, _: self.save(display=value))
+        rows = [display]
+
+        mode = self.combo(
+            "Key press",
+            [("mute", "Mute"), ("set", "Set volume"), ("adjust", "Adjust volume")],
+            settings.get("mode", "mute"),
+        )
+        volume = Adw.SpinRow.new_with_range(0, 100, 1)
+        volume.set_title("Volume (%)")
+        volume.set_value(float(settings.get("volume", 100)))
+        volume.connect("notify::value", lambda row, *_: self.save(volume=int(row.get_value())))
+        fade_row = self.combo("Fade", FADES, int(settings.get("fade", 0)))
+        self.picked(fade_row, lambda value, _: self.save(fade=value))
+        step = Adw.SpinRow.new_with_range(-100, 100, 1)
+        step.set_title("Step (%)")
+        step.set_value(float(settings.get("step", 5)))
+        step.connect("notify::value", lambda row, *_: self.save(step=int(row.get_value())))
+
+        def show(chosen):
+            dial = self.on_dial()
+            mode.set_visible(not dial)
+            volume.set_visible(not dial and chosen == "set")
+            fade_row.set_visible(not dial and chosen == "set")
+            step.set_visible(dial or chosen == "adjust")
+            step.set_subtitle(
+                "How far each notch of the dial moves the level. Pressing or touching it mutes."
+                if dial
+                else "How far a press moves the level; below zero lowers it."
+            )
+
+        def on_mode(value, _):
+            self.save(mode=value)
+            show(value)
+
+        self.picked(mode, on_mode)
+        show(settings.get("mode", "mute"))
+        return rows + [mode, volume, fade_row, step]
 
 
-class Hear(PipedeckAction):
-    """Which mix is heard in the headphones: this one alone, the way a
-    monitor mix is switched, or this one on and off beside the others."""
+class ChannelLevel(LevelAction):
+    def target(self, settings: dict):
+        channel = settings.get("channel")
+        if channel is None:
+            return None
+        if settings.get("user"):
+            return {"what": "voice", "channel": channel, "user": settings["user"]}
+        if settings.get("mix") is not None:
+            return {"what": "cell", "channel": channel, "mix": settings["mix"]}
+        return {"what": "channel", "id": channel}
 
-    KINDS = ("mix",)
-    PICK = "Pick a mix"
+    def get_config_rows(self) -> list:
+        settings = self.settings()
+        state = self.pipedeck.state or {"channels": [], "mixes": [], "cells": []}
+        options = []
+        for channel in state["channels"]:
+            options.append((("c", channel["id"]), channel["name"]))
+            for voice in channel["voices"]:
+                options.append((("v", channel["id"], voice["user"]), f"{channel['name']} › {voice['name']}"))
+        chosen = None
+        if settings.get("channel") is not None:
+            chosen = ("v", settings["channel"], settings["user"]) if settings.get("user") else ("c", settings["channel"])
+        channel = self.combo("Channel", options, chosen, settings.get("label", GONE))
+        level = Adw.ComboRow(title="Level")
+
+        def fill_levels(channel_id, user):
+            # A person of a call has one level; a channel has its own and
+            # one in each mix it feeds.
+            level.set_visible(channel_id is not None and not user)
+            fed = [
+                (mix["id"], f"In {mix['name']}")
+                for mix in state["mixes"]
+                if any(c["channel"] == channel_id and c["mix"] == mix["id"] for c in state["cells"])
+            ]
+            self.fill(level, [(None, "Main level")] + fed, self.settings().get("mix"))
+
+        def on_channel(value, label):
+            user = value[2] if value[0] == "v" else None
+            self.save(channel=value[1], user=user, mix=None, label=label)
+            fill_levels(value[1], user)
+
+        def on_level(row, *_):
+            if getattr(row, "_filling", False):
+                return
+            index = row.get_selected()
+            if index < len(row._options):
+                self.save(mix=row._options[index][0])
+
+        self.picked(channel, on_channel)
+        level.connect("notify::selected", on_level)
+        fill_levels(settings.get("channel"), settings.get("user"))
+        return [channel, level] + self.level_rows()
+
+
+class MixLevel(LevelAction):
+    def target(self, settings: dict):
+        mix = settings.get("mix")
+        return None if mix is None else {"what": "mix", "id": mix}
+
+    def get_config_rows(self) -> list:
+        settings = self.settings()
+        mixes = (self.pipedeck.state or {}).get("mixes", [])
+        mix = self.combo("Mix", [(m["id"], m["name"]) for m in mixes], settings.get("mix"), settings.get("label", GONE))
+        self.picked(mix, lambda value, label: self.save(mix=value, label=label))
+        return [mix] + self.level_rows()
+
+
+class SwitchAction(PipedeckAction):
+    """One thing to switch to, or the other of two."""
+
+    # The settings the two are kept under, and what they are called.
+    FIRST, SECOND, WHAT = "", "", ""
 
     def create_event_assigners(self) -> None:
         self.add_event_assigner(
             EventAssigner(
-                id="hear",
-                ui_label="Hear this mix",
-                default_events=[Input.Key.Events.DOWN, Input.Dial.Events.DOWN],
-                callback=self.on_press,
+                id="switch",
+                ui_label="Switch",
+                default_events=[
+                    Input.Key.Events.DOWN,
+                    Input.Dial.Events.DOWN,
+                    Input.Dial.Events.SHORT_TOUCH_PRESS,
+                ],
+                callback=lambda data=None: self.switch(),
             )
         )
 
-    def only(self) -> bool:
-        return bool(self.get_settings().get("only", True))
+    def options(self) -> list:
+        raise NotImplementedError
 
-    def on_press(self, data=None) -> None:
-        target = self.target()
-        if not target:
+    def is_on(self, value) -> bool:
+        raise NotImplementedError
+
+    def order(self, value) -> dict:
+        raise NotImplementedError
+
+    def shown(self, settings: dict):
+        """Of two, the one on, or the first when neither is."""
+        first, second = settings.get(self.FIRST), settings.get(self.SECOND)
+        if first is None:
+            raise LookupError("Pick one")
+        if settings.get("mode") == "toggle" and second is not None and self.is_on(second) and not self.is_on(first):
+            return second
+        return first
+
+    def switch(self) -> None:
+        settings = self.settings()
+        first, second = settings.get(self.FIRST), settings.get(self.SECOND)
+        if first is None or self.pipedeck.state is None:
             self.show_error(1)
             return
-        if self.only():
-            action = {"what": "hear", "mix": target["id"], "only": True}
-        else:
-            action = {"what": "hear", "mix": target["id"], "listening": "toggle"}
-        if not self.pipedeck.do(action):
+        value = second if settings.get("mode") == "toggle" and second is not None and self.is_on(first) else first
+        if not self.pipedeck.do(self.order(value)):
             self.show_error(1)
 
-    def show(self, found: dict) -> None:
-        icon, color = self.look_of(found)
-        self.picture(icon, color, lit=found["listening"])
-        self.caption(found["name"], "Heard" if found["listening"] else "", None)
+    def get_config_rows(self) -> list:
+        settings = self.settings()
+        options = self.options()
+        toggle = settings.get("mode") == "toggle"
+        mode = self.combo("Mode", [("select", "Select one"), ("toggle", "Toggle between two")], "toggle" if toggle else "select")
+        first = self.combo(self.WHAT, options, settings.get(self.FIRST), settings.get("label", GONE))
+        second = self.combo(f"Second {self.WHAT.lower()}", options, settings.get(self.SECOND))
 
-    def more_rows(self) -> list:
-        row = Adw.SwitchRow(title="Only this mix", subtitle="Stop hearing the other mixes. Off, a press turns this one on or off.")
-        row.set_active(self.only())
-        row.connect("notify::active", self.on_only)
-        return [row]
+        def show(toggled):
+            first.set_title(f"First {self.WHAT.lower()}" if toggled else self.WHAT)
+            second.set_visible(toggled)
 
-    def on_only(self, row, *_):
-        settings = self.get_settings()
-        settings["only"] = row.get_active()
-        self.set_settings(settings)
+        def on_mode(value, _):
+            self.save(mode=value)
+            show(value == "toggle")
+
+        self.picked(mode, on_mode)
+        self.picked(first, lambda value, label: self.save(**{self.FIRST: value, "label": label}))
+        self.picked(second, lambda value, _: self.save(**{self.SECOND: value}))
+        show(toggle)
+        return [mode, first, second]
 
 
-class Output(PipedeckAction):
-    """The device the mixes are heard on: headphones or speakers."""
+class MonitorMix(SwitchAction):
+    FIRST, SECOND, WHAT = "mix", "mix2", "Mix"
 
-    KINDS = ("output",)
-    PICK = "Pick a device"
+    def options(self) -> list:
+        return [(m["id"], m["name"]) for m in (self.pipedeck.state or {}).get("mixes", [])]
 
-    def create_event_assigners(self) -> None:
-        self.add_event_assigner(
-            EventAssigner(
-                id="listen-here",
-                ui_label="Listen on this device",
-                default_events=[Input.Key.Events.DOWN, Input.Dial.Events.DOWN],
-                callback=self.on_press,
-            )
+    def is_on(self, value) -> bool:
+        return any(m["id"] == value and m["listening"] for m in self.pipedeck.state["mixes"])
+
+    def order(self, value) -> dict:
+        return {"what": "hear", "mix": value, "only": True}
+
+    def picture(self, settings: dict) -> draw.Picture:
+        mix = next((m for m in self.pipedeck.state["mixes"] if m["id"] == self.shown(settings)), None)
+        if not mix:
+            raise LookupError("Gone")
+        return draw.Picture(
+            name=mix["name"],
+            look=draw.look(mix.get("icon"), mix=True),
+            dim=not mix["listening"],
+            below=("Heard", draw.TEXT) if mix["listening"] else ("Hear", draw.FAINT),
         )
 
-    def on_press(self, data=None) -> None:
-        target = self.target()
-        if not target or not self.pipedeck.do({"what": "listen", "device": target["device"]}):
-            self.show_error(1)
 
-    def show(self, found: dict) -> None:
-        icon, color = draw.look("headset")
-        self.picture(icon, color, lit=found["listening"])
-        self.caption(found["name"], "Listening" if found["listening"] else "", None)
+class MainOutput(SwitchAction):
+    FIRST, SECOND, WHAT = "device", "device2", "Device"
+
+    def options(self) -> list:
+        return [(o["name"], o["description"]) for o in (self.pipedeck.state or {}).get("outputs", [])]
+
+    def is_on(self, value) -> bool:
+        return self.pipedeck.state.get("listen") == value
+
+    def order(self, value) -> dict:
+        return {"what": "listen", "device": value}
+
+    def picture(self, settings: dict) -> draw.Picture:
+        found = self.pipedeck.find({"what": "output", "device": self.shown(settings)})
+        if not found:
+            raise LookupError("Gone")
+        return draw.Picture(
+            name=found["name"],
+            look=draw.look("headset"),
+            dim=not found["listening"],
+            below=("Listening", draw.TEXT) if found["listening"] else ("Listen", draw.FAINT),
+        )

@@ -1,23 +1,25 @@
 # Pipedeck for StreamController
 
 A [StreamController](https://github.com/StreamController/StreamController)
-plugin that puts Pipedeck on a Stream Deck: keys and dials that mute and
-move the levels of channels, mixes, cells and the people of a call, choose
-which mix is heard in the headphones, and the device it is heard on. Each
-shows what it controls as Pipedeck draws it, kept up as the mixer changes,
-whoever changed it.
+plugin that puts Pipedeck on a Stream Deck the way Elgato's Wave Link
+plugin puts Wave Link there. It has the same actions as the [OpenDeck
+plugin](../opendeck/README.md) and draws its keys the same way, each
+showing what it controls as Pipedeck draws it, kept up as the mixer
+changes, whoever changed it.
 
-| Action | A key | A dial (Stream Deck +) |
-| --- | --- | --- |
-| **Mute** | mutes or unmutes | press or touch mutes or unmutes |
-| **Volume** | moves the level by its step (below zero lowers it) | turns the level up or down by the step; press or touch mutes |
-| **Hear mix** | hears this mix alone, or turns it on or off beside the others | press, the same |
-| **Listen on** | moves every mix heard to this device | press, the same |
+| Action | Settings | A key | A dial (Stream Deck +) |
+| --- | --- | --- | --- |
+| **Channel Level** | a channel, or a person of its call; its main level or its level in one mix | mutes, sets the volume (with a fade if wanted), or adjusts it by a step | turns the level; press or touch mutes |
+| **Mix Level** | a mix | the same | the same |
+| **Monitor Mix** | one mix, or two to switch between | hears that mix in the headphones, alone | press, the same |
+| **Main Output Device** | one device, or two to switch between | listens on that device | press, the same |
 
-Each action is pointed at one thing in its settings, picked from what
-Pipedeck has at the time, and kept by id, so renaming a channel does not
-lose the key. While Pipedeck is not running the keys say so, and come back
-when it does.
+A level shows its meter with it, as the mixer's do: inside the ring on a
+key, in the bar on the touch strip with the level as a handle on it; set
+**Display** to *Volume only* to leave it out. A channel's level in one mix
+wears that mix's badge in its corner. Everything is kept by id, so renaming
+a channel does not lose its key; while Pipedeck is not running the keys say
+so, and come back when it does.
 
 ## Install
 
@@ -28,7 +30,8 @@ integrations/streamcontroller/install.sh
 copies the plugin and Pipedeck's icons into StreamController's plugins
 folder (`~/.var/app/com.core447.StreamController/data/plugins`, or
 `$STREAMCONTROLLER_DATA/plugins`). StreamController loads plugins when it
-starts, so restart it; the actions are then under **Pipedeck**.
+starts, so restart it; the actions are then under **Pipedeck**. Drop one
+on a key or a dial, and pick what it controls in its settings.
 
 ## How it talks to Pipedeck
 

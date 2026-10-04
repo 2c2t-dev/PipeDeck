@@ -1,18 +1,21 @@
 """What a key, or a dial's part of the touch strip, shows: the badge the
-mixer draws for the object, its level around it or under it, and whether
-it is muted or heard.
+mixer draws for the object, its level around it or beside it with its
+meter, whether it is muted or heard, and its name.
 
+Drawn as the OpenDeck plugin draws it (`integrations/opendeck/src/draw.rs`),
+as SVG, rendered here by cairosvg, so a deck looks the same under either.
 The looks are Pipedeck's own, from `crates/pipedeck/src/presets.rs`; the
 icons are copied next to this file by `install.sh`.
 """
 
 import io
+import math
 import os
 from functools import lru_cache
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import cairosvg
-from PIL import Image, ImageDraw
+from PIL import Image
 
 ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icons")
 
@@ -43,120 +46,219 @@ LOOKS = {
 
 WHITE = "#f2f2f2"
 GLYPH = "#12141a"
-MUTED = "#e01b24"
 GREY = "#5e5c64"
-TRACK = (255, 255, 255, 50)
-LEVEL = (255, 255, 255, 230)
+RED = "#ed333b"
+TEXT = "#ffffff"
+FAINT = "#a0a0a0"
+TRACK = "rgba(255,255,255,0.2)"
+LEVEL = "rgba(255,255,255,0.9)"
+
+# A meter's colours, by where it reads: green, then yellow from 6 dB under
+# full scale, red from 1 dB under it.
+METER = [(0.0, 0.794, "#57e389"), (0.794, 0.962, "#f6d32d"), (0.962, 1.0, "#ed333b")]
 
 
-def look(key: Optional[str], is_input: bool = False) -> tuple:
+class Picture(NamedTuple):
+    name: str
+    # The badge's icon and colour.
+    look: tuple
+    # The icon of the mix a channel's level is taken in, in the badge's
+    # corner, as Wave Link marks a level by its mix.
+    corner: Optional[str] = None
+    level: Optional[float] = None
+    # What the meter reads, as a position from 0 to 1, when it is shown.
+    meter: Optional[float] = None
+    muted: bool = False
+    # Drawn faint when off: a mix not heard, a device not listened on.
+    dim: bool = False
+    # What it is doing, and in what colour.
+    below: tuple = ("", TEXT)
+
+
+def look(key: Optional[str], is_input: bool = False, mix: bool = False) -> tuple:
     """The icon and colour an object wears, falling back as the mixer does."""
-    return LOOKS.get(key or "") or LOOKS["mic" if is_input else "speaker"]
+    icon, color = LOOKS.get(key or "") or LOOKS["mic" if is_input else "speaker"]
+    return icon, WHITE if mix else color
 
 
-@lru_cache(maxsize=64)
-def glyph(icon: str, size: int, color: str) -> Image.Image:
-    path = os.path.join(ICONS, f"{icon}.svg")
-    try:
-        with open(path) as f:
-            svg = f.read()
-    except OSError:
-        return Image.new("RGBA", (size, size))
-    svg = svg.replace("<path ", f'<path fill="{color}" ')
-    png = cairosvg.svg2png(bytestring=svg.encode(), output_width=size, output_height=size)
-    return Image.open(io.BytesIO(png)).convert("RGBA")
-
-
-def badge(icon: str, color: str, size: int, muted: bool = False, lit: bool = True) -> Image.Image:
-    """A rounded square of a colour with the icon on it, as in the mixer."""
-    scale = 4  # drawn large and brought down, for smooth corners
-    big = size * scale
-    image = Image.new("RGBA", (big, big))
-    draw = ImageDraw.Draw(image)
-    fill = GREY if muted else color
-    draw.rounded_rectangle((0, 0, big - 1, big - 1), radius=big * 0.22, fill=fill)
-    inner = int(big * 0.62)
-    mark = glyph(icon, inner, GLYPH)
-    image.alpha_composite(mark, ((big - inner) // 2, (big - inner) // 2))
-    if muted:
-        width = max(int(big * 0.09), 1)
-        draw.line((big * 0.12, big * 0.88, big * 0.88, big * 0.12), fill="#12141a", width=width + scale * 4)
-        draw.line((big * 0.12, big * 0.88, big * 0.88, big * 0.12), fill=MUTED, width=width)
-    image = image.resize((size, size), Image.LANCZOS)
-    if not lit:
-        alpha = image.getchannel("A").point(lambda a: a * 35 // 100)
-        image.putalpha(alpha)
-    return image
-
-
-def render(
-    size: tuple,
-    icon: str,
-    color: str,
-    level: Optional[float] = None,
-    muted: bool = False,
-    lit: bool = True,
-) -> Image.Image:
-    """The whole picture for an input of `size`.
-
-    A key shows the badge in the middle, ringed by the level when there is
-    one; a dial's part of the touch strip, wider than tall, shows the badge
-    on the left and the level as a bar beside it. Labels go over this.
-    """
-    width, height = size
-    image = Image.new("RGBA", (width, height))
-    if width > height * 1.4:
-        side = int(height * 0.46)
-        top = (height - side) // 2
-        image.alpha_composite(badge(icon, color, side, muted, lit), (int(width * 0.07), top))
-        if level is not None:
-            draw = ImageDraw.Draw(image)
-            left = int(width * 0.07) + side + int(width * 0.07)
-            right = int(width * 0.93)
-            thick = max(height // 12, 4)
-            y = height // 2 - thick // 2
-            draw.rounded_rectangle((left, y, right, y + thick), radius=thick // 2, fill=TRACK)
-            filled = left + (right - left) * max(0.0, min(1.0, level))
-            if filled > left + thick:
-                draw.rounded_rectangle(
-                    (left, y, filled, y + thick), radius=thick // 2, fill=MUTED if muted else LEVEL
-                )
-        return image
-
-    # Room is left above and below for the labels.
-    side = int(min(width, height) * (0.33 if level is not None else 0.5))
-    image.alpha_composite(badge(icon, color, side, muted, lit), ((width - side) // 2, (height - side) // 2))
-    if level is not None:
-        # A ring with a gap at the bottom, like a knob's travel.
-        scale = 4
-        ring = Image.new("RGBA", (width * scale, height * scale))
-        draw = ImageDraw.Draw(ring)
-        # Clear of the badge's corners.
-        reach = side * scale * 0.72 + width * scale * 0.035
-        cx, cy = width * scale / 2, height * scale / 2
-        box = (cx - reach, cy - reach, cx + reach, cy + reach)
-        thick = max(int(width * scale * 0.045), scale)
-        start, end = 135, 405
-        draw.arc(box, start, end, fill=TRACK, width=thick)
-        part = max(0.0, min(1.0, level))
-        if part > 0:
-            draw.arc(box, start, start + (end - start) * part, fill=MUTED if muted else LEVEL, width=thick)
-        image.alpha_composite(ring.resize((width, height), Image.LANCZOS))
-    return image
+def meter_position(peak: float) -> float:
+    """Where a peak sits on a meter, as the mixer's own meters put it: the
+    cube root spreads it as the faders are spread."""
+    return max(0.0, min(1.0, peak)) ** (1 / 3)
 
 
 def percent(level: float) -> str:
     return f"{round(level * 100)}%"
 
 
+@lru_cache(maxsize=64)
+def glyph(icon: str) -> str:
+    """The outline of an icon: the path its file draws."""
+    for name in (icon, "pd-speaker-symbolic"):
+        try:
+            with open(os.path.join(ICONS, f"{name}.svg")) as f:
+                svg = f.read()
+        except OSError:
+            continue
+        start = svg.find(' d="')
+        if start >= 0:
+            return svg[start + 4 : svg.index('"', start + 4)]
+    return ""
+
+
+def _escape(words: str) -> str:
+    return (
+        words.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def _shorten(words: str, length: int) -> str:
+    return words if len(words) <= length else words[: length - 1] + "…"
+
+
+def _text(x, y, size, anchor, color, words) -> str:
+    return (
+        f'<text x="{x}" y="{y}" font-family="sans-serif" font-size="{size}" font-weight="600" '
+        f'fill="{color}" text-anchor="{anchor}">{_escape(words)}</text>'
+    )
+
+
+def _badge(icon, color, x, y, side, muted=False, dim=False) -> str:
+    fill = GREY if muted else color
+    inner = side * 0.62
+    pad = (side - inner) / 2
+    svg = (
+        f'<g opacity="{0.35 if dim else 1}"><rect x="{x}" y="{y}" width="{side}" height="{side}" '
+        f'rx="{side * 0.22}" fill="{fill}"/><svg x="{x + pad}" y="{y + pad}" width="{inner}" '
+        f'height="{inner}" viewBox="0 -960 960 960"><path d="{glyph(icon)}" fill="{GLYPH}"/></svg>'
+    )
+    if muted:
+        x0, y0, x1, y1 = x + side * 0.12, y + side * 0.88, x + side * 0.88, y + side * 0.12
+        width = side * 0.09
+        svg += (
+            f'<line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y1}" stroke="{GLYPH}" stroke-width="{width * 2.2}" '
+            f'stroke-linecap="round"/><line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y1}" stroke="{RED}" '
+            f'stroke-width="{width}" stroke-linecap="round"/>'
+        )
+    return svg + "</g>"
+
+
+def _badges(picture: Picture, x, y, side) -> str:
+    """The badge, and the mix's in its corner when there is one."""
+    svg = _badge(*picture.look, x, y, side, picture.muted, picture.dim)
+    if picture.corner:
+        small = side * 0.5
+        cx, cy = x + side - small * 0.6, y + side - small * 0.6
+        svg += (
+            f'<rect x="{cx - 2.5}" y="{cy - 2.5}" width="{small + 5}" height="{small + 5}" '
+            f'rx="{(small + 5) * 0.22}" fill="#000000"/>'
+        )
+        svg += _badge(picture.corner, WHITE, cx, cy, small, False, picture.dim)
+    return svg
+
+
+def _arc(cx, cy, r, start_part, end_part) -> str:
+    """Part of a knob's travel round `cx, cy`, from the bottom left to the
+    bottom right."""
+
+    def at(part):
+        return math.radians(135 + 270 * max(0.0, min(1.0, part)))
+
+    start, end = at(start_part), at(end_part)
+    end = min(end, start + 2 * math.pi - 0.001)
+    x0, y0 = cx + r * math.cos(start), cy + r * math.sin(start)
+    x1, y1 = cx + r * math.cos(end), cy + r * math.sin(end)
+    large = 1 if end - start > math.pi else 0
+    return f"M {x0:.2f} {y0:.2f} A {r} {r} 0 {large} 1 {x1:.2f} {y1:.2f}"
+
+
+def key_svg(picture: Picture) -> str:
+    """A key: the name above, the badge in the middle, ringed by the level
+    and its meter when there is one, and what it is doing below."""
+    svg = '<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144"><rect width="144" height="144" fill="#000000"/>'
+    svg += _text(72, 25, 18, "middle", TEXT, _shorten(picture.name, 13))
+    side = 50 if picture.level is not None else 62
+    cx, cy = 72, 76
+    if picture.level is not None:
+        r = side * 0.72 + 6
+        svg += f'<path d="{_arc(cx, cy, r, 0, 1)}" fill="none" stroke="{TRACK}" stroke-width="7" stroke-linecap="round"/>'
+        if picture.level > 0:
+            fill = RED if picture.muted else LEVEL
+            svg += f'<path d="{_arc(cx, cy, r, 0, picture.level)}" fill="none" stroke="{fill}" stroke-width="7" stroke-linecap="round"/>'
+        if picture.meter is not None:
+            for start, end, color in METER:
+                if picture.meter > start:
+                    svg += f'<path d="{_arc(cx, cy, r - 7, start, min(picture.meter, end))}" fill="none" stroke="{color}" stroke-width="3"/>'
+    svg += _badges(picture, cx - side / 2, cy - side / 2, side)
+    svg += _text(72, 136, 18, "middle", picture.below[1], picture.below[0])
+    return svg + "</svg>"
+
+
+def strip_svg(picture: Picture) -> str:
+    """A dial's part of the touch strip: the badge on the left, the name
+    and the level as a bar beside it, with the meter in it and the level as
+    a handle on it, and what it is doing under them."""
+    svg = '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><rect width="200" height="100" fill="#000000"/>'
+    svg += _badges(picture, 12, 27, 46)
+    left = 70
+    name = _shorten(picture.name, 14)
+    words, color = picture.below
+    if picture.level is None:
+        svg += _text(left, 46, 16, "start", TEXT, name)
+        svg += _text(left, 70, 15, "start", color, words)
+        return svg + "</svg>"
+    svg += _text(left, 38, 16, "start", TEXT, name)
+    svg += f'<rect x="{left}" y="48" width="118" height="8" rx="4" fill="{TRACK}"/>'
+    filled = 118 * max(0.0, min(1.0, picture.level))
+    if picture.meter is not None:
+        for start, end, meter_color in METER:
+            if picture.meter > start:
+                svg += f'<rect x="{left + 118 * start:.1f}" y="48" width="{118 * (min(picture.meter, end) - start):.1f}" height="8" fill="{meter_color}"/>'
+        fill = RED if picture.muted else TEXT
+        svg += f'<rect x="{left + filled - 2.5:.1f}" y="43" width="5" height="18" rx="2.5" fill="{fill}" stroke="#000000" stroke-width="1.5"/>'
+    elif filled > 0:
+        fill = RED if picture.muted else LEVEL
+        svg += f'<rect x="{left}" y="48" width="{filled:.1f}" height="8" rx="4" fill="{fill}"/>'
+    svg += _text(left, 78, 15, "start", color, words)
+    return svg + "</svg>"
+
+
+def waiting(name: str, why: str) -> Picture:
+    """What a key shows while it has nothing to show, and why."""
+    return Picture(name=name, look=("pd-speaker-symbolic", GREY), dim=True, below=(why, FAINT))
+
+
+def render(svg: str, size: tuple) -> Image.Image:
+    png = cairosvg.svg2png(bytestring=svg.encode(), output_width=size[0], output_height=size[1])
+    return Image.open(io.BytesIO(png)).convert("RGBA")
+
+
+def picture(picture: Picture, size: tuple) -> Image.Image:
+    """The picture for an input of `size`: a key's, or a strip's when it
+    is wider than tall."""
+    wide = size[0] > size[1] * 1.4
+    return render(strip_svg(picture) if wide else key_svg(picture), size)
+
+
+def badge_image(icon: str, color: str, side: int) -> Image.Image:
+    """A badge alone, for the plugin's icon in StreamController's list."""
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{side}" height="{side}">{_badge(icon, color, 0, 0, side)}</svg>'
+    return render(svg, (side, side))
+
+
 if __name__ == "__main__":
     # A sheet of what the keys look like, to check without a deck.
     sheet = Image.new("RGBA", (72 * 4 + 200, 100), "#000000")
-    sheet.alpha_composite(render((72, 72), *look("music"), level=0.7), (0, 0))
-    sheet.alpha_composite(render((72, 72), *look("game"), level=0.4, muted=True), (72, 0))
-    sheet.alpha_composite(render((72, 72), "pd-1-symbolic", WHITE), (144, 0))
-    sheet.alpha_composite(render((72, 72), "pd-2-symbolic", WHITE, lit=False), (216, 0))
-    sheet.alpha_composite(render((200, 100), *look("voice"), level=0.55), (288, 0))
+    music = look("music")
+    sheet.alpha_composite(picture(Picture("Music", music, level=0.7, meter=0.6, below=("70%", TEXT)), (72, 72)), (0, 0))
+    sheet.alpha_composite(picture(Picture("Game", look("game"), level=0.4, muted=True, below=("Muted", RED)), (72, 72)), (72, 0))
+    sheet.alpha_composite(picture(Picture("Stream", look("stream", mix=True), below=("Heard", TEXT)), (72, 72)), (144, 0))
+    sheet.alpha_composite(picture(waiting("Chat", "Offline"), (72, 72)), (216, 0))
+    sheet.alpha_composite(picture(Picture("Music", music, corner="pd-stream-symbolic", level=0.55, meter=0.8, below=("55%", TEXT)), (200, 100)), (288, 0))
     out = os.environ.get("OUT", "keys.png")
     sheet.save(out)
     print(f"saved {out}")

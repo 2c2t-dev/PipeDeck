@@ -2,7 +2,8 @@
 
 One connection, kept open and opened again whenever Pipedeck comes back:
 it subscribes to the mixer's state, which comes as a line of JSON after
-every change, and carries the deck's orders the other way. The protocol is
+every change, and to its meters, ten times a second, and carries the
+deck's orders the other way. The protocol is
 described in `crates/pipedeck-engine/src/control.rs`.
 
 Nothing here knows about StreamController, so it can be tried on its own:
@@ -34,6 +35,8 @@ class Pipedeck:
         self.path = path or socket_path()
         self._log = log
         self.state: Optional[dict] = None
+        # What the meters last read: {"channels": [[id, peak]], ...}.
+        self.levels: dict = {}
         self._sock: Optional[socket.socket] = None
         self._send_lock = threading.Lock()
         self._listeners_lock = threading.Lock()
@@ -43,7 +46,8 @@ class Pipedeck:
     # -- Listening -----------------------------------------------------------
 
     def listen(self, callback: Callable[[], None]) -> None:
-        """Call `callback` after every change, and when Pipedeck comes or goes.
+        """Call `callback` after every change, when Pipedeck comes or goes,
+        and when the meters read again.
 
         A bound method is held weakly, so an action that is gone stops being
         told without having to say so.
@@ -104,7 +108,7 @@ class Pipedeck:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             sock.connect(self.path)
-            sock.sendall(b'{"subscribe": true}\n')
+            sock.sendall(b'{"subscribe": true}\n{"meters": true}\n')
             with self._send_lock:
                 self._sock = sock
             for line in sock.makefile("r", encoding="utf-8"):
@@ -115,6 +119,9 @@ class Pipedeck:
                 if "state" in message:
                     self.state = message["state"]
                     self._tell()
+                elif "levels" in message:
+                    self.levels = message["levels"]
+                    self._tell()
                 elif "error" in message:
                     self._log(f"pipedeck: {message['error']}")
         finally:
@@ -123,16 +130,20 @@ class Pipedeck:
     # -- Reading the state ---------------------------------------------------
 
     def find(self, target: Optional[dict]) -> Optional[dict]:
-        """What a target is now: its name, look, level and mute, or None
-        when it is not there (or Pipedeck is not running)."""
+        """What a target is now: its name, look, level, mute and whether it
+        is heard, or None when it is not there (or Pipedeck is not
+        running). A channel's level in a mix says which mix as `within`."""
         state = self.state
         if state is None or not target:
             return None
         what = target.get("what")
+        found = {"input": False, "mix": False, "listening": False, "within": None}
         if what == "channel":
-            return _by(state["channels"], "id", target.get("id"))
+            channel = _by(state["channels"], "id", target.get("id"))
+            return channel and dict(found, **channel)
         if what == "mix":
-            return _by(state["mixes"], "id", target.get("id"))
+            mix = _by(state["mixes"], "id", target.get("id"))
+            return mix and dict(found, **mix, mix=True)
         if what == "cell":
             cell = next(
                 (
@@ -147,64 +158,48 @@ class Pipedeck:
             if cell is None or channel is None or mix is None:
                 return None
             return dict(
-                cell,
-                name=f"{channel['name']} → {mix['name']}",
+                found,
+                name=channel["name"],
                 icon=channel.get("icon"),
                 input=channel["input"],
+                volume=cell["volume"],
+                muted=cell["muted"],
+                within=mix,
             )
         if what == "voice":
             channel = _by(state["channels"], "id", target.get("channel"))
             voice = channel and _by(channel["voices"], "user", target.get("user"))
-            if not voice:
-                return None
-            return dict(voice, icon="people")
+            return voice and dict(found, **voice, icon="people")
         if what == "output":
             device = _by(state["outputs"], "name", target.get("device"))
             if not device:
                 return None
-            return {
-                "name": device["description"],
-                "icon": "headset",
-                "listening": state.get("listen") == device["name"],
-            }
+            return dict(
+                found,
+                name=device["description"],
+                icon="headset",
+                volume=0.0,
+                muted=False,
+                listening=state.get("listen") == device["name"],
+            )
         return None
 
-    def targets(self, kinds: tuple) -> list:
-        """Everything that can be aimed at, of the kinds asked, as
-        (target, label) pairs in the mixer's order."""
-        state = self.state
-        if state is None:
-            return []
-        found = []
-        if "channel" in kinds:
-            for channel in state["channels"]:
-                found.append(({"what": "channel", "id": channel["id"]}, f"Channel · {channel['name']}"))
-        if "mix" in kinds:
-            for mix in state["mixes"]:
-                found.append(({"what": "mix", "id": mix["id"]}, f"Mix · {mix['name']}"))
-        if "cell" in kinds:
-            names = {c["id"]: c["name"] for c in state["channels"]}
-            mixes = {m["id"]: m["name"] for m in state["mixes"]}
-            for cell in state["cells"]:
-                found.append(
-                    (
-                        {"what": "cell", "channel": cell["channel"], "mix": cell["mix"]},
-                        f"{names.get(cell['channel'], '?')} → {mixes.get(cell['mix'], '?')}",
-                    )
-                )
-        if "voice" in kinds:
-            for channel in state["channels"]:
-                for voice in channel["voices"]:
-                    found.append(
-                        (
-                            {"what": "voice", "channel": channel["id"], "user": voice["user"]},
-                            f"Voice · {voice['name']} ({channel['name']})",
-                        )
-                    )
-        if "output" in kinds:
-            for device in state["outputs"]:
-                found.append(({"what": "output", "device": device["name"]}, device["description"]))
-        return found
+    def meter(self, target: Optional[dict]) -> float:
+        """What a target's meter reads: a channel's own, or its level in a
+        mix, which is measured before the mix; a person's; a mix's."""
+        levels = self.levels or {}
+        what = (target or {}).get("what")
+        if what in ("channel", "cell"):
+            key = target.get("id", target.get("channel"))
+            return next((p for i, p in levels.get("channels", []) if i == key), 0.0)
+        if what == "mix":
+            return next((p for i, p in levels.get("mixes", []) if i == target.get("id")), 0.0)
+        if what == "voice":
+            return next(
+                (p for c, u, p in levels.get("voices", []) if c == target.get("channel") and u == target.get("user")),
+                0.0,
+            )
+        return 0.0
 
 
 def _by(items: list, key: str, value) -> Optional[dict]:
