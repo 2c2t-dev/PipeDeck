@@ -132,6 +132,28 @@ fn monitor(view: &View, index: usize) -> Slot {
     ))
 }
 
+/// A key for each effect of a microphone, to switch it off and on: noise
+/// suppression, most often.
+fn microphone_effects(view: &View) -> Vec<Slot> {
+    view.channels
+        .iter()
+        .filter(|channel| channel.input)
+        .flat_map(|channel| {
+            channel.effects.iter().enumerate().map(|(index, effect)| {
+                Some((
+                    "effect",
+                    json!({
+                        "channel": channel.id,
+                        "index": index,
+                        "effect": effect.name,
+                        "label": effect.name,
+                    }),
+                ))
+            })
+        })
+        .collect()
+}
+
 /// The devices to listen on: the other of two, or the one there is.
 fn output(view: &View) -> Slot {
     let first = view.outputs.first()?;
@@ -218,6 +240,17 @@ fn layout(model: Model, view: &View) -> Layout {
                 layout.put(model, m, 7, monitor(view, m));
             }
             layout.put(model, 3, 7, output(view));
+        }
+    }
+    // The microphone's effects in what is left: the keys first, then the
+    // dials.
+    let mut effects = microphone_effects(view).into_iter();
+    for slot in layout.keys.iter_mut().chain(layout.dials.iter_mut()) {
+        if slot.is_none() {
+            match effects.next() {
+                Some(effect) => *slot = effect,
+                None => break,
+            }
         }
     }
     layout
@@ -495,6 +528,27 @@ mod tests {
         assert_eq!(
             names(&layout.keys),
             ["mix", "mix", "mix", "call", "monitor", "monitor", "monitor", "output"]
+        );
+    }
+
+    #[test]
+    fn a_microphone_s_effects_take_what_is_left() {
+        let mut view = view();
+        view.channels[2].effects = vec![crate::mixer::EffectState {
+            name: "Noise suppression".into(),
+            bypassed: false,
+        }];
+        let deck = layout(Model::StreamDeck, &view);
+        assert_eq!(names(&deck.keys)[3], "effect");
+        assert_eq!(
+            deck.keys[3].as_ref().unwrap().1["effect"],
+            "Noise suppression"
+        );
+        // A Stream Deck + has no key left: a dial takes it.
+        let plus = layout(Model::Plus, &view);
+        assert_eq!(
+            names(&plus.dials),
+            ["channel", "channel", "channel", "effect"]
         );
     }
 

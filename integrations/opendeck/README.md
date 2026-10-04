@@ -84,6 +84,9 @@ with OpenDeck closed.
   six) with its own level on top and its level in each mix under it, then a
   column of mixes and a column of mixes to hear, the output device last.
 
+A microphone's effects, noise suppression and the like, get a Channel
+Effect key each in what is left: the keys first, then the dials.
+
 Each has a **Call** key, which says how many are in the call and goes to a
 second profile, **Pipedeck Call**: a person of the call on every dial and
 key, by their place in it, so it follows the call as people come and go

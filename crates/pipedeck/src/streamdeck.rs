@@ -542,13 +542,19 @@ impl Drop for Busy {
 }
 
 /// What a deck's profile is laid out from: the channels, mixes, cells and
-/// devices, by id. A name is only what a key says while the mixer is
+/// devices, by id, and a microphone's effects. A name is only what a key says while the mixer is
 /// away, and a level is the mixer's to say: neither calls for laying out
 /// again.
 fn layout_of(state: &StateSnapshot, outputs: &[Device]) -> String {
     let mut parts = Vec::new();
     for source in &state.sources {
         parts.push(format!("c{}", source.id.0));
+        // A microphone's effects have keys of their own.
+        if source.is_input() {
+            for effect in &source.effects {
+                parts.push(format!("e{}:{}", source.id.0, effect.name));
+            }
+        }
     }
     for mix in &state.mixes {
         parts.push(format!("m{}", mix.id.0));
