@@ -11,6 +11,21 @@ use std::path::{Path, PathBuf};
 const ICON: &str = include_str!("../data/dev._2c2t.Pipedeck.svg");
 const SYMBOLIC: &str = include_str!("../data/dev._2c2t.Pipedeck-symbolic.svg");
 
+/// The icon drawn ahead at fixed sizes. GTK gives the desktop a window's
+/// icon as pictures, and draws a scalable one at 48 pixels only, which the
+/// task switcher then blows up; with these, it hands over each size and the
+/// desktop takes the one it shows at. Larger ones are left to the scalable
+/// icon, which is what the theme's larger folders hold.
+const SIZES: [(u32, &[u8]); 7] = [
+    (16, include_bytes!("../data/icons/16.png")),
+    (24, include_bytes!("../data/icons/24.png")),
+    (32, include_bytes!("../data/icons/32.png")),
+    (48, include_bytes!("../data/icons/48.png")),
+    (64, include_bytes!("../data/icons/64.png")),
+    (96, include_bytes!("../data/icons/96.png")),
+    (128, include_bytes!("../data/icons/128.png")),
+];
+
 fn data_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
         .filter(|v| !v.is_empty())
@@ -36,9 +51,10 @@ fn entry(app_id: &str, binary: &Path) -> String {
     )
 }
 
-/// Write a file unless it already says that.
-fn write(path: &Path, text: &str) -> std::io::Result<()> {
-    if std::fs::read_to_string(path).is_ok_and(|kept| kept == text) {
+/// Write a file unless it already holds that.
+fn write(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let text = text.as_ref();
+    if std::fs::read(path).is_ok_and(|kept| kept == text) {
         return Ok(());
     }
     if let Some(dir) = path.parent() {
@@ -63,8 +79,13 @@ pub fn install(app_id: &str) {
         .and_then(|()| {
             write(
                 &data.join(format!("applications/{app_id}.desktop")),
-                &entry(app_id, &binary),
+                entry(app_id, &binary),
             )
+        })
+        .and_then(|()| {
+            SIZES.iter().try_for_each(|(size, png)| {
+                write(&icons.join(format!("{size}x{size}/apps/{app_id}.png")), png)
+            })
         });
     if let Err(e) = written {
         log::warn!("cannot put Pipedeck in the launcher: {e}");
@@ -86,5 +107,10 @@ mod tests {
     fn the_icons_are_carried_whole() {
         assert!(ICON.starts_with("<svg") && ICON.trim_end().ends_with("</svg>"));
         assert!(SYMBOLIC.contains("viewBox=\"0 0 16 16\""));
+        for (size, png) in SIZES {
+            // The width and height of a PNG's header.
+            assert_eq!(png[16..20], size.to_be_bytes());
+            assert_eq!(png[20..24], size.to_be_bytes());
+        }
     }
 }
