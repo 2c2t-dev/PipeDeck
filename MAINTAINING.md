@@ -38,7 +38,8 @@ if a text is missing from one. To add a language, copy `en.json`, translate
 it, and add its code to `LANGUAGES` in `build.py`. To look at the site
 before pushing, build it with `python3 site/build.py _site`.
 
-The legal notice, `legal.html`, names the host and the contact address,
+The legal notice, `site/pages/legal.html`, served at `/legal`, names the
+host and the contact address,
 contact@2c2t.dev; it changes with either.
 
 The workflow needs two repository secrets, `CLOUDFLARE_API_TOKEN`, a token

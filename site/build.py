@@ -29,8 +29,10 @@ def prefix(lang):
 
 
 def address(lang, page):
-    """Where a page in a language is, from the root."""
-    return "/" + prefix(lang) + ("" if page == "index.html" else page)
+    """Where a page in a language is, from the root. Cloudflare Pages serves
+    a page without its .html, and redirects there from the name with it."""
+    name = "" if page == "index.html" else page.removesuffix(".html")
+    return "/" + prefix(lang) + name
 
 
 def render(template, strings, page):
