@@ -36,7 +36,9 @@
 
     <h2>{{legal_publisher_h}}</h2>
     <p>{{legal_publisher_p}}</p>
-    <p>{{legal_contact}} <a href="mailto:contact@2c2t.dev">contact@2c2t.dev</a></p>
+    <!-- Left as it is by Cloudflare's email obfuscation, whose decoding
+         script the Content Security Policy refuses. -->
+    <!--email_off--><p>{{legal_contact}} <a href="mailto:contact@2c2t.dev">contact@2c2t.dev</a></p><!--/email_off-->
 
     <h2>{{legal_host_h}}</h2>
     <p>Cloudflare, Inc.<br>101 Townsend St<br>San Francisco, CA 94107<br>{{legal_host_country}}<br>+1 650 319 8930 · <a href="https://www.cloudflare.com/">cloudflare.com</a></p>
