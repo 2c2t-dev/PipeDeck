@@ -389,6 +389,36 @@ fn stream_deck_group() -> adw::PreferencesGroup {
             group.add(&profiles);
         }
     }
+    // On KDE, the application in front, for Add to Channel: a KWin script
+    // says which window has the focus.
+    if crate::kwin::available() {
+        let front = adw::SwitchRow::new();
+        front.set_title("Application in front");
+        front.set_subtitle("A KWin script tells Pipedeck which window has the focus");
+        front.set_active(crate::kwin::installed());
+        front.connect_active_notify({
+            let (status, spinner) = (status.clone(), spinner.clone());
+            move |row| {
+                if row.is_active() == crate::kwin::installed() {
+                    return;
+                }
+                let on = row.is_active();
+                let result = if on {
+                    crate::kwin::install()
+                } else {
+                    crate::kwin::remove()
+                };
+                spinner.set_visible(false);
+                if let Err(e) = result {
+                    status.add_css_class("error");
+                    status.set_label(&format!("It did not work: {e}"));
+                    status.set_visible(true);
+                    row.set_active(crate::kwin::installed());
+                }
+            }
+        });
+        group.add(&front);
+    }
     let show_all: Rc<dyn Fn()> = Rc::new(move || shows.iter().for_each(|show| show()));
     lay_out
         .connect_clicked(move |_| start(Box::new(streamdeck::lay_out_profiles), show_all.clone()));

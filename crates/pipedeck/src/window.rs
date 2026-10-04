@@ -242,6 +242,8 @@ impl Window {
                 self.refresh_settings();
                 self.refresh_dialogs();
             }
+            // Only the Stream Deck shows it, through the control socket.
+            Event::Focused { .. } => {}
             Event::Apps { running } => {
                 *self.apps.borrow_mut() = running;
                 self.refresh_dialogs();

@@ -11,6 +11,7 @@ mod effect_panel;
 mod effects;
 mod engine_link;
 mod eq_graph;
+mod kwin;
 mod listen;
 mod meter_fader;
 mod mix_dialog;
@@ -133,6 +134,9 @@ fn activate(app: &adw::Application) {
     // Vesktop's plugin says who is in a call through this.
     handle.serve_control();
     let engine = EngineLink::new(handle);
+    // KWin's script of ours says which window has the focus through this,
+    // for as long as the application runs.
+    kwin::listen(app, &engine);
     signals::spawn_watcher(move || {
         let _ = tx.send_blocking(Msg::Quit);
     });

@@ -142,6 +142,12 @@ pub enum Command {
         index: usize,
         controls: Vec<crate::types::Control>,
     },
+    /// Which window has the focus: the process owning it and its class, as
+    /// the desktop says. See [`Event::Focused`].
+    SetFocus {
+        pid: u32,
+        class: String,
+    },
     /// Switch one effect of a row off, or back on, by its place in the
     /// chain. Not sent again as the matrix either.
     SetEffectBypass {
@@ -287,6 +293,9 @@ pub enum Event {
     StereoTool(crate::stereotool::Status),
     /// The applications currently playing audio, whatever they play into.
     Apps { running: Vec<App> },
+    /// The application playing in the window that has the focus, when the
+    /// desktop says which that is, and it plays.
+    Focused { app: Option<App> },
     /// The audio devices currently on the system.
     Devices {
         outputs: Vec<Device>,
@@ -356,6 +365,7 @@ struct Watchers {
     state: Option<Event>,
     devices: Option<Event>,
     apps: Option<Event>,
+    focused: Option<Event>,
 }
 
 impl Watch {
@@ -370,7 +380,8 @@ impl Watch {
             | Event::SourceChanged { .. }
             | Event::LinkChanged { .. }
             | Event::SourceEffects { .. }
-            | Event::Apps { .. } => event.clone(),
+            | Event::Apps { .. }
+            | Event::Focused { .. } => event.clone(),
             Event::Levels {
                 sources,
                 mixes,
@@ -392,6 +403,7 @@ impl Watch {
             Event::State(_) => watchers.state = Some(event.clone()),
             Event::Devices { .. } => watchers.devices = Some(event.clone()),
             Event::Apps { .. } => watchers.apps = Some(event.clone()),
+            Event::Focused { .. } => watchers.focused = Some(event.clone()),
             _ => {}
         }
         watchers
@@ -404,9 +416,14 @@ impl Watch {
     pub fn listen(&self) -> std::sync::mpsc::Receiver<Event> {
         let (tx, rx) = std::sync::mpsc::channel();
         if let Ok(mut watchers) = self.0.lock() {
-            for known in [&watchers.state, &watchers.devices, &watchers.apps]
-                .into_iter()
-                .flatten()
+            for known in [
+                &watchers.state,
+                &watchers.devices,
+                &watchers.apps,
+                &watchers.focused,
+            ]
+            .into_iter()
+            .flatten()
             {
                 let _ = tx.send(known.clone());
             }
@@ -905,6 +922,11 @@ fn handle_command(
         } => {
             structural = false;
             g.set_effect_params(id, index, controls)
+        }
+        Command::SetFocus { pid, class } => {
+            structural = false;
+            g.set_focus(pid, class);
+            Ok(())
         }
         Command::SetEffectBypass {
             id,

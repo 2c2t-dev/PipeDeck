@@ -61,6 +61,10 @@ pub enum Action {
 pub const MIXER_PROFILE: &str = "Pipedeck";
 pub const CALL_PROFILE: &str = "Pipedeck Call";
 
+/// What Add to Channel is set to for the application in front, whichever
+/// it is when the key is pressed.
+pub const FRONT: &str = "@front";
+
 impl Action {
     fn from_uuid(uuid: &str) -> Option<Self> {
         match uuid.strip_prefix(PLUGIN)?.strip_prefix('.')? {
@@ -120,7 +124,7 @@ struct Settings {
     /// name when the chain moved, by its place when it was renamed.
     index: Option<usize>,
     effect: Option<String>,
-    /// An application, by its key.
+    /// An application, by its key, or [`FRONT`] for the one in front.
     app: Option<String>,
     /// What it was called, shown while Pipedeck is away.
     label: String,
@@ -404,9 +408,16 @@ impl Deck {
                 if matches!(press, Press::Turn(_)) {
                     return Vec::new();
                 }
-                let (Some(channel), Some(app)) = (settings.channel, settings.app.clone()) else {
+                let (Some(channel), Some(mut app)) = (settings.channel, settings.app.clone())
+                else {
                     return vec![alert(context)];
                 };
+                if app == FRONT {
+                    let Some(front) = &view.focused else {
+                        return vec![alert(context)];
+                    };
+                    app = front.key.clone();
+                }
                 // On it already: a press takes it off again.
                 let here = view
                     .channels
@@ -678,12 +689,25 @@ fn picture(
         }
         Action::AddApp => {
             let channel = settings.channel.ok_or(unset)?;
-            let app = settings.app.as_ref().ok_or(unset)?;
+            let mut app = settings.app.clone().ok_or(unset)?;
             let channel = view
                 .channels
                 .iter()
                 .find(|c| c.id == channel)
                 .ok_or("Gone")?;
+            if app == FRONT {
+                let Some(front) = &view.focused else {
+                    let mut drawn = Drawn::new(
+                        "In front",
+                        draw::look(channel.icon.as_deref(), channel.input, false),
+                    );
+                    drawn.state.dim = true;
+                    drawn.below = ("Nothing playing".to_owned(), draw::FAINT);
+                    return Ok(drawn);
+                };
+                app = front.key.clone();
+            }
+            let app = &app;
             let name = view
                 .apps
                 .iter()
@@ -1089,6 +1113,35 @@ mod tests {
         assert_eq!(
             (drawn.name.as_str(), drawn.below.0.as_str()),
             ("Spotify", "On Music")
+        );
+    }
+
+    #[test]
+    fn the_application_in_front_is_the_one_moved() {
+        let mut view = view();
+        let front = |view: &View| {
+            picture(
+                Action::AddApp,
+                &Settings {
+                    channel: Some(2),
+                    app: Some(FRONT.into()),
+                    ..Settings::default()
+                },
+                Some(view),
+                &Peaks::default(),
+            )
+            .unwrap()
+        };
+        assert_eq!(front(&view).below.0, "Nothing playing");
+        view.focused = Some(crate::mixer::App {
+            key: "spotify".into(),
+            name: "Spotify".into(),
+        });
+        view.apps = vec![view.focused.clone().unwrap()];
+        let drawn = front(&view);
+        assert_eq!(
+            (drawn.name.as_str(), drawn.below.0.as_str()),
+            ("Spotify", "To Music")
         );
     }
 

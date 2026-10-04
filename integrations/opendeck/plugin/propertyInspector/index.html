@@ -214,7 +214,7 @@
 					// What plays now, and what is on a channel already.
 					const apps = new Map((mixer?.apps ?? []).map((a) => [a.key, a.name]));
 					for (const c of channels) for (const key of c.apps ?? []) if (!apps.has(key)) apps.set(key, key);
-					fill($("app"), [...apps].map(([key, name]) => [key, name]), settings.app, settings.label);
+					fill($("app"), [["@front", "The application in front"], ...[...apps].map(([key, name]) => [key, name])], settings.app, settings.label);
 					fill($("app-channel"), channels.map((c) => [String(c.id), c.name]), settings.channel);
 				}
 				if (action === "voice") {

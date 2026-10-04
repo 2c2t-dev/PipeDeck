@@ -47,6 +47,7 @@
 //! {"do": {"what": "effect", "channel": 2, "index": 0, "bypass": "toggle"}}
 //! {"do": {"what": "app", "app": "spotify", "channel": 1}}
 //! {"do": {"what": "app", "app": "spotify", "channel": 1, "release": true}}
+//! {"do": {"what": "app", "focused": true, "channel": 1}}
 //! ```
 //!
 //! An effect is told by its place in the channel's chain; bypassed, the
@@ -167,9 +168,13 @@ enum Action {
         index: usize,
         bypass: Switch,
     },
-    /// An application, by its key, put on a channel, or taken off it.
+    /// An application, by its key or as the one in front, put on a
+    /// channel, or taken off it.
     App {
-        app: String,
+        #[serde(default)]
+        app: Option<String>,
+        #[serde(default)]
+        focused: bool,
         channel: u32,
         #[serde(default)]
         release: bool,
@@ -196,6 +201,8 @@ pub struct View {
     pub outputs: Vec<DeviceView>,
     /// The applications playing now.
     pub apps: Vec<AppView>,
+    /// The one playing in the window that has the focus.
+    pub focused: Option<AppView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -272,6 +279,7 @@ struct Model {
     state: Option<StateSnapshot>,
     outputs: Vec<Device>,
     apps: Vec<crate::types::App>,
+    focused: Option<crate::types::App>,
     /// The clients that asked to hear of every change.
     subscribers: Vec<mpsc::Sender<()>>,
     /// The clients that asked for the meters, and are handed every
@@ -413,6 +421,7 @@ impl Model {
             Event::State(state) => self.state = Some(state),
             Event::Devices { outputs, .. } => self.outputs = outputs,
             Event::Apps { running } => self.apps = running,
+            Event::Focused { app } => self.focused = app,
             Event::SourceEffects { id, effects } => {
                 if let Some(source) = self.source_mut(id.0) {
                     source.effects = effects;
@@ -536,6 +545,10 @@ impl Model {
                     name: app.name.clone(),
                 })
                 .collect(),
+            focused: self.focused.as_ref().map(|app| AppView {
+                key: app.key.clone(),
+                name: app.name.clone(),
+            }),
         })
     }
 
@@ -711,12 +724,22 @@ impl Model {
             }
             Action::App {
                 app,
+                focused,
                 channel,
                 release,
             } => {
                 if !state.sources.iter().any(|source| source.id.0 == channel) {
                     return Err(format!("no channel {channel}"));
                 }
+                let app = match (app, focused) {
+                    (Some(app), false) => app,
+                    (None, true) => self
+                        .focused
+                        .as_ref()
+                        .map(|app| app.key.clone())
+                        .ok_or("no application playing in the window in front")?,
+                    _ => return Err("an application, or the one in front".into()),
+                };
                 let id = SourceId(channel);
                 if release {
                     if let Some(source) = state.sources.iter_mut().find(|s| s.id == id) {

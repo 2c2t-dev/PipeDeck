@@ -530,23 +530,42 @@ class ChannelEffect(PressAction):
         return [channel, effect]
 
 
+# What Add to Channel is set to for the application in front, whichever it
+# is when the key is pressed.
+FRONT = "@front"
+
+
 class AddApp(PressAction):
     """An application put on a channel; pressed again, taken off it."""
 
+    def app(self, settings: dict):
+        app = settings.get("app")
+        if app == FRONT:
+            front = (self.pipedeck.state or {}).get("focused")
+            return front and front["key"]
+        return app
+
     def order(self, settings: dict):
-        channel, app = settings.get("channel"), settings.get("app")
+        channel, app = settings.get("channel"), self.app(settings)
         if channel is None or not app:
             return None
         here = app in (self.channel(settings) or {}).get("apps", [])
         return {"what": "app", "app": app, "channel": channel, "release": here}
 
     def picture(self, settings: dict) -> draw.Picture:
-        app = settings.get("app")
-        if settings.get("channel") is None or not app:
+        if settings.get("channel") is None or not settings.get("app"):
             raise LookupError("Pick one")
         channel = self.channel(settings)
         if not channel:
             raise LookupError("Gone")
+        app = self.app(settings)
+        if not app:
+            return draw.Picture(
+                name="In front",
+                look=draw.look(channel.get("icon"), channel["input"]),
+                dim=True,
+                below=("Nothing playing", draw.FAINT),
+            )
         playing = {a["key"]: a["name"] for a in self.pipedeck.state.get("apps", [])}
         here = app in channel.get("apps", [])
         return draw.Picture(
@@ -564,7 +583,12 @@ class AddApp(PressAction):
         for channel in state.get("channels", []):
             for key in channel.get("apps", []):
                 apps.setdefault(key, key)
-        app = self.combo("Application", list(apps.items()), settings.get("app"), settings.get("label", GONE))
+        app = self.combo(
+            "Application",
+            [(FRONT, "The application in front")] + list(apps.items()),
+            settings.get("app"),
+            settings.get("label", GONE),
+        )
         self.picked(app, lambda value, label: self.save(app=value, label=label))
         return [app, self.channel_row(settings)]
 

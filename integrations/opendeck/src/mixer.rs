@@ -29,6 +29,9 @@ pub struct View {
     /// The applications playing now.
     #[serde(default)]
     pub apps: Vec<App>,
+    /// The one playing in the window that has the focus.
+    #[serde(default)]
+    pub focused: Option<App>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

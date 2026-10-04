@@ -16,6 +16,7 @@
 
 pub mod args;
 pub mod filter_chain;
+mod focus;
 pub mod loopback;
 pub mod meter;
 pub mod module;
@@ -251,6 +252,8 @@ struct DeviceEntry {
 /// A playback stream belonging to some application.
 struct AppStream {
     app: App,
+    /// The process playing it, as the application says.
+    pid: Option<u32>,
     /// Sent by the application to one of our voice sinks: it is already
     /// where it should be, and moving it to the row's sink with the rest of
     /// the application would put that person back in with everyone.
@@ -361,6 +364,10 @@ pub struct Graph {
     /// queues, for the same reason as `incoming`.
     stream_targets: StreamTargets,
     streams_dirty: bool,
+    /// The window with the focus, as the desktop last said, and the
+    /// application playing in it, as last told.
+    focus: Option<focus::Focus>,
+    focused: Option<App>,
     /// The server's `default` metadata, which is how a stream is moved from
     /// one sink to another. Bound when the registry announces it.
     metadata: Option<Metadata>,
@@ -428,6 +435,8 @@ impl Graph {
             mix_meters: HashMap::new(),
             streams: HashMap::new(),
             streams_dirty: false,
+            focus: None,
+            focused: None,
             metadata: None,
             metadata_id: None,
             retired_metadata: Quarantine::new(),
@@ -2017,10 +2026,14 @@ impl Graph {
                 }
                 None
             };
+            let pid = props
+                .get("application.process.id")
+                .and_then(|pid| pid.parse().ok());
             self.streams.insert(
                 global.id,
                 AppStream {
                     app,
+                    pid,
                     pinned: false,
                     voice: None,
                     placed: false,
@@ -2551,6 +2564,7 @@ impl Graph {
         }
         if self.streams_dirty {
             self.emit_apps();
+            self.emit_focus();
         }
         self.flush_config();
     }
