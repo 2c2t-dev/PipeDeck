@@ -80,6 +80,12 @@ channel, whose effects and cells they then go through. A person's level is
 remembered for the next call. Discord's own mix of them is not played, so
 each voice is heard once.
 
+## Stream Deck
+
+The [StreamController plugin](integrations/streamcontroller/README.md) puts
+mutes, levels, the mix heard in the headphones and the device it is heard on
+under keys and dials, each showing what it controls as Pipedeck draws it.
+
 ## Effects
 
 A channel can run effects, which every mix then hears. The mixer runs four

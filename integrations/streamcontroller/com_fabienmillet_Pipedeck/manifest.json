@@ -1,0 +1,15 @@
+{
+  "name": "Pipedeck",
+  "version": "0.1.0",
+  "minimum-app-version": "1.5.0",
+  "app-version": "1.5.0-beta.15",
+  "id": "com_fabienmillet_Pipedeck",
+  "github": "https://github.com/fabienmillet/Pipedeck",
+  "descriptions": {
+    "en_US": "Control Pipedeck, the PipeWire mixer: mute channels, mixes and the people of a call, move their levels with keys or dials, choose the mix heard in your headphones and the device it is heard on."
+  },
+  "short-descriptions": {
+    "en_US": "Control the Pipedeck mixer."
+  },
+  "tags": ["Audio"]
+}
