@@ -1767,6 +1767,37 @@ impl Graph {
                 self.emit(Event::Error(e.to_string()));
             }
         }
+        // The rows' effects and plug-ins ask for a latency too, and the graph
+        // runs at the smallest any node asks for: left as they were, they
+        // would hold it where it was. Their chains are made again, the
+        // plug-ins on the next tick.
+        let sources: Vec<SourceConfig> = self.config.sources.clone();
+        for cfg in &sources {
+            let chained = self
+                .sources
+                .get(&cfg.id)
+                .is_some_and(|source| source.effects.is_some());
+            if chained {
+                if let Some(fx) = self
+                    .sources
+                    .get_mut(&cfg.id)
+                    .and_then(|source| source.effects.as_mut())
+                {
+                    fx.module = None;
+                }
+                let module = self.load_chain(&ChainSpec::for_source(cfg));
+                if let Some(fx) = self
+                    .sources
+                    .get_mut(&cfg.id)
+                    .and_then(|source| source.effects.as_mut())
+                {
+                    fx.module = module;
+                }
+            }
+            if let Some(source) = self.sources.get_mut(&cfg.id) {
+                source.plugins = None;
+            }
+        }
         log::info!("nodes reloaded at {}", self.config.latency);
         Ok(())
     }

@@ -1479,7 +1479,18 @@ fn main() -> ExitCode {
     }
 
     // The quantum is a setting, not a fader: changing it reloads every
-    // loopback, and the new value has to show on the nodes that come back.
+    // loopback, and the new value has to show on the nodes that come back,
+    // a row's plug-ins included.
+    engine
+        .send(Command::SetEffects {
+            id: source,
+            effects: vec![native("compressor", &[])],
+        })
+        .unwrap();
+    wait_state(&rx, "a compressor before the new quantum", |s| {
+        s.sources.iter().any(|row| row.effects.len() == 1)
+    });
+    std::thread::sleep(Duration::from_secs(2));
     engine
         .send(Command::SetLatency {
             latency: "1024/48000".into(),
@@ -1499,6 +1510,28 @@ fn main() -> ExitCode {
         &format!("the routes came back at the new quantum: {reloaded:?}"),
         &mut failures,
     );
+    std::thread::sleep(Duration::from_secs(2));
+    let chain = our_node(&pw_dump(), &format!("pipedeck-smoke.vst.{source}.in")).map(|node| {
+        props(node)["node.latency"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    });
+    check(
+        chain.as_deref() == Some("1024/48000"),
+        &format!("the plug-ins came back at the new quantum: {chain:?}"),
+        &mut failures,
+    );
+    engine
+        .send(Command::SetEffects {
+            id: source,
+            effects: Vec::new(),
+        })
+        .unwrap();
+    wait_state(&rx, "the compressor taken off", |s| {
+        s.sources.iter().all(|row| row.effects.is_empty())
+    });
+    settle();
 
     // An output switched off lets go of its device and stays in the list;
     // switched on, it comes back with the level it had.
