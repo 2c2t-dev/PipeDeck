@@ -52,6 +52,20 @@
 			<label class="row">Mix <select id="mix"></select></label>
 		</div>
 
+		<div id="voice-rows" hidden>
+			<label class="row">Person <select id="slot"></select></label>
+		</div>
+
+		<div id="call-rows" hidden>
+			<label class="row">
+				Goes to
+				<select id="page">
+					<option value="call">The call</option>
+					<option value="mixer">The mixer</option>
+				</select>
+			</label>
+		</div>
+
 		<div id="level-rows" hidden>
 			<label class="row">
 				Display
@@ -158,12 +172,20 @@
 				const channels = mixer?.channels ?? [];
 				const mixes = mixer?.mixes ?? [];
 				const outputs = mixer?.outputs ?? [];
-				const level = action === "channel" || action === "mix";
+				const level = action === "channel" || action === "mix" || action === "voice";
 
 				$("channel-rows").hidden = action !== "channel";
 				$("mix-rows").hidden = action !== "mix";
 				$("level-rows").hidden = !level;
-				$("switch-rows").hidden = level;
+				$("switch-rows").hidden = action !== "monitor" && action !== "output";
+				$("voice-rows").hidden = action !== "voice";
+				$("call-rows").hidden = action !== "call";
+				if (action === "voice") {
+					const places = [];
+					for (let n = 1; n <= 24; n++) places.push([String(n), n === 1 ? "1st in the call" : n === 2 ? "2nd in the call" : n === 3 ? "3rd in the call" : `${n}th in the call`]);
+					fill($("slot"), places, settings.slot ?? 1);
+				}
+				if (action === "call") $("page").value = settings.page === "mixer" ? "mixer" : "call";
 
 				if (action === "channel") {
 					const options = [];
@@ -203,7 +225,7 @@
 						: "How far a press moves the level; below zero lowers it.";
 				}
 
-				if (!level) {
+				if (action === "monitor" || action === "output") {
 					const toggle = settings.mode === "toggle";
 					$("switch").value = toggle ? "toggle" : "select";
 					$("second-row").hidden = !toggle;
@@ -244,6 +266,15 @@
 				if (!$("mix").value) return;
 				settings.mix = Number($("mix").value);
 				settings.label = $("mix").selectedOptions[0].text;
+				save();
+			};
+			$("slot").onchange = () => {
+				settings.slot = Number($("slot").value) || 1;
+				settings.label = `Person ${settings.slot}`;
+				save();
+			};
+			$("page").onchange = () => {
+				settings.page = $("page").value;
 				save();
 			};
 			$("display").onchange = () => {

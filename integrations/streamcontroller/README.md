@@ -13,6 +13,7 @@ changes, whoever changed it.
 | **Mix Level** | a mix | the same | the same |
 | **Monitor Mix** | one mix, or two to switch between | hears that mix in the headphones, alone | press, the same |
 | **Main Output Device** | one device, or two to switch between | listens on that device | press, the same |
+| **Call Voice** | a place in the Discord call: the first, the second… | as Channel Level, for whoever is there | the same |
 
 A level shows its meter with it, as the mixer's do: inside the ring on a
 key, in the bar on the touch strip with the level as a handle on it; set

@@ -120,6 +120,57 @@
       },
       "SupportedInMultiActions": true,
       "PropertyInspectorPath": "propertyInspector/index.html"
+    },
+    {
+      "UUID": "com.fabienmillet.pipedeck.voice",
+      "Name": "Call Voice",
+      "Tooltip": "A person of the Discord call, by their place in it",
+      "Icon": "icons/voice",
+      "States": [
+        {
+          "Image": "icons/voice"
+        }
+      ],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/strip.json",
+        "Icon": "icons/voice",
+        "TriggerDescription": {
+          "Rotate": "Adjust level",
+          "Push": "Mute",
+          "Touch": "Mute"
+        }
+      },
+      "SupportedInMultiActions": true,
+      "PropertyInspectorPath": "propertyInspector/index.html"
+    },
+    {
+      "UUID": "com.fabienmillet.pipedeck.call",
+      "Name": "Call",
+      "Tooltip": "Go to the call's profile, or back to the mixer's",
+      "Icon": "icons/call",
+      "States": [
+        {
+          "Image": "icons/call"
+        }
+      ],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/strip.json",
+        "Icon": "icons/call",
+        "TriggerDescription": {
+          "Push": "Switch",
+          "Touch": "Switch"
+        }
+      },
+      "SupportedInMultiActions": true,
+      "PropertyInspectorPath": "propertyInspector/index.html"
     }
   ]
 }

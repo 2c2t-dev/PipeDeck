@@ -12,6 +12,14 @@
 //! - **Main Output Device**: the device it is heard on, one, or the other
 //!   of two.
 //!
+//! And two of Pipedeck's own, for the people of a Discord call:
+//!
+//! - **Call Voice**: whoever is at a place in the call, the first, the
+//!   second, and on: their level as a channel's, following the call as
+//!   people come and go.
+//! - **Call**: to the profile laid out for the call, saying how many are in
+//!   it, and back to the mixer's.
+//!
 //! Everything is kept by id, so renaming a channel does not lose its key,
 //! and shown as Pipedeck says it is, whoever changed it.
 
@@ -36,7 +44,13 @@ pub enum Action {
     MixLevel,
     MonitorMix,
     MainOutput,
+    CallVoice,
+    CallPage,
 }
+
+/// The profiles the Call action goes between. See `profiles.rs`.
+pub const MIXER_PROFILE: &str = "Pipedeck";
+pub const CALL_PROFILE: &str = "Pipedeck Call";
 
 impl Action {
     fn from_uuid(uuid: &str) -> Option<Self> {
@@ -45,6 +59,8 @@ impl Action {
             "mix" => Some(Action::MixLevel),
             "monitor" => Some(Action::MonitorMix),
             "output" => Some(Action::MainOutput),
+            "voice" => Some(Action::CallVoice),
+            "call" => Some(Action::CallPage),
             _ => None,
         }
     }
@@ -85,14 +101,23 @@ struct Settings {
     step: Option<f32>,
     /// "volume" for the level alone; the meter is shown with it otherwise.
     display: Option<String>,
+    /// Which person of the call, from 1.
+    slot: Option<usize>,
+    /// Where the Call action goes: "call", or back to the "mixer".
+    page: Option<String>,
     /// What it was called, shown while Pipedeck is away.
     label: String,
 }
 
 impl Settings {
-    /// The level a level action works on.
-    fn target(&self, action: Action) -> Option<Target> {
+    /// The level a level action works on. A person of the call is found
+    /// by their place in it, so the mixer is needed for that.
+    fn target(&self, action: Action, view: Option<&View>) -> Option<Target> {
         match action {
+            Action::CallVoice => {
+                let (channel, user) = view?.in_call(self.slot.unwrap_or(1).max(1) - 1)?;
+                Some(Target::Voice { channel, user })
+            }
             Action::ChannelLevel => {
                 let channel = self.channel?;
                 Some(match (&self.user, self.mix) {
@@ -105,7 +130,7 @@ impl Settings {
                 })
             }
             Action::MixLevel => Some(Target::Mix { id: self.mix? }),
-            Action::MonitorMix | Action::MainOutput => None,
+            Action::MonitorMix | Action::MainOutput | Action::CallPage => None,
         }
     }
 
@@ -117,6 +142,8 @@ impl Settings {
 /// One action where OpenDeck put it.
 struct Instance {
     action: Action,
+    /// The deck it is on, which a profile is switched on.
+    device: String,
     /// On a dial, drawn on its part of the touch strip.
     dial: bool,
     settings: Settings,
@@ -185,6 +212,7 @@ impl Deck {
                     context.clone(),
                     Instance {
                         action,
+                        device: message["device"].as_str().unwrap_or_default().to_owned(),
                         dial: payload["controller"] == "Encoder",
                         settings: settings_of(payload),
                         shown: None,
@@ -245,7 +273,12 @@ impl Deck {
         let metered: Vec<String> = self
             .instances
             .iter()
-            .filter(|(_, i)| matches!(i.action, Action::ChannelLevel | Action::MixLevel))
+            .filter(|(_, i)| {
+                matches!(
+                    i.action,
+                    Action::ChannelLevel | Action::MixLevel | Action::CallVoice
+                )
+            })
             .filter(|(_, i)| i.settings.display.as_deref() != Some("volume"))
             .map(|(context, _)| context.clone())
             .collect();
@@ -285,8 +318,24 @@ impl Deck {
             return vec![alert(context)];
         };
         let change = match instance.action {
-            Action::ChannelLevel | Action::MixLevel => {
-                let Some(target) = settings.target(instance.action) else {
+            Action::CallPage => {
+                if matches!(press, Press::Turn(_)) {
+                    return Vec::new();
+                }
+                let profile = if settings.page.as_deref() == Some("mixer") {
+                    MIXER_PROFILE
+                } else {
+                    CALL_PROFILE
+                };
+                // OpenDeck's own, not the Stream Deck SDK's.
+                return vec![json!({
+                    "event": "switchProfile",
+                    "device": instance.device,
+                    "profile": profile,
+                })];
+            }
+            Action::ChannelLevel | Action::MixLevel | Action::CallVoice => {
+                let Some(target) = settings.target(instance.action, Some(view)) else {
                     return vec![alert(context)];
                 };
                 // A dial moves the level and mutes it, whatever a key does.
@@ -472,8 +521,53 @@ fn picture(
     let view = view.ok_or("Offline")?;
     let unset = "Pick one";
     match action {
-        Action::ChannelLevel | Action::MixLevel => {
-            let target = settings.target(action).ok_or(unset)?;
+        Action::CallPage => {
+            if settings.page.as_deref() == Some("mixer") {
+                return Ok(Drawn {
+                    name: "Mixer".to_owned(),
+                    look: ("pd-listen-symbolic", draw::WHITE),
+                    corner: None,
+                    level: None,
+                    meter: None,
+                    state: State::default(),
+                    below: ("Back".to_owned(), "#ffffff"),
+                });
+            }
+            let people = view.people_in_call();
+            Ok(Drawn {
+                name: "Call".to_owned(),
+                look: draw::look(Some("people"), false, false),
+                corner: None,
+                level: None,
+                meter: None,
+                state: State {
+                    muted: false,
+                    dim: people == 0,
+                },
+                below: match people {
+                    0 => ("No call".to_owned(), draw::FAINT),
+                    1 => ("1 person".to_owned(), "#ffffff"),
+                    n => (format!("{n} people"), "#ffffff"),
+                },
+            })
+        }
+        Action::CallVoice if settings.target(action, Some(view)).is_none() => {
+            // Nobody there: the place shows it is free.
+            Ok(Drawn {
+                name: format!("Person {}", settings.slot.unwrap_or(1).max(1)),
+                look: draw::look(Some("people"), false, false),
+                corner: None,
+                level: None,
+                meter: None,
+                state: State {
+                    muted: false,
+                    dim: true,
+                },
+                below: ("Empty".to_owned(), draw::FAINT),
+            })
+        }
+        Action::ChannelLevel | Action::MixLevel | Action::CallVoice => {
+            let target = settings.target(action, Some(view)).ok_or(unset)?;
             let found = view.find(&target).ok_or("Gone")?;
             let below = if found.muted {
                 ("Muted".to_owned(), draw::RED)
@@ -648,6 +742,60 @@ mod tests {
             json!({"channel": 2, "display": "volume"}),
         );
         assert!(plain.levels_changed(peaks(0.5)).is_empty());
+    }
+
+    fn in_call(names: &[&str]) -> View {
+        let mut view = view();
+        view.channels[0].voices = names
+            .iter()
+            .map(|name| crate::mixer::Voice {
+                user: format!("id-{name}"),
+                name: (*name).to_owned(),
+                volume: 1.0,
+                muted: false,
+            })
+            .collect();
+        view
+    }
+
+    #[test]
+    fn a_place_in_the_call_follows_who_is_there() {
+        let place = |slot| Settings {
+            slot: Some(slot),
+            ..Settings::default()
+        };
+        let call = in_call(&["Alice", "Bob"]);
+        let drawn = picture(Action::CallVoice, &place(2), Some(&call), &Peaks::default()).unwrap();
+        assert_eq!((drawn.name.as_str(), drawn.state.dim), ("Bob", false));
+        // Alice leaves: Bob moves up, and the second place is free.
+        let call = in_call(&["Bob"]);
+        let drawn = picture(Action::CallVoice, &place(1), Some(&call), &Peaks::default()).unwrap();
+        assert_eq!(drawn.name, "Bob");
+        let drawn = picture(Action::CallVoice, &place(2), Some(&call), &Peaks::default()).unwrap();
+        assert_eq!(
+            (drawn.name.as_str(), drawn.below.0.as_str()),
+            ("Person 2", "Empty")
+        );
+    }
+
+    #[test]
+    fn the_call_key_counts_the_people_and_switches_the_profile() {
+        let mut deck = Deck::new(Mixer::default());
+        deck.mixer_changed(Some(in_call(&["Alice", "Bob", "Carol"])));
+        let shown = deck.hear(&json!({
+            "event": "willAppear",
+            "action": format!("{PLUGIN}.call"),
+            "context": "here",
+            "device": "sd-1",
+            "payload": {"controller": "Keypad", "settings": {}},
+        }));
+        let image = shown[0]["payload"]["image"].as_str().unwrap().to_owned();
+        assert!(image.starts_with("data:image/svg+xml;base64,"));
+        let told = deck.hear(&json!({"event": "keyDown", "context": "here", "payload": {}}));
+        assert_eq!(
+            told,
+            vec![json!({"event": "switchProfile", "device": "sd-1", "profile": CALL_PROFILE})]
+        );
     }
 
     #[test]

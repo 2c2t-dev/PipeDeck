@@ -12,6 +12,8 @@ changed it.
 | **Mix Level** | a mix | the same | the same |
 | **Monitor Mix** | one mix, or two to switch between | hears that mix in the headphones, alone | press, the same |
 | **Main Output Device** | one device, or two to switch between | listens on that device | press, the same |
+| **Call Voice** | a place in the Discord call: the first, the second… | as Channel Level, for whoever is there | the same |
+| **Call** | the call, or back to the mixer | goes to the Pipedeck Call profile, or back | press, the same |
 
 A level shows its meter with it, as the mixer's do: inside the ring on a
 key, in the bar on the touch strip with the level as a handle on it; set
@@ -74,6 +76,11 @@ with OpenDeck closed.
 - **Stream Deck XL**: the mixer's grid, a column for each channel (up to
   six) with its own level on top and its level in each mix under it, then a
   column of mixes and a column of mixes to hear, the output device last.
+
+Each has a **Call** key, which says how many are in the call and goes to a
+second profile, **Pipedeck Call**: a person of the call on every dial and
+key, by their place in it, so it follows the call as people come and go
+without being laid out again, and a key back to the mixer.
 
 Every key on them is an ordinary action: change it in its settings, move it
 or replace it as any other, in a profile of your own.

@@ -98,6 +98,21 @@ pub struct Found {
 }
 
 impl View {
+    /// The person at a place in the call, from 0, and the channel carrying
+    /// it: the people in the order the mixer first met them, closing up
+    /// when someone leaves.
+    pub fn in_call(&self, place: usize) -> Option<(u32, String)> {
+        self.channels
+            .iter()
+            .flat_map(|c| c.voices.iter().map(move |v| (c.id, v.user.clone())))
+            .nth(place)
+    }
+
+    /// How many people are in the call.
+    pub fn people_in_call(&self) -> usize {
+        self.channels.iter().map(|c| c.voices.len()).sum()
+    }
+
     pub fn find(&self, target: &Target) -> Option<Found> {
         let channel = |id: u32| self.channels.iter().find(|c| c.id == id);
         let mix = |id: u32| self.mixes.iter().find(|m| m.id == id);

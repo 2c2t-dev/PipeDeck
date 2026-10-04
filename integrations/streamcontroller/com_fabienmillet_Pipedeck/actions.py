@@ -11,6 +11,8 @@ the OpenDeck plugin has them too (`integrations/opendeck/src/deck.rs`):
   two.
 - **Main Output Device**: the device it is heard on, one, or the other of
   two.
+- **Call Voice**, Pipedeck's own: whoever is at a place in a Discord call,
+  the first, the second, and on, following the call as people come and go.
 
 Everything is kept by id, so renaming a channel does not lose its key, and
 shown as Pipedeck says it is, whoever changed it.
@@ -381,6 +383,45 @@ class MixLevel(LevelAction):
         mix = self.combo("Mix", [(m["id"], m["name"]) for m in mixes], settings.get("mix"), settings.get("label", GONE))
         self.picked(mix, lambda value, label: self.save(mix=value, label=label))
         return [mix] + self.level_rows()
+
+
+class CallVoice(LevelAction):
+    """A person of the call, by their place in it, from 1: the people in the
+    order the mixer first met them, closing up when someone leaves."""
+
+    def place(self, settings: dict) -> int:
+        return max(1, int(settings.get("slot", 1)))
+
+    def target(self, settings: dict):
+        people = [
+            (channel["id"], voice["user"])
+            for channel in (self.pipedeck.state or {}).get("channels", [])
+            for voice in channel["voices"]
+        ]
+        place = self.place(settings)
+        if place > len(people):
+            return None
+        channel, user = people[place - 1]
+        return {"what": "voice", "channel": channel, "user": user}
+
+    def picture(self, settings: dict) -> draw.Picture:
+        if self.target(settings) is None:
+            # Nobody there: the place shows it is free.
+            return draw.Picture(
+                name=f"Person {self.place(settings)}",
+                look=draw.look("people"),
+                dim=True,
+                below=("Empty", draw.FAINT),
+            )
+        return super().picture(settings)
+
+    def get_config_rows(self) -> list:
+        settings = self.settings()
+        ordinal = {1: "1st", 2: "2nd", 3: "3rd"}
+        places = [(n, f"{ordinal.get(n, f'{n}th')} in the call") for n in range(1, 25)]
+        place = self.combo("Person", places, self.place(settings))
+        self.picked(place, lambda value, _: self.save(slot=value, label=f"Person {value}"))
+        return [place] + self.level_rows()
 
 
 class SwitchAction(PipedeckAction):

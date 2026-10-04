@@ -11,6 +11,10 @@
 //!   channel with its own level on top and its level in each mix under it,
 //!   then a column of mixes and one of mixes to hear.
 //!
+//! Each has a Call key, to a second profile, "Pipedeck Call": the people
+//! of a Discord call by their place in it, on the dials first and then the
+//! keys, so it follows the call as people come and go; and a key back.
+//!
 //! A deck is told apart by its keys and dials, from the profiles OpenDeck
 //! has already written for it; one OpenDeck has not seen yet gets its
 //! profile the next time this runs.
@@ -19,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::deck::PLUGIN;
+use crate::deck::{CALL_PROFILE, MIXER_PROFILE, PLUGIN};
 use crate::mixer::View;
 
 /// What a key or a dial is given: one of the plugin's actions, and its
@@ -139,27 +143,59 @@ fn output(view: &View) -> Slot {
     })
 }
 
+/// The key between the mixer's profile and the call's.
+fn call_page(to: &str) -> Slot {
+    Some(("call", json!({ "page": to })))
+}
+
+/// The person at a place in the call, from 1.
+fn voice(place: usize) -> Slot {
+    Some((
+        "voice",
+        json!({ "slot": place, "label": format!("Person {place}") }),
+    ))
+}
+
+/// The call's profile: a person on every dial and key, the last key back.
+fn call_layout(model: Model) -> Layout {
+    let mut layout = Layout::new(model);
+    let mut place = 1;
+    for dial in layout.dials.iter_mut() {
+        *dial = voice(place);
+        place += 1;
+    }
+    let last = layout.keys.len() - 1;
+    for key in layout.keys[..last].iter_mut() {
+        *key = voice(place);
+        place += 1;
+    }
+    layout.keys[last] = call_page("mixer");
+    layout
+}
+
 fn layout(model: Model, view: &View) -> Layout {
     let mut layout = Layout::new(model);
     match model {
         Model::StreamDeck => {
             for i in 0..5 {
                 layout.put(model, 0, i, channel(view, i));
-                layout.put(model, 2, i, mix_level(view, i));
             }
             for i in 0..4 {
                 layout.put(model, 1, i, monitor(view, i));
+                layout.put(model, 2, i, mix_level(view, i));
             }
             layout.put(model, 1, 4, output(view));
+            layout.put(model, 2, 4, call_page("call"));
         }
         Model::Plus => {
             for i in 0..4 {
                 layout.dials[i] = channel(view, i);
-                layout.put(model, 0, i, mix_level(view, i));
             }
             for i in 0..3 {
+                layout.put(model, 0, i, mix_level(view, i));
                 layout.put(model, 1, i, monitor(view, i));
             }
+            layout.put(model, 0, 3, call_page("call"));
             layout.put(model, 1, 3, output(view));
         }
         Model::Xl => {
@@ -170,9 +206,10 @@ fn layout(model: Model, view: &View) -> Layout {
                     layout.put(model, m + 1, c, cell(view, c, m));
                 }
             }
-            for m in 0..4 {
+            for m in 0..3 {
                 layout.put(model, m, 6, mix_level(view, m));
             }
+            layout.put(model, 3, 6, call_page("call"));
             for m in 0..3 {
                 layout.put(model, m, 7, monitor(view, m));
             }
@@ -226,8 +263,7 @@ fn instance(manifest: &Value, controller: &str, position: usize, slot: &Slot) ->
     })
 }
 
-fn profile(model: Model, view: &View, manifest: &Value) -> Value {
-    let layout = layout(model, view);
+fn profile(layout: &Layout, manifest: &Value) -> Value {
     json!({
         "keys": layout.keys.iter().enumerate().map(|(i, slot)| instance(manifest, "Keypad", i, slot)).collect::<Vec<_>>(),
         "sliders": layout.dials.iter().enumerate().map(|(i, slot)| instance(manifest, "Encoder", i, slot)).collect::<Vec<_>>(),
@@ -285,16 +321,21 @@ pub fn write_all() -> Result<(), Box<dyn std::error::Error>> {
             println!("{id}: not a deck these profiles are for, left alone");
             continue;
         };
-        let path = device.join("Pipedeck.json");
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&profile(model, &view, &manifest))?,
-        )?;
-        println!(
-            "{id}: {} profile written to {}",
-            model.name(),
-            path.display()
-        );
+        for (name, layout) in [
+            (MIXER_PROFILE, layout(model, &view)),
+            (CALL_PROFILE, call_layout(model)),
+        ] {
+            let path = device.join(format!("{name}.json"));
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&profile(&layout, &manifest))?,
+            )?;
+            println!(
+                "{id}: {} profile written to {}",
+                model.name(),
+                path.display()
+            );
+        }
         written += 1;
     }
     if written == 0 {
@@ -347,7 +388,7 @@ mod tests {
             [
                 "channel", "channel", "channel", "-", "-", //
                 "monitor", "monitor", "monitor", "-", "output", //
-                "mix", "mix", "mix", "-", "-",
+                "mix", "mix", "mix", "-", "call",
             ]
         );
         assert_eq!(layout.keys[9].as_ref().unwrap().1["mode"], "toggle");
@@ -359,7 +400,7 @@ mod tests {
         assert_eq!(names(&layout.dials), ["channel", "channel", "channel", "-"]);
         assert_eq!(
             names(&layout.keys),
-            ["mix", "mix", "mix", "-", "monitor", "monitor", "monitor", "output"]
+            ["mix", "mix", "mix", "call", "monitor", "monitor", "monitor", "output"]
         );
     }
 
@@ -371,16 +412,30 @@ mod tests {
             |c: usize| -> Vec<&str> { (0..4).map(|r| names(&layout.keys)[r * 8 + c]).collect() };
         assert_eq!(column(0), ["channel", "channel", "-", "channel"]);
         assert_eq!(column(2), ["channel", "-", "channel", "-"]);
-        assert_eq!(column(6), ["mix", "mix", "mix", "-"]);
+        assert_eq!(column(6), ["mix", "mix", "mix", "call"]);
         assert_eq!(column(7), ["monitor", "monitor", "monitor", "output"]);
         assert_eq!(layout.keys[8].as_ref().unwrap().1["mix"], 1);
+    }
+
+    #[test]
+    fn the_call_is_people_by_their_place_and_a_way_back() {
+        let layout = call_layout(Model::Plus);
+        let places: Vec<_> = layout
+            .dials
+            .iter()
+            .chain(&layout.keys)
+            .filter_map(|slot| slot.as_ref()?.1["slot"].as_u64())
+            .collect();
+        assert_eq!(places, (1..=11).collect::<Vec<_>>());
+        assert_eq!(layout.keys[7].as_ref().unwrap().1["page"], "mixer");
+        assert_eq!(call_layout(Model::Xl).keys.iter().flatten().count(), 32);
     }
 
     #[test]
     fn a_profile_is_as_opendeck_keeps_it() {
         let manifest: Value =
             serde_json::from_str(include_str!("../plugin/manifest.json")).unwrap();
-        let profile = profile(Model::Plus, &view(), &manifest);
+        let profile = profile(&layout(Model::Plus, &view()), &manifest);
         assert_eq!(profile["keys"].as_array().unwrap().len(), 8);
         assert_eq!(profile["sliders"][0]["context"], "Encoder.0.0");
         assert_eq!(
