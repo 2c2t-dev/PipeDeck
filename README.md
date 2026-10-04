@@ -142,73 +142,15 @@ own settings in `interface.toml` next to it.
 
 | Variable | Use |
 | --- | --- |
-| `RUST_LOG` | Log level, e.g. `RUST_LOG=pipedeck_engine=debug`. |
-| `PIPEDECK_APP_ID` | Run a development build next to an installed one. |
-| `PIPEDECK_CONTROL_SOCKET` | Use another path for the control socket. |
-| `PIPEDECK_NODE_PREFIX` | Name the nodes differently, so two mixers can run side by side. |
+| `RUST_LOG` | How much Pipedeck logs, e.g. `RUST_LOG=pipedeck=debug,pipedeck_engine=debug` for a bug report. |
 | `PIPEDECK_STEREOTOOL` | Load Stereo Tool from somewhere else. |
-| `PIPEDECK_STEREOTOOL_NOISE` | Show what Stereo Tool writes to the terminal, which is hidden otherwise. |
 | `VST3_PATH` | More folders to look for VST3 plug-ins in. |
 
-## Development
+## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and send a
-change, [CHANGELOG.md](CHANGELOG.md) for what each release brings, and
-[RELEASING.md](RELEASING.md) for how one is made.
-
-| Folder | Contents |
-| --- | --- |
-| `crates/pipedeck-engine` | The PipeWire graph, the config and the control socket. No GTK. |
-| `crates/pipedeck` | The GTK 4 and libadwaita application. |
-| `integrations/opendeck` | The OpenDeck plugin, in Rust. |
-| `integrations/streamcontroller` | The StreamController plugin, in Python. |
-| `integrations/vencord` | The Vesktop plugin. |
-
-Checks against the live PipeWire server, all run with
-`cargo run -p pipedeck-engine --example <name>`:
-
-| Example | Checks |
-| --- | --- |
-| `smoke` | Builds a whole mixer, plays a tone through it and checks every node, then that nothing is left behind. It runs next to your own Pipedeck without touching it. |
-| `relink_check` | The mixer repairs itself after WirePlumber restarts. |
-| `reconnect_check` | The mixer comes back after PipeWire restarts. Point `PIPEWIRE_REMOTE` at a private server, since restarting your own cuts all audio. |
-| `plugins`, `plugin_check [name]` | Lists the VST3 plug-ins, runs a tone through one. |
-| `stereotool_check [preset.sts]` | Runs a tone through Stereo Tool; `--window` also shows its window. |
-
-`site/` is the website, [pipedeck.2c2t.dev](https://pipedeck.2c2t.dev/),
-published with the README's pictures on Cloudflare Pages whenever it
-changes on `main`.
-
-`packaging/package.sh deb|rpm|appimage` builds a package into `dist`, on
-the system it is for; the release workflow runs it on every tag.
-
-`cargo run -p pipedeck --example screenshot .github [--light]` draws the
-README's pictures from a made-up mixer, without touching yours. Run it on
-GTK's Broadway backend (`gtk4-broadwayd :5 &`, then
-`GDK_BACKEND=broadway BROADWAY_DISPLAY=:5`) so nothing shows on screen.
-
-### PipeWire nodes
-
-What Pipedeck puts on the graph, as `pw-dump`, `pw-top` or qpwgraph show it.
-`N` is a channel's id, `M` a mix's.
-
-| Node | What it is |
-| --- | --- |
-| `pipedeck.src.N` | A channel: the sink applications play into. |
-| `pipedeck.voice.N.<user>` | One person of a Discord call, playing into their channel. |
-| `pipedeck.fx.N`, `pipedeck.vst.N` | The channel once its effects have run, which the cells then read. |
-| `pipedeck.link.N.M` | A cell: a loopback carrying the cell's fader and mute. |
-| `pipedeck.mix.M` | A mix: the source OBS records. |
-| `pipedeck.out.M.<index>` | A mix playing to an output device. |
-| `pipedeck.meter.*` | What the meters listen to. |
-
-A channel is a sink, and a mix is a source, which is why each shows up in
-only one list. A session manager routes nothing into a source, so Pipedeck
-links the cells into their mix itself, port by port.
-
-Every node belongs to Pipedeck's own PipeWire connection, so if Pipedeck
-dies, nothing is left behind. On quitting, it hands the applications it
-moved back to the session manager.
+Fixes and ideas are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) says how to
+build, test and send a change, and [CHANGELOG.md](CHANGELOG.md) lists what
+each release brings.
 
 ## License
 

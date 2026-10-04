@@ -27,6 +27,23 @@ PIPEDECK_APP_ID=dev._2c2t.PipedeckDev PIPEDECK_NODE_PREFIX=pipedeck-dev \
 
 Run this way, it does not lay out your Stream Deck pages either.
 
+| Variable | Use |
+| --- | --- |
+| `PIPEDECK_APP_ID` | An application id of its own, so it does not hand over to the running Pipedeck. |
+| `PIPEDECK_NODE_PREFIX` | Node names of its own, so two mixers can run side by side. |
+| `PIPEDECK_CONTROL_SOCKET` | Another path for the control socket. |
+| `PIPEDECK_STEREOTOOL_NOISE` | Show what Stereo Tool writes to the terminal, which is hidden otherwise. |
+
+## Where things are
+
+| Folder | Contents |
+| --- | --- |
+| `crates/pipedeck-engine` | The PipeWire graph, the config and the control socket. No GTK. |
+| `crates/pipedeck` | The GTK 4 and libadwaita application. |
+| `integrations/opendeck` | The OpenDeck plugin, in Rust. |
+| `integrations/streamcontroller` | The StreamController plugin, in Python. |
+| `integrations/vencord` | The Vesktop plugin. |
+
 ## Before a pull request
 
 The CI runs these, so running them first saves a round trip:
@@ -44,8 +61,15 @@ server. They run beside your own Pipedeck without touching it:
 cargo run -p pipedeck-engine --example smoke
 ```
 
-`relink_check` and `reconnect_check` cover WirePlumber and PipeWire
-restarts; see the README for those and the other examples.
+The other checks, each run with `cargo run -p pipedeck-engine --example
+<name>`:
+
+| Example | Checks |
+| --- | --- |
+| `relink_check` | The mixer repairs itself after WirePlumber restarts. |
+| `reconnect_check` | The mixer comes back after PipeWire restarts. Point `PIPEWIRE_REMOTE` at a private server, since restarting your own cuts all audio. |
+| `plugins`, `plugin_check [name]` | Lists the VST3 plug-ins, runs a tone through one. |
+| `stereotool_check [preset.sts]` | Runs a tone through Stereo Tool; `--window` also shows its window. |
 
 ## How the code is written
 
@@ -55,8 +79,32 @@ restarts; see the README for those and the other examples.
   paragraph on the reason when it is not obvious.
 - Comments say why, not what the next line does.
 
-A few rules hold the engine together; a change that breaks one needs a
-good reason, given in the pull request:
+## The graph
+
+What Pipedeck puts on the graph, as `pw-dump`, `pw-top` or qpwgraph show it.
+`N` is a channel's id, `M` a mix's.
+
+| Node | What it is |
+| --- | --- |
+| `pipedeck.src.N` | A channel: the sink applications play into. |
+| `pipedeck.voice.N.<user>` | One person of a Discord call, playing into their channel. |
+| `pipedeck.fx.N`, `pipedeck.vst.N` | The channel once its effects have run, which the cells then read. |
+| `pipedeck.link.N.M` | A cell: a loopback carrying the cell's fader and mute. |
+| `pipedeck.mix.M` | A mix: the source OBS records. |
+| `pipedeck.out.M.<index>` | A mix playing to an output device. |
+| `pipedeck.meter.*` | What the meters listen to. |
+
+A channel is a sink, and a mix is a source, which is why each shows up in
+only one list. A session manager routes nothing into a source, so Pipedeck
+links the cells into their mix itself, port by port.
+
+Every node belongs to Pipedeck's own PipeWire connection, so if Pipedeck
+dies, nothing is left behind. On quitting, it hands the applications it
+moved back to the session manager.
+
+## Rules the engine holds to
+
+A change that breaks one needs a good reason, given in the pull request:
 
 - A node's `node.name` comes from its id (`pipedeck.src.3`), never from the
   name the user gave it, which goes in `node.description`. Renaming must
