@@ -11,8 +11,6 @@ dest="$data/plugins/$name"
 
 mkdir -p "$data/plugins"
 rm -rf "$dest"
-# The plugin under the name it had before.
-rm -rf "$data/plugins/com_fabienmillet_Pipedeck"
 mkdir -p "$dest/assets/icons"
 cp "$here/$name"/*.py "$here/$name"/manifest.json "$here/$name"/locales.csv "$dest/"
 cp "$repo/crates/pipedeck/icons"/*.svg "$dest/assets/icons/"

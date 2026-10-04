@@ -120,23 +120,6 @@ impl App {
         }
     }
 
-    /// Where the plugin was installed under the name it had before.
-    fn legacy_dir(self) -> PathBuf {
-        self.plugins_dir().join(match self {
-            App::OpenDeck => "com.fabienmillet.pipedeck.sdPlugin",
-            App::StreamController => "com_fabienmillet_Pipedeck",
-        })
-    }
-
-    /// Take out the plugin installed under its old name.
-    fn remove_legacy(self) -> Result<(), String> {
-        let dir = self.legacy_dir();
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        }
-        Ok(())
-    }
-
     fn plugin_dir(self) -> PathBuf {
         self.plugins_dir().join(match self {
             App::OpenDeck => OPENDECK_PLUGIN,
@@ -249,10 +232,6 @@ pub fn state(app: App) -> State {
     }
     let dir = app.plugin_dir();
     if !dir.is_dir() {
-        // Installed under the name it had: to be updated.
-        if app.legacy_dir().is_dir() {
-            return State::Installed { current: false };
-        }
         return State::Available;
     }
     let installed = std::fs::read_to_string(dir.join(MARKER)).ok();
@@ -381,7 +360,6 @@ fn write(path: &Path, contents: &[u8]) -> Result<(), String> {
 }
 
 fn install_opendeck() -> Result<(), String> {
-    App::OpenDeck.remove_legacy()?;
     let program = opendeck_program().ok_or("the plugin program is missing")?;
     let dir = App::OpenDeck.plugin_dir();
     if dir.exists() {
@@ -418,7 +396,6 @@ fn install_opendeck() -> Result<(), String> {
 }
 
 fn install_streamcontroller() -> Result<(), String> {
-    App::StreamController.remove_legacy()?;
     let dir = App::StreamController.plugin_dir();
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -446,12 +423,7 @@ pub fn remove(app: App) -> Result<String, String> {
     let _busy = Busy::take()?;
     let was_running = app == App::OpenDeck && close_opendeck();
     let dir = app.plugin_dir();
-    let result = if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))
-    } else {
-        Ok(())
-    }
-    .and_then(|()| app.remove_legacy());
+    let result = std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()));
     if was_running {
         start_opendeck();
     }

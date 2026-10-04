@@ -13,8 +13,6 @@ binary="$(cargo metadata --format-version 1 --no-deps --manifest-path "$here/Car
 	sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/pipedeck-opendeck"
 
 rm -rf "$dest"
-# The plugin under the name it had before.
-rm -rf "$config/plugins/com.fabienmillet.pipedeck.sdPlugin"
 mkdir -p "$dest/$target/bin" "$dest/icons"
 cp -r "$here/plugin/." "$dest/"
 cp "$binary" "$dest/$target/bin/"
