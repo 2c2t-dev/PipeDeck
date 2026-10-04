@@ -1,49 +1,114 @@
 //! The keys and dials OpenDeck has put the plugin's actions on: what each
 //! sends Pipedeck when used, and what it shows.
 //!
-//! Every action aims at one thing in the mixer, picked in its settings from
-//! what Pipedeck has now, and kept by id: a channel renamed is still the
-//! same key. It shows that thing as Pipedeck says it is, whoever changed it.
+//! The actions are Wave Link's, as its Stream Deck plugin has them:
+//!
+//! - **Channel Level**: a channel's level, its own or in one mix, or a
+//!   person's of a call. A key mutes it, sets it, or moves it by a step; a
+//!   dial moves it and mutes it when pressed.
+//! - **Mix Level**: the same for a mix.
+//! - **Monitor Mix**: the mix heard in the headphones, one, or the other of
+//!   two.
+//! - **Main Output Device**: the device it is heard on, one, or the other
+//!   of two.
+//!
+//! Everything is kept by id, so renaming a channel does not lose its key,
+//! and shown as Pipedeck says it is, whoever changed it.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::draw::{self, State};
-use crate::mixer::{order, Kind, Mixer, Target, View};
+use crate::draw::{self, Picture, State};
+use crate::mixer::{order, Mixer, Target, View};
 
 /// The plugin's identifier, which its actions' start with.
 pub const PLUGIN: &str = "com.fabienmillet.pipedeck";
 
+/// How often a fade moves the fader.
+const FADE_STEP: Duration = Duration::from_millis(40);
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
-    /// Mutes or unmutes.
-    Mute,
-    /// A key moves the level by its step; a dial moves it either way.
-    Volume,
-    /// Which mixes are heard in the headphones.
-    Hear,
-    /// The device the mixes are heard on.
-    Output,
+    ChannelLevel,
+    MixLevel,
+    MonitorMix,
+    MainOutput,
 }
 
 impl Action {
     fn from_uuid(uuid: &str) -> Option<Self> {
         match uuid.strip_prefix(PLUGIN)?.strip_prefix('.')? {
-            "mute" => Some(Action::Mute),
-            "volume" => Some(Action::Volume),
-            "hear" => Some(Action::Hear),
-            "output" => Some(Action::Output),
+            "channel" => Some(Action::ChannelLevel),
+            "mix" => Some(Action::MixLevel),
+            "monitor" => Some(Action::MonitorMix),
+            "output" => Some(Action::MainOutput),
             _ => None,
         }
     }
+}
 
-    fn kinds(self) -> &'static [Kind] {
-        match self {
-            Action::Mute | Action::Volume => &[Kind::Channel, Kind::Mix, Kind::Cell, Kind::Voice],
-            Action::Hear => &[Kind::Mix],
-            Action::Output => &[Kind::Output],
+/// What a key does when pressed, for the level actions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Mode {
+    #[default]
+    Mute,
+    Set,
+    Adjust,
+    /// For the monitor mix and the output: one, or the other of two.
+    Select,
+    Toggle,
+}
+
+/// An action's settings, as its settings page writes them.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+struct Settings {
+    channel: Option<u32>,
+    /// A person of the call the channel carries.
+    user: Option<String>,
+    /// The mix a channel's level is taken in, or the mix itself.
+    mix: Option<u32>,
+    /// The other of two mixes, to toggle between.
+    mix2: Option<u32>,
+    device: Option<String>,
+    device2: Option<String>,
+    mode: Mode,
+    /// Where a key sets the level, in percent.
+    volume: Option<f32>,
+    /// How long it takes to get there, in milliseconds.
+    fade: Option<u64>,
+    /// How far a key, or a notch of a dial, moves the level, in percent.
+    step: Option<f32>,
+    /// What it was called, shown while Pipedeck is away.
+    label: String,
+}
+
+impl Settings {
+    /// The level a level action works on.
+    fn target(&self, action: Action) -> Option<Target> {
+        match action {
+            Action::ChannelLevel => {
+                let channel = self.channel?;
+                Some(match (&self.user, self.mix) {
+                    (Some(user), _) => Target::Voice {
+                        channel,
+                        user: user.clone(),
+                    },
+                    (None, Some(mix)) => Target::Cell { channel, mix },
+                    (None, None) => Target::Channel { id: channel },
+                })
+            }
+            Action::MixLevel => Some(Target::Mix { id: self.mix? }),
+            Action::MonitorMix | Action::MainOutput => None,
         }
+    }
+
+    fn step(&self) -> f32 {
+        self.step.unwrap_or(5.0) / 100.0
     }
 }
 
@@ -52,30 +117,19 @@ struct Instance {
     action: Action,
     /// On a dial, drawn on its part of the touch strip.
     dial: bool,
-    settings: Value,
+    settings: Settings,
     /// What was last sent, so a change elsewhere does not redraw every key.
     shown: Option<Value>,
 }
 
-impl Instance {
-    fn target(&self) -> Option<Target> {
-        serde_json::from_value(self.settings.get("target")?.clone()).ok()
-    }
-
-    fn step(&self) -> f32 {
-        self.settings
-            .get("step")
-            .and_then(Value::as_f64)
-            .unwrap_or(5.0) as f32
-            / 100.0
-    }
-
-    fn only(&self) -> bool {
-        self.settings
-            .get("only")
-            .and_then(Value::as_bool)
-            .unwrap_or(true)
-    }
+/// A fader on its way somewhere.
+struct Fade {
+    target: Target,
+    from: f32,
+    to: f32,
+    start: Instant,
+    length: Duration,
+    last: Instant,
 }
 
 /// A use of a key or a dial.
@@ -88,11 +142,15 @@ pub enum Press {
 }
 
 /// Every action OpenDeck has shown, the mixer as last told, and the way to
-/// tell each what to do.
+/// tell it what to do.
 pub struct Deck {
     instances: HashMap<String, Instance>,
     view: Option<View>,
     mixer: Mixer,
+    fades: Vec<Fade>,
+    /// The action whose settings page is open, which is told when what
+    /// there is to pick from changes.
+    open_page: Option<String>,
 }
 
 impl Deck {
@@ -101,6 +159,8 @@ impl Deck {
             instances: HashMap::new(),
             view: None,
             mixer,
+            fades: Vec::new(),
+            open_page: None,
         }
     }
 
@@ -144,8 +204,17 @@ impl Deck {
                 let ticks = payload["ticks"].as_i64().unwrap_or_default();
                 self.press(&context, Press::Turn(ticks))
             }
-            "propertyInspectorDidAppear" => self.choices(&context),
-            "sendToPlugin" if payload["request"] == "targets" => self.choices(&context),
+            "propertyInspectorDidAppear" => {
+                self.open_page = Some(context.clone());
+                self.tell_settings_page(&context)
+            }
+            "propertyInspectorDidDisappear" => {
+                if self.open_page.as_ref() == Some(&context) {
+                    self.open_page = None;
+                }
+                Vec::new()
+            }
+            "sendToPlugin" if payload["request"] == "mixer" => self.tell_settings_page(&context),
             _ => Vec::new(),
         }
     }
@@ -155,12 +224,34 @@ impl Deck {
         if self.view == view {
             return Vec::new();
         }
+        let listed = catalogue(self.view.as_ref()) != catalogue(view.as_ref());
         self.view = view;
         let contexts: Vec<String> = self.instances.keys().cloned().collect();
-        contexts
-            .iter()
-            .flat_map(|context| self.draw(context))
-            .collect()
+        let mut messages: Vec<Value> = contexts.iter().flat_map(|c| self.draw(c)).collect();
+        if let Some(open) = self.open_page.clone().filter(|_| listed) {
+            messages.extend(self.tell_settings_page(&open));
+        }
+        messages
+    }
+
+    /// Move every fade on.
+    pub fn tick(&mut self) {
+        let now = Instant::now();
+        let mixer = self.mixer.clone();
+        self.fades.retain_mut(|fade| {
+            if now.duration_since(fade.last) < FADE_STEP && now < fade.start + fade.length {
+                return true;
+            }
+            fade.last = now;
+            let part = if fade.length.is_zero() {
+                1.0
+            } else {
+                (now.duration_since(fade.start).as_secs_f32() / fade.length.as_secs_f32()).min(1.0)
+            };
+            let volume = fade.from + (fade.to - fade.from) * part;
+            mixer.send(order(&fade.target, json!({ "volume": volume })));
+            part < 1.0
+        });
     }
 
     /// Do what a press, a touch or a turn means for an action.
@@ -168,32 +259,75 @@ impl Deck {
         let Some(instance) = self.instances.get(context) else {
             return Vec::new();
         };
-        let Some(target) = instance.target() else {
+        let settings = &instance.settings;
+        let Some(view) = &self.view else {
             return vec![alert(context)];
         };
-        let change = match (instance.action, press) {
-            (Action::Mute, Press::Turn(_)) => return Vec::new(),
-            (Action::Mute, _) => order(&target, json!({ "mute": "toggle" })),
-            (Action::Volume, Press::Key) => order(&target, json!({ "nudge": instance.step() })),
-            (Action::Volume, Press::Turn(ticks)) => order(
-                &target,
-                json!({ "nudge": instance.step().abs() * ticks as f32 }),
-            ),
-            (Action::Volume, _) => order(&target, json!({ "mute": "toggle" })),
-            (_, Press::Turn(_)) => return Vec::new(),
-            (Action::Hear, _) => {
-                let Target::Mix { id } = target else {
+        let change = match instance.action {
+            Action::ChannelLevel | Action::MixLevel => {
+                let Some(target) = settings.target(instance.action) else {
                     return vec![alert(context)];
                 };
-                if instance.only() {
-                    json!({ "what": "hear", "mix": id, "only": true })
-                } else {
-                    json!({ "what": "hear", "mix": id, "listening": "toggle" })
+                // A dial moves the level and mutes it, whatever a key does.
+                let mode = match press {
+                    Press::Key => settings.mode,
+                    Press::Turn(_) => Mode::Adjust,
+                    Press::Dial | Press::Touch => Mode::Mute,
+                };
+                match (mode, press) {
+                    (Mode::Adjust, Press::Turn(ticks)) => order(
+                        &target,
+                        json!({ "nudge": settings.step().abs() * ticks as f32 }),
+                    ),
+                    (Mode::Adjust, _) => order(&target, json!({ "nudge": settings.step() })),
+                    (Mode::Set, _) => {
+                        let Some(from) = view.find(&target).map(|found| found.volume) else {
+                            return vec![alert(context)];
+                        };
+                        let to = settings.volume.unwrap_or(100.0).clamp(0.0, 100.0) / 100.0;
+                        let length = Duration::from_millis(settings.fade.unwrap_or(0));
+                        let now = Instant::now();
+                        self.fades.retain(|fade| fade.target != target);
+                        self.fades.push(Fade {
+                            target,
+                            from,
+                            to,
+                            start: now,
+                            length,
+                            last: now - FADE_STEP,
+                        });
+                        self.tick();
+                        return Vec::new();
+                    }
+                    _ => order(&target, json!({ "mute": "toggle" })),
                 }
             }
-            (Action::Output, _) => {
-                let Target::Output { device } = target else {
+            Action::MonitorMix => {
+                if matches!(press, Press::Turn(_)) {
+                    return Vec::new();
+                }
+                let Some(mix) = settings.mix else {
                     return vec![alert(context)];
+                };
+                let heard = |id: u32| view.mixes.iter().any(|m| m.id == id && m.listening);
+                let mix = match (settings.mode, settings.mix2) {
+                    (Mode::Toggle, Some(other)) if heard(mix) => other,
+                    _ => mix,
+                };
+                json!({ "what": "hear", "mix": mix, "only": true })
+            }
+            Action::MainOutput => {
+                if matches!(press, Press::Turn(_)) {
+                    return Vec::new();
+                }
+                let Some(device) = settings.device.clone() else {
+                    return vec![alert(context)];
+                };
+                let device = match (settings.mode, &settings.device2) {
+                    (Mode::Toggle, Some(other)) if view.listen.as_ref() == Some(&device) => {
+                        other.clone()
+                    }
+                    _ => device,
                 };
                 json!({ "what": "listen", "device": device })
             }
@@ -211,78 +345,16 @@ impl Deck {
         let Some(instance) = self.instances.get_mut(context) else {
             return Vec::new();
         };
-        let label = instance.settings["label"].as_str().unwrap_or_default();
-        let found = instance
-            .target()
-            .and_then(|target| self.view.as_ref()?.find(&target));
-        let (key, strip) = match found {
-            None => {
-                let why = if self.view.is_none() {
-                    "Offline"
-                } else if instance.target().is_some() {
-                    "Gone"
-                } else {
-                    "Pick one"
-                };
+        let (key, strip) = match picture(instance.action, &instance.settings, self.view.as_ref()) {
+            Ok(picture) => (
+                draw::key(&picture.as_picture()),
+                draw::strip(&picture.as_picture()),
+            ),
+            Err(why) => {
+                let label = &instance.settings.label;
                 (
                     draw::waiting(label, why, false),
                     draw::waiting(label, why, true),
-                )
-            }
-            Some(found) => {
-                let mut look = draw::look(found.icon.as_deref(), found.input, found.mix);
-                let muted = if found.muted { "Muted" } else { "" };
-                let (level, state, below) = match instance.action {
-                    Action::Mute => (
-                        None,
-                        State {
-                            muted: found.muted,
-                            dim: false,
-                        },
-                        (muted.to_owned(), draw::RED),
-                    ),
-                    Action::Volume => (
-                        Some(found.volume),
-                        State {
-                            muted: found.muted,
-                            dim: false,
-                        },
-                        if found.muted {
-                            ("Muted".to_owned(), draw::RED)
-                        } else {
-                            (draw::percent(found.volume), "#ffffff")
-                        },
-                    ),
-                    Action::Hear => (
-                        None,
-                        State {
-                            muted: false,
-                            dim: !found.listening,
-                        },
-                        (
-                            if found.listening { "Heard" } else { "" }.to_owned(),
-                            "#ffffff",
-                        ),
-                    ),
-                    Action::Output => {
-                        look = draw::look(Some("headset"), false, false);
-                        (
-                            None,
-                            State {
-                                muted: false,
-                                dim: !found.listening,
-                            },
-                            (
-                                if found.listening { "Listening" } else { "" }.to_owned(),
-                                "#ffffff",
-                            ),
-                        )
-                    }
-                };
-                let below = (below.0.as_str(), below.1);
-                (
-                    draw::key(&found.name, look, level, state, below),
-                    draw::strip(&found.name, look, level, state, below),
                 )
             }
         };
@@ -307,35 +379,152 @@ impl Deck {
         messages
     }
 
-    /// The list a key's settings pick its target from.
-    fn choices(&self, context: &str) -> Vec<Value> {
-        let Some(instance) = self.instances.get(context) else {
+    /// Tell an action's settings page what the mixer has to pick from.
+    fn tell_settings_page(&self, context: &str) -> Vec<Value> {
+        if !self.instances.contains_key(context) {
             return Vec::new();
-        };
-        let targets: Vec<Value> = self
-            .view
-            .as_ref()
-            .map(|view| view.targets(instance.action.kinds()))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(target, label)| json!({ "target": target, "label": label }))
-            .collect();
+        }
         vec![json!({
             "event": "sendToPropertyInspector",
             "context": context,
-            "payload": {
-                "targets": targets,
-                "running": self.view.is_some(),
-            },
+            "payload": { "mixer": catalogue(self.view.as_ref()) },
         })]
     }
 }
 
-fn settings_of(payload: &Value) -> Value {
-    match &payload["settings"] {
-        Value::Object(_) => payload["settings"].clone(),
-        _ => json!({}),
+/// What a settings page picks from: the mixer's channels, the people of
+/// its call, its mixes and cells and the devices it can be heard on, by id
+/// and name. Null while Pipedeck is not running.
+fn catalogue(view: Option<&View>) -> Value {
+    let Some(view) = view else {
+        return Value::Null;
+    };
+    json!({
+        "channels": view.channels.iter().map(|c| json!({
+            "id": c.id,
+            "name": c.name,
+            "voices": c.voices.iter().map(|v| json!({ "user": v.user, "name": v.name })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "mixes": view.mixes.iter().map(|m| json!({ "id": m.id, "name": m.name })).collect::<Vec<_>>(),
+        "cells": view.cells.iter().map(|c| json!([c.channel, c.mix])).collect::<Vec<_>>(),
+        "outputs": view.outputs.iter().map(|o| json!({ "name": o.name, "description": o.description })).collect::<Vec<_>>(),
+    })
+}
+
+/// A picture's parts, owned.
+struct Drawn {
+    name: String,
+    look: (&'static str, &'static str),
+    corner: Option<&'static str>,
+    level: Option<f32>,
+    state: State,
+    below: (String, &'static str),
+}
+
+impl Drawn {
+    fn as_picture(&self) -> Picture<'_> {
+        Picture {
+            name: &self.name,
+            look: self.look,
+            corner: self.corner,
+            level: self.level,
+            state: self.state,
+            below: (&self.below.0, self.below.1),
+        }
     }
+}
+
+/// What an action shows, or why it shows nothing.
+fn picture(
+    action: Action,
+    settings: &Settings,
+    view: Option<&View>,
+) -> Result<Drawn, &'static str> {
+    let view = view.ok_or("Offline")?;
+    let unset = "Pick one";
+    match action {
+        Action::ChannelLevel | Action::MixLevel => {
+            let target = settings.target(action).ok_or(unset)?;
+            let found = view.find(&target).ok_or("Gone")?;
+            let below = if found.muted {
+                ("Muted".to_owned(), draw::RED)
+            } else {
+                (draw::percent(found.volume), "#ffffff")
+            };
+            Ok(Drawn {
+                name: found.name.clone(),
+                look: draw::look(found.icon.as_deref(), found.input, found.mix),
+                corner: found
+                    .within
+                    .as_ref()
+                    .map(|mix| draw::look(mix.icon.as_deref(), false, true).0),
+                level: Some(found.volume),
+                state: State {
+                    muted: found.muted,
+                    dim: false,
+                },
+                below,
+            })
+        }
+        Action::MonitorMix => {
+            let first = settings.mix.ok_or(unset)?;
+            // Of two, the one heard, or the first when neither is.
+            let shown = match (settings.mode, settings.mix2) {
+                (Mode::Toggle, Some(other))
+                    if view.mixes.iter().any(|m| m.id == other && m.listening)
+                        && !view.mixes.iter().any(|m| m.id == first && m.listening) =>
+                {
+                    other
+                }
+                _ => first,
+            };
+            let mix = view.mixes.iter().find(|m| m.id == shown).ok_or("Gone")?;
+            Ok(Drawn {
+                name: mix.name.clone(),
+                look: draw::look(mix.icon.as_deref(), false, true),
+                corner: None,
+                level: None,
+                state: State {
+                    muted: false,
+                    dim: !mix.listening,
+                },
+                below: (
+                    if mix.listening { "Heard" } else { "" }.to_owned(),
+                    "#ffffff",
+                ),
+            })
+        }
+        Action::MainOutput => {
+            let first = settings.device.as_ref().ok_or(unset)?;
+            let shown = match (settings.mode, &settings.device2) {
+                (Mode::Toggle, Some(other)) if view.listen.as_ref() == Some(other) => other,
+                _ => first,
+            };
+            let found = view
+                .find(&Target::Output {
+                    device: shown.clone(),
+                })
+                .ok_or("Gone")?;
+            Ok(Drawn {
+                name: found.name,
+                look: draw::look(Some("headset"), false, false),
+                corner: None,
+                level: None,
+                state: State {
+                    muted: false,
+                    dim: !found.listening,
+                },
+                below: (
+                    if found.listening { "Listening" } else { "" }.to_owned(),
+                    "#ffffff",
+                ),
+            })
+        }
+    }
+}
+
+fn settings_of(payload: &Value) -> Settings {
+    serde_json::from_value(payload["settings"].clone()).unwrap_or_default()
 }
 
 fn alert(context: &str) -> Value {
@@ -350,11 +539,14 @@ mod tests {
         serde_json::from_value(json!({
             "channels": [{"id": 2, "name": "Music", "icon": "music", "volume": 0.5,
                           "muted": false, "input": false, "voices": []}],
-            "mixes": [{"id": 1, "name": "Stream", "icon": null, "volume": 1.0,
-                       "muted": false, "listening": true}],
-            "cells": [{"channel": 2, "mix": 1, "volume": 1.0, "muted": false}],
+            "mixes": [{"id": 1, "name": "Personal", "icon": null, "volume": 1.0,
+                       "muted": false, "listening": true},
+                      {"id": 3, "name": "Stream", "icon": "stream", "volume": 1.0,
+                       "muted": false, "listening": false}],
+            "cells": [{"channel": 2, "mix": 3, "volume": 0.25, "muted": true}],
             "listen": "phones",
-            "outputs": [{"name": "phones", "description": "Headphones"}],
+            "outputs": [{"name": "phones", "description": "Headphones"},
+                        {"name": "speakers", "description": "Speakers"}],
         }))
         .unwrap()
     }
@@ -368,59 +560,78 @@ mod tests {
         }))
     }
 
+    fn canvas(messages: &[Value]) -> String {
+        messages
+            .iter()
+            .find(|m| m["event"] == "setFeedback")
+            .and_then(|m| m["payload"]["canvas"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    }
+
     #[test]
-    fn a_key_shows_its_target_and_draws_again_only_on_change() {
+    fn a_dial_shows_its_level_and_draws_again_only_on_change() {
         let mut deck = Deck::new(Mixer::default());
-        let shown = appear(
-            &mut deck,
-            "volume",
-            "Encoder",
-            json!({"target": {"what": "channel", "id": 2}}),
-        );
-        // Offline: nothing told yet.
-        assert_eq!(shown.len(), 2);
-        assert!(shown[1]["payload"]["canvas"]
-            .as_str()
-            .unwrap()
-            .contains("Offline"));
+        let shown = appear(&mut deck, "channel", "Encoder", json!({"channel": 2}));
+        assert!(canvas(&shown).contains("Offline"));
 
         let shown = deck.mixer_changed(Some(view()));
-        assert!(shown[1]["payload"]["canvas"]
-            .as_str()
-            .unwrap()
-            .contains("50%"));
+        assert!(canvas(&shown).contains("50%"));
         assert!(deck.mixer_changed(Some(view())).is_empty());
 
-        let mut louder = view();
-        louder.mixes[0].volume = 0.2;
+        let mut other = view();
+        other.mixes[0].volume = 0.2;
         assert!(
-            deck.mixer_changed(Some(louder)).is_empty(),
-            "the mix is not on this key"
+            deck.mixer_changed(Some(other)).is_empty(),
+            "the mix is not on this dial"
         );
     }
 
     #[test]
-    fn the_settings_list_what_an_action_can_aim_at() {
-        let mut deck = Deck::new(Mixer::default());
-        deck.mixer_changed(Some(view()));
-        appear(&mut deck, "hear", "Keypad", json!({}));
-        let told = deck.hear(&json!({"event": "propertyInspectorDidAppear", "context": "here"}));
-        assert_eq!(
-            told[0]["payload"]["targets"],
-            json!([{"target": {"what": "mix", "id": 1}, "label": "Mix · Stream"}])
-        );
+    fn a_channel_in_a_mix_is_its_cell() {
+        let settings = Settings {
+            channel: Some(2),
+            mix: Some(3),
+            ..Settings::default()
+        };
+        let drawn = picture(Action::ChannelLevel, &settings, Some(&view())).unwrap();
+        assert_eq!(drawn.name, "Music");
+        assert_eq!(drawn.corner, Some("pd-stream-symbolic"));
+        assert_eq!(drawn.below.0, "Muted");
+    }
+
+    #[test]
+    fn two_mixes_take_turns() {
+        let settings = Settings {
+            mix: Some(1),
+            mix2: Some(3),
+            mode: Mode::Toggle,
+            ..Settings::default()
+        };
+        let drawn = picture(Action::MonitorMix, &settings, Some(&view())).unwrap();
+        assert_eq!((drawn.name.as_str(), drawn.state.dim), ("Personal", false));
+
+        let mut stream = view();
+        stream.mixes[0].listening = false;
+        stream.mixes[1].listening = true;
+        let drawn = picture(Action::MonitorMix, &settings, Some(&stream)).unwrap();
+        assert_eq!(drawn.name, "Stream");
     }
 
     #[test]
     fn a_key_without_pipedeck_says_so() {
         let mut deck = Deck::new(Mixer::default());
-        appear(
-            &mut deck,
-            "mute",
-            "Keypad",
-            json!({"target": {"what": "mix", "id": 1}}),
-        );
+        appear(&mut deck, "mix", "Keypad", json!({"mix": 1}));
         let told = deck.hear(&json!({"event": "keyDown", "context": "here", "payload": {}}));
         assert_eq!(told, vec![alert("here")]);
+    }
+
+    #[test]
+    fn the_settings_page_is_told_what_the_mixer_has() {
+        let mut deck = Deck::new(Mixer::default());
+        deck.mixer_changed(Some(view()));
+        appear(&mut deck, "monitor", "Keypad", json!({}));
+        let told = deck.hear(&json!({"event": "propertyInspectorDidAppear", "context": "here"}));
+        assert_eq!(told[0]["payload"]["mixer"]["mixes"][1]["name"], "Stream");
     }
 }

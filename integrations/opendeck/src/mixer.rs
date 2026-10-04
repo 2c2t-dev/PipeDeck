@@ -82,16 +82,6 @@ pub enum Target {
     Output { device: String },
 }
 
-/// The kinds of target, to say which an action takes.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Kind {
-    Channel,
-    Mix,
-    Cell,
-    Voice,
-    Output,
-}
-
 /// What a target is now, as a key shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Found {
@@ -103,6 +93,8 @@ pub struct Found {
     pub volume: f32,
     pub muted: bool,
     pub listening: bool,
+    /// The mix a channel's level is taken in, when it is not its own.
+    pub within: Option<Mix>,
 }
 
 impl View {
@@ -118,6 +110,7 @@ impl View {
                 volume: c.volume,
                 muted: c.muted,
                 listening: false,
+                within: None,
             }),
             Target::Mix { id } => mix(*id).map(|m| Found {
                 name: m.name.clone(),
@@ -127,6 +120,7 @@ impl View {
                 volume: m.volume,
                 muted: m.muted,
                 listening: m.listening,
+                within: None,
             }),
             Target::Cell {
                 channel: from,
@@ -138,13 +132,14 @@ impl View {
                     .find(|c| c.channel == *from && c.mix == *into)?;
                 let (from, into) = (channel(*from)?, mix(*into)?);
                 Some(Found {
-                    name: format!("{} → {}", from.name, into.name),
+                    name: from.name.clone(),
                     icon: from.icon.clone(),
                     input: from.input,
                     mix: false,
                     volume: cell.volume,
                     muted: cell.muted,
                     listening: false,
+                    within: Some(into.clone()),
                 })
             }
             Target::Voice { channel: on, user } => {
@@ -157,6 +152,7 @@ impl View {
                     volume: voice.volume,
                     muted: voice.muted,
                     listening: false,
+                    within: None,
                 })
             }
             Target::Output { device } => {
@@ -169,63 +165,10 @@ impl View {
                     volume: 0.0,
                     muted: false,
                     listening: self.listen.as_deref() == Some(device.as_str()),
+                    within: None,
                 })
             }
         }
-    }
-
-    /// Everything of the kinds asked that can be aimed at, with what to
-    /// call it, in the mixer's order.
-    pub fn targets(&self, kinds: &[Kind]) -> Vec<(Target, String)> {
-        let mut found = Vec::new();
-        if kinds.contains(&Kind::Channel) {
-            for c in &self.channels {
-                found.push((
-                    Target::Channel { id: c.id },
-                    format!("Channel · {}", c.name),
-                ));
-            }
-        }
-        if kinds.contains(&Kind::Mix) {
-            for m in &self.mixes {
-                found.push((Target::Mix { id: m.id }, format!("Mix · {}", m.name)));
-            }
-        }
-        if kinds.contains(&Kind::Cell) {
-            for cell in &self.cells {
-                let target = Target::Cell {
-                    channel: cell.channel,
-                    mix: cell.mix,
-                };
-                if let Some(found_cell) = self.find(&target) {
-                    found.push((target, found_cell.name));
-                }
-            }
-        }
-        if kinds.contains(&Kind::Voice) {
-            for c in &self.channels {
-                for v in &c.voices {
-                    found.push((
-                        Target::Voice {
-                            channel: c.id,
-                            user: v.user.clone(),
-                        },
-                        format!("Voice · {} ({})", v.name, c.name),
-                    ));
-                }
-            }
-        }
-        if kinds.contains(&Kind::Output) {
-            for o in &self.outputs {
-                found.push((
-                    Target::Output {
-                        device: o.name.clone(),
-                    },
-                    o.description.clone(),
-                ));
-            }
-        }
-        found
     }
 }
 

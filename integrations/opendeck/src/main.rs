@@ -88,6 +88,7 @@ fn run(port: &str, uuid: &str, register: &str) -> Result<(), Box<dyn std::error:
             Err(tungstenite::Error::ConnectionClosed) => return Ok(()),
             Err(e) => return Err(e.into()),
         }
+        deck.tick();
         // Only the latest state matters.
         if let Some(view) = news.try_iter().last() {
             for message in deck.mixer_changed(view) {

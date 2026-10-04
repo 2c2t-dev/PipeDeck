@@ -2,6 +2,7 @@
 <html lang="en">
 	<head>
 		<meta charset="utf-8" />
+		<title>Pipedeck</title>
 		<style>
 			:root {
 				color-scheme: light dark;
@@ -12,112 +13,267 @@
 				margin: 0;
 				padding: 8px;
 			}
-			label {
+			.row {
 				display: grid;
-				grid-template-columns: 7em 1fr;
+				grid-template-columns: 8em 1fr;
 				align-items: center;
 				gap: 8px;
 				margin-bottom: 8px;
 			}
-			select,
-			input[type="number"] {
+			.row > :last-child {
 				width: 100%;
 				box-sizing: border-box;
 			}
+			.pair {
+				display: grid;
+				grid-template-columns: 1fr 4.5em;
+				gap: 8px;
+				align-items: center;
+			}
 			.note {
 				opacity: 0.7;
-				margin: 0 0 8px 7em;
+				margin: -2px 0 10px 8em;
 				padding-left: 8px;
 			}
 			[hidden] {
-				display: none;
+				display: none !important;
 			}
 		</style>
+	</head>
+	<body>
+		<p id="offline" class="note" hidden>Start Pipedeck to see its channels and mixes.</p>
+
+		<div id="channel-rows" hidden>
+			<label class="row">Channel <select id="channel"></select></label>
+			<label class="row" id="in-row">Level <select id="in"></select></label>
+		</div>
+
+		<div id="mix-rows" hidden>
+			<label class="row">Mix <select id="mix"></select></label>
+		</div>
+
+		<div id="level-rows" hidden>
+			<label class="row" id="mode-row">
+				Key press
+				<select id="mode">
+					<option value="mute">Mute</option>
+					<option value="set">Set volume</option>
+					<option value="adjust">Adjust volume</option>
+				</select>
+			</label>
+			<div class="row" id="volume-row">
+				Volume
+				<div class="pair"><input id="volume" type="range" min="0" max="100" step="1" /><span id="volume-shown"></span></div>
+			</div>
+			<label class="row" id="fade-row">
+				Fade
+				<select id="fade">
+					<option value="0">None</option>
+					<option value="500">0.5 s</option>
+					<option value="1000">1 s</option>
+					<option value="2000">2 s</option>
+					<option value="5000">5 s</option>
+				</select>
+			</label>
+			<label class="row" id="step-row">Step (%) <input id="step" type="number" min="-100" max="100" step="1" /></label>
+			<p class="note" id="step-note"></p>
+		</div>
+
+		<div id="switch-rows" hidden>
+			<label class="row">
+				Mode
+				<select id="switch">
+					<option value="select">Select one</option>
+					<option value="toggle">Toggle between two</option>
+				</select>
+			</label>
+			<label class="row"><span id="first-label"></span> <select id="first"></select></label>
+			<label class="row" id="second-row"><span id="second-label"></span> <select id="second"></select></label>
+		</div>
+
 		<script>
-			// One page for every action: what each can aim at comes from the
-			// plugin, which asks Pipedeck.
+			// One page for every action. What there is to pick from comes from
+			// the plugin, which asks Pipedeck; the choice is kept by id.
 			let socket;
 			let context;
+			let actionUuid;
+			let action;
+			let dial;
 			let settings = {};
-			let choices = [];
+			let mixer = null;
+
+			const $ = (id) => document.getElementById(id);
 
 			function connectElgatoStreamDeckSocket(port, uuid, registerEvent, info, actionInfo) {
 				actionInfo = JSON.parse(actionInfo);
 				context = actionInfo.context ?? uuid;
+				actionUuid = actionInfo.action;
+				action = actionUuid.split(".").pop();
+				dial = actionInfo.payload.controller === "Encoder";
 				settings = actionInfo.payload.settings || {};
-				const action = actionInfo.action.split(".").pop();
-
-				document.getElementById("step-row").hidden = action !== "volume";
-				document.getElementById("step-note").hidden = action !== "volume";
-				document.getElementById("only-row").hidden = action !== "hear";
-				document.getElementById("step").value = settings.step ?? 5;
-				document.getElementById("only").checked = settings.only ?? true;
 
 				socket = new WebSocket("ws://localhost:" + port);
 				socket.onopen = () => {
 					socket.send(JSON.stringify({ event: registerEvent, uuid }));
-					socket.send(JSON.stringify({ event: "sendToPlugin", action: actionInfo.action, context, payload: { request: "targets" } }));
+					socket.send(JSON.stringify({ event: "sendToPlugin", action: actionUuid, context, payload: { request: "mixer" } }));
 				};
 				socket.onmessage = (message) => {
 					const data = JSON.parse(message.data);
-					if (data.event === "sendToPropertyInspector" && data.payload.targets) {
-						fill(data.payload.targets, data.payload.running);
+					if (data.event === "sendToPropertyInspector" && "mixer" in data.payload) {
+						mixer = data.payload.mixer;
+						show();
 					} else if (data.event === "didReceiveSettings") {
 						settings = data.payload.settings || {};
+						show();
 					}
 				};
-			}
-
-			function same(a, b) {
-				return JSON.stringify(a) === JSON.stringify(b);
-			}
-
-			function fill(targets, running) {
-				const select = document.getElementById("target");
-				choices = targets.slice();
-				// Kept while Pipedeck is away, or the thing gone, so it is not lost
-				// by opening the settings.
-				if (settings.target && !choices.some((c) => same(c.target, settings.target))) {
-					choices.push({ target: settings.target, label: settings.label || "(gone)" });
-				}
-				select.replaceChildren();
-				if (!settings.target) {
-					select.add(new Option(choices.length ? "Pick one" : running ? "Nothing to pick" : "Start Pipedeck to pick", ""));
-				}
-				choices.forEach((choice, index) => {
-					const option = new Option(choice.label, String(index));
-					option.selected = same(choice.target, settings.target);
-					select.add(option);
-				});
+				show();
 			}
 
 			function save() {
 				socket.send(JSON.stringify({ event: "setSettings", context, payload: settings }));
 			}
 
-			function pick() {
-				const choice = choices[Number(document.getElementById("target").value)];
-				if (!choice) return;
-				settings.target = choice.target;
-				settings.label = choice.label;
-				save();
+			// A select's options; the chosen value is kept even while it is not
+			// in the mixer, so opening the page loses nothing.
+			function fill(select, options, chosen, missing) {
+				select.replaceChildren();
+				if (chosen === undefined || chosen === null) select.add(new Option("Pick one", ""));
+				for (const [value, label] of options) select.add(new Option(label, value));
+				if (chosen !== undefined && chosen !== null && !options.some(([value]) => value === String(chosen))) {
+					select.add(new Option(missing || "(gone)", String(chosen)));
+				}
+				select.value = chosen === undefined || chosen === null ? "" : String(chosen);
 			}
 
-			function changeStep() {
-				settings.step = Number(document.getElementById("step").value) || 0;
-				save();
+			function show() {
+				$("offline").hidden = mixer !== null;
+				const channels = mixer?.channels ?? [];
+				const mixes = mixer?.mixes ?? [];
+				const outputs = mixer?.outputs ?? [];
+				const level = action === "channel" || action === "mix";
+
+				$("channel-rows").hidden = action !== "channel";
+				$("mix-rows").hidden = action !== "mix";
+				$("level-rows").hidden = !level;
+				$("switch-rows").hidden = level;
+
+				if (action === "channel") {
+					const options = [];
+					for (const channel of channels) {
+						options.push([`c:${channel.id}`, channel.name]);
+						for (const voice of channel.voices) options.push([`v:${channel.id}:${voice.user}`, `${channel.name} › ${voice.name}`]);
+					}
+					const chosen = settings.channel === undefined ? null : settings.user ? `v:${settings.channel}:${settings.user}` : `c:${settings.channel}`;
+					fill($("channel"), options, chosen, settings.label);
+					// A person of a call has one level; a channel has its own and
+					// one in each mix it feeds.
+					$("in-row").hidden = !!settings.user || settings.channel === undefined;
+					const fed = mixes.filter((mix) => (mixer?.cells ?? []).some(([c, m]) => c === settings.channel && m === mix.id));
+					fill($("in"), [["", "Main level"], ...fed.map((mix) => [String(mix.id), `In ${mix.name}`])], settings.mix ?? "");
+				}
+
+				if (action === "mix") {
+					fill($("mix"), mixes.map((mix) => [String(mix.id), mix.name]), settings.mix, settings.label);
+				}
+
+				if (level) {
+					const mode = settings.mode || "mute";
+					$("mode-row").hidden = dial;
+					$("mode").value = mode;
+					$("volume-row").hidden = dial || mode !== "set";
+					$("fade-row").hidden = dial || mode !== "set";
+					$("volume").value = settings.volume ?? 100;
+					$("volume-shown").textContent = `${$("volume").value}%`;
+					$("fade").value = String(settings.fade ?? 0);
+					const stepped = dial || mode === "adjust";
+					$("step-row").hidden = !stepped;
+					$("step-note").hidden = !stepped;
+					$("step").value = settings.step ?? 5;
+					$("step-note").textContent = dial
+						? "How far each notch of the dial moves the level. Pressing or touching it mutes."
+						: "How far a press moves the level; below zero lowers it.";
+				}
+
+				if (!level) {
+					const toggle = settings.mode === "toggle";
+					$("switch").value = toggle ? "toggle" : "select";
+					$("second-row").hidden = !toggle;
+					if (action === "monitor") {
+						$("first-label").textContent = toggle ? "First mix" : "Mix";
+						$("second-label").textContent = "Second mix";
+						const options = mixes.map((mix) => [String(mix.id), mix.name]);
+						fill($("first"), options, settings.mix, settings.label);
+						fill($("second"), options, settings.mix2);
+					} else {
+						$("first-label").textContent = toggle ? "First device" : "Device";
+						$("second-label").textContent = "Second device";
+						const options = outputs.map((output) => [output.name, output.description]);
+						fill($("first"), options, settings.device, settings.label);
+						fill($("second"), options, settings.device2);
+					}
+				}
 			}
 
-			function changeOnly() {
-				settings.only = document.getElementById("only").checked;
+			$("channel").onchange = () => {
+				const value = $("channel").value;
+				if (!value) return;
+				const [kind, id, ...user] = value.split(":");
+				settings.channel = Number(id);
+				if (kind === "v") settings.user = user.join(":");
+				else delete settings.user;
+				delete settings.mix;
+				settings.label = $("channel").selectedOptions[0].text;
 				save();
-			}
+				show();
+			};
+			$("in").onchange = () => {
+				if ($("in").value) settings.mix = Number($("in").value);
+				else delete settings.mix;
+				save();
+			};
+			$("mix").onchange = () => {
+				if (!$("mix").value) return;
+				settings.mix = Number($("mix").value);
+				settings.label = $("mix").selectedOptions[0].text;
+				save();
+			};
+			$("mode").onchange = () => {
+				settings.mode = $("mode").value;
+				save();
+				show();
+			};
+			$("volume").oninput = () => ($("volume-shown").textContent = `${$("volume").value}%`);
+			$("volume").onchange = () => {
+				settings.volume = Number($("volume").value);
+				save();
+			};
+			$("fade").onchange = () => {
+				settings.fade = Number($("fade").value);
+				save();
+			};
+			$("step").onchange = () => {
+				settings.step = Number($("step").value) || 0;
+				save();
+			};
+			$("switch").onchange = () => {
+				settings.mode = $("switch").value;
+				save();
+				show();
+			};
+			$("first").onchange = () => {
+				if (!$("first").value) return;
+				if (action === "monitor") settings.mix = Number($("first").value);
+				else settings.device = $("first").value;
+				settings.label = $("first").selectedOptions[0].text;
+				save();
+			};
+			$("second").onchange = () => {
+				if (!$("second").value) return;
+				if (action === "monitor") settings.mix2 = Number($("second").value);
+				else settings.device2 = $("second").value;
+				save();
+			};
 		</script>
-	</head>
-	<body>
-		<label>Controls <select id="target" onchange="pick()"></select></label>
-		<label id="step-row">Step (%) <input id="step" type="number" min="-100" max="100" step="1" onchange="changeStep()" /></label>
-		<p id="step-note" class="note">How far a press moves the level; below zero lowers it. A dial turns by as much either way, for each notch.</p>
-		<label id="only-row">Only this mix <input id="only" type="checkbox" onchange="changeOnly()" /></label>
 	</body>
 </html>

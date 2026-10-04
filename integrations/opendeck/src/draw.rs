@@ -138,15 +138,54 @@ fn text(svg: &mut String, x: f32, y: f32, size: f32, anchor: &str, color: &str, 
     );
 }
 
+/// What a key or a dial shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Picture<'a> {
+    pub name: &'a str,
+    /// The badge's icon and colour.
+    pub look: (&'a str, &'a str),
+    /// The icon of the mix a channel's level is taken in, worn in the
+    /// badge's corner, as Wave Link marks a level by its mix.
+    pub corner: Option<&'a str>,
+    pub level: Option<f32>,
+    pub state: State,
+    /// What it is doing, and in what colour.
+    pub below: (&'a str, &'a str),
+}
+
+/// The badge, and the mix's in its corner when there is one.
+fn badges(svg: &mut String, picture: &Picture, x: f32, y: f32, side: f32) {
+    badge(
+        svg,
+        picture.look.0,
+        picture.look.1,
+        x,
+        y,
+        side,
+        picture.state,
+    );
+    if let Some(icon) = picture.corner {
+        let small = side * 0.5;
+        let (cx, cy) = (x + side - small * 0.6, y + side - small * 0.6);
+        let _ = write!(
+            svg,
+            r##"<rect x="{bx}" y="{by}" width="{b}" height="{b}" rx="{r}" fill="#000000"/>"##,
+            bx = cx - 2.5,
+            by = cy - 2.5,
+            b = small + 5.0,
+            r = (small + 5.0) * 0.22,
+        );
+        let state = State {
+            muted: false,
+            dim: picture.state.dim,
+        };
+        badge(svg, icon, WHITE, cx, cy, small, state);
+    }
+}
+
 /// A key: the name above, the badge in the middle, ringed by the level
 /// when there is one, and what it is doing below.
-pub fn key(
-    name: &str,
-    (icon, color): (&str, &str),
-    level: Option<f32>,
-    state: State,
-    below: (&str, &str),
-) -> String {
+pub fn key(picture: &Picture) -> String {
     let mut svg = String::from(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144"><rect width="144" height="144" fill="#000000"/>"##,
     );
@@ -157,11 +196,11 @@ pub fn key(
         18.0,
         "middle",
         TEXT,
-        &shorten(name, 13),
+        &shorten(picture.name, 13),
     );
-    let side = if level.is_some() { 50.0 } else { 62.0 };
+    let side = if picture.level.is_some() { 50.0 } else { 62.0 };
     let (cx, cy) = (72.0, 76.0);
-    if let Some(level) = level {
+    if let Some(level) = picture.level {
         let r = side * 0.72 + 6.0;
         let _ = write!(
             svg,
@@ -169,7 +208,7 @@ pub fn key(
             arc(cx, cy, r, 1.0)
         );
         if level > 0.0 {
-            let fill = if state.muted { RED } else { LEVEL };
+            let fill = if picture.state.muted { RED } else { LEVEL };
             let _ = write!(
                 svg,
                 r#"<path d="{}" fill="none" stroke="{fill}" stroke-width="7" stroke-linecap="round"/>"#,
@@ -177,70 +216,43 @@ pub fn key(
             );
         }
     }
-    badge(
-        &mut svg,
-        icon,
-        color,
-        cx - side / 2.0,
-        cy - side / 2.0,
-        side,
-        state,
-    );
-    text(&mut svg, 72.0, 136.0, 18.0, "middle", below.1, below.0);
+    badges(&mut svg, picture, cx - side / 2.0, cy - side / 2.0, side);
+    let (words, color) = picture.below;
+    text(&mut svg, 72.0, 136.0, 18.0, "middle", color, words);
     svg.push_str("</svg>");
     svg
 }
 
 /// A dial's part of the touch strip: the badge on the left, the name and
 /// the level as a bar beside it, and what it is doing under them.
-pub fn strip(
-    name: &str,
-    (icon, color): (&str, &str),
-    level: Option<f32>,
-    state: State,
-    below: (&str, &str),
-) -> String {
+pub fn strip(picture: &Picture) -> String {
     let mut svg = String::from(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><rect width="200" height="100" fill="#000000"/>"##,
     );
-    badge(&mut svg, icon, color, 12.0, 27.0, 46.0, state);
+    badges(&mut svg, picture, 12.0, 27.0, 46.0);
     let left = 70.0;
-    match level {
+    let name = shorten(picture.name, 14);
+    let (words, color) = picture.below;
+    match picture.level {
         Some(level) => {
-            text(
-                &mut svg,
-                left,
-                38.0,
-                16.0,
-                "start",
-                TEXT,
-                &shorten(name, 14),
-            );
+            text(&mut svg, left, 38.0, 16.0, "start", TEXT, &name);
             let _ = write!(
                 svg,
                 r#"<rect x="{left}" y="48" width="118" height="8" rx="4" fill="{TRACK}"/>"#
             );
             let filled = 118.0 * level.clamp(0.0, 1.0);
             if filled > 0.0 {
-                let fill = if state.muted { RED } else { LEVEL };
+                let fill = if picture.state.muted { RED } else { LEVEL };
                 let _ = write!(
                     svg,
                     r#"<rect x="{left}" y="48" width="{filled:.1}" height="8" rx="4" fill="{fill}"/>"#
                 );
             }
-            text(&mut svg, left, 78.0, 15.0, "start", below.1, below.0);
+            text(&mut svg, left, 78.0, 15.0, "start", color, words);
         }
         None => {
-            text(
-                &mut svg,
-                left,
-                46.0,
-                16.0,
-                "start",
-                TEXT,
-                &shorten(name, 14),
-            );
-            text(&mut svg, left, 70.0, 15.0, "start", below.1, below.0);
+            text(&mut svg, left, 46.0, 16.0, "start", TEXT, &name);
+            text(&mut svg, left, 70.0, 15.0, "start", color, words);
         }
     }
     svg.push_str("</svg>");
@@ -249,15 +261,21 @@ pub fn strip(
 
 /// A key that has nothing to show yet, and why.
 pub fn waiting(name: &str, why: &str, strip_sized: bool) -> String {
-    let look = ("pd-speaker-symbolic", GREY);
-    let state = State {
-        muted: false,
-        dim: true,
+    let picture = Picture {
+        name,
+        look: ("pd-speaker-symbolic", GREY),
+        corner: None,
+        level: None,
+        state: State {
+            muted: false,
+            dim: true,
+        },
+        below: (why, FAINT),
     };
     if strip_sized {
-        strip(name, look, None, state, (why, FAINT))
+        strip(&picture)
     } else {
-        key(name, look, None, state, (why, FAINT))
+        key(&picture)
     }
 }
 
@@ -304,22 +322,9 @@ pub fn catalogue_icons() -> Vec<(&'static str, String)> {
     vec![
         ("plugin", badge_only("pd-listen-symbolic", WHITE, plain)),
         ("category", badge_only("pd-listen-symbolic", WHITE, plain)),
-        (
-            "mute",
-            badge_only(
-                "pd-speaker-symbolic",
-                "#4cc26a",
-                State {
-                    muted: true,
-                    dim: false,
-                },
-            ),
-        ),
-        (
-            "volume",
-            badge_only("pd-speaker-symbolic", "#4cc26a", plain),
-        ),
-        ("hear", badge_only("pd-listen-symbolic", WHITE, plain)),
+        ("channel", badge_only("pd-music-symbolic", "#e35db5", plain)),
+        ("mix", badge_only("pd-speaker-symbolic", WHITE, plain)),
+        ("monitor", badge_only("pd-listen-symbolic", WHITE, plain)),
         (
             "output",
             badge_only("pd-headset-symbolic", "#3ba7c9", plain),
@@ -369,13 +374,14 @@ mod tests {
 
     #[test]
     fn a_name_cannot_break_the_picture() {
-        let svg = key(
-            "<a & \"b\">",
-            ("pd-music-symbolic", "#e35db5"),
-            Some(0.5),
-            State::default(),
-            ("50%", TEXT),
-        );
+        let svg = key(&Picture {
+            name: "<a & \"b\">",
+            look: ("pd-music-symbolic", "#e35db5"),
+            corner: Some("pd-stream-symbolic"),
+            level: Some(0.5),
+            state: State::default(),
+            below: ("50%", TEXT),
+        });
         assert!(svg.contains("&lt;a &amp; &quot;b&quot;&gt;"));
         assert!(!data_url(&svg).contains(['<', '#', '"']));
     }

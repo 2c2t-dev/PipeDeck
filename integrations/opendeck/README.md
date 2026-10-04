@@ -1,24 +1,22 @@
 # Pipedeck for OpenDeck
 
 An [OpenDeck](https://github.com/nekename/OpenDeck) plugin that puts
-Pipedeck on a Stream Deck: keys and dials that mute and move the levels of
-channels, mixes, cells and the people of a call, choose which mix is heard
-in the headphones, and the device it is heard on. Each shows what it
+Pipedeck on a Stream Deck the way Elgato's Wave Link plugin puts Wave Link
+there: the same actions, set up the same way, each showing what it
 controls as Pipedeck draws it, kept up as the mixer changes, whoever
-changed it. It does what the [StreamController
-plugin](../streamcontroller/README.md) does, for those who use OpenDeck.
+changed it.
 
-| Action | A key | A dial (Stream Deck +) |
-| --- | --- | --- |
-| **Mute** | mutes or unmutes | press or touch mutes or unmutes |
-| **Volume** | moves the level by its step (below zero lowers it) | each notch moves the level by the step; press or touch mutes |
-| **Hear mix** | hears this mix alone, or turns it on or off beside the others | press, the same |
-| **Listen on** | moves every mix heard to this device | press, the same |
+| Action | Settings | A key | A dial (Stream Deck +) |
+| --- | --- | --- | --- |
+| **Channel Level** | a channel, or a person of its call; its main level or its level in one mix | mutes, sets the volume (with a fade if wanted), or adjusts it by a step | turns the level; press or touch mutes |
+| **Mix Level** | a mix | the same | the same |
+| **Monitor Mix** | one mix, or two to switch between | hears that mix in the headphones, alone | press, the same |
+| **Main Output Device** | one device, or two to switch between | listens on that device | press, the same |
 
-Each action is pointed at one thing in its settings, picked from what
-Pipedeck has at the time, and kept by id, so renaming a channel does not
-lose the key. While Pipedeck is not running the keys say so, and come back
-when it does.
+A channel's level in one mix is what the mixer calls a cell: the key wears
+the mix's badge in the corner of the channel's. Everything is kept by id,
+so renaming a channel does not lose its key; while Pipedeck is not running
+the keys say so, and come back when it does.
 
 ## Install
 
@@ -29,7 +27,8 @@ integrations/opendeck/install.sh
 builds the plugin and copies it into OpenDeck's plugins folder
 (`~/.config/opendeck/plugins`, or `$OPENDECK_CONFIG/plugins`). OpenDeck
 loads plugins when it starts, so restart it; the actions are then under
-**Pipedeck**.
+**Pipedeck**. Drop one on a key or a dial, and pick what it controls in the
+settings under it.
 
 OpenDeck and StreamController cannot both hold a Stream Deck: use one.
 StreamController reaches the decks through libusb and takes them from the

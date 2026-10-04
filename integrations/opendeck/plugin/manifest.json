@@ -20,13 +20,13 @@
   ],
   "Actions": [
     {
-      "UUID": "com.fabienmillet.pipedeck.mute",
-      "Name": "Mute",
-      "Tooltip": "Mute or unmute a channel, a mix, a cell or a person of a call",
-      "Icon": "icons/mute",
+      "UUID": "com.fabienmillet.pipedeck.channel",
+      "Name": "Channel Level",
+      "Tooltip": "Mute, set or adjust a channel's level, its own or in one mix",
+      "Icon": "icons/channel",
       "States": [
         {
-          "Image": "icons/mute"
+          "Image": "icons/channel"
         }
       ],
       "Controllers": [
@@ -35,8 +35,9 @@
       ],
       "Encoder": {
         "layout": "layouts/strip.json",
-        "Icon": "icons/mute",
+        "Icon": "icons/channel",
         "TriggerDescription": {
+          "Rotate": "Adjust level",
           "Push": "Mute",
           "Touch": "Mute"
         }
@@ -45,13 +46,13 @@
       "PropertyInspectorPath": "propertyInspector/index.html"
     },
     {
-      "UUID": "com.fabienmillet.pipedeck.volume",
-      "Name": "Volume",
-      "Tooltip": "Move the level of a channel, a mix, a cell or a person of a call",
-      "Icon": "icons/volume",
+      "UUID": "com.fabienmillet.pipedeck.mix",
+      "Name": "Mix Level",
+      "Tooltip": "Mute, set or adjust a mix's level",
+      "Icon": "icons/mix",
       "States": [
         {
-          "Image": "icons/volume"
+          "Image": "icons/mix"
         }
       ],
       "Controllers": [
@@ -60,24 +61,24 @@
       ],
       "Encoder": {
         "layout": "layouts/strip.json",
-        "Icon": "icons/volume",
+        "Icon": "icons/mix",
         "TriggerDescription": {
+          "Rotate": "Adjust level",
           "Push": "Mute",
-          "Touch": "Mute",
-          "Rotate": "Level"
+          "Touch": "Mute"
         }
       },
       "SupportedInMultiActions": true,
       "PropertyInspectorPath": "propertyInspector/index.html"
     },
     {
-      "UUID": "com.fabienmillet.pipedeck.hear",
-      "Name": "Hear mix",
-      "Tooltip": "Choose the mix heard in your headphones",
-      "Icon": "icons/hear",
+      "UUID": "com.fabienmillet.pipedeck.monitor",
+      "Name": "Monitor Mix",
+      "Tooltip": "Choose the mix heard in your headphones, or switch between two",
+      "Icon": "icons/monitor",
       "States": [
         {
-          "Image": "icons/hear"
+          "Image": "icons/monitor"
         }
       ],
       "Controllers": [
@@ -86,10 +87,10 @@
       ],
       "Encoder": {
         "layout": "layouts/strip.json",
-        "Icon": "icons/hear",
+        "Icon": "icons/monitor",
         "TriggerDescription": {
-          "Push": "Hear",
-          "Touch": "Hear"
+          "Push": "Switch",
+          "Touch": "Switch"
         }
       },
       "SupportedInMultiActions": true,
@@ -97,8 +98,8 @@
     },
     {
       "UUID": "com.fabienmillet.pipedeck.output",
-      "Name": "Listen on",
-      "Tooltip": "Choose the device the mixes are heard on",
+      "Name": "Main Output Device",
+      "Tooltip": "Choose the device the mixes are heard on, or switch between two",
       "Icon": "icons/output",
       "States": [
         {
@@ -113,8 +114,8 @@
         "layout": "layouts/strip.json",
         "Icon": "icons/output",
         "TriggerDescription": {
-          "Push": "Listen here",
-          "Touch": "Listen here"
+          "Push": "Switch",
+          "Touch": "Switch"
         }
       },
       "SupportedInMultiActions": true,
