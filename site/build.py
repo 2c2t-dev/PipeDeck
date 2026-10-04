@@ -5,9 +5,10 @@ of i18n/, and the site's other files as they are.
     python3 site/build.py OUT
 
 English is at the root, the other languages in a folder of their own
-(/fr/, /de/…). A page's text is {{key}} in its template, looked up in the
-language's file; a key missing from one language stops the build, so no
-page goes out with a hole in it.
+(/fr/, /de/…), and English is what search engines are told to give anyone
+whose language is not there. A page's text is {{key}} in its template,
+looked up in the language's file; a text missing from a language is taken
+in English, and the build says so. One missing from English stops it.
 """
 
 import json
@@ -96,6 +97,12 @@ def main():
             shutil.copy2(item, target)
 
     texts = {lang: json.loads((SITE / "i18n" / f"{lang}.json").read_text()) for lang in LANGUAGES}
+    default = texts[LANGUAGES[0]]
+    for lang in LANGUAGES[1:]:
+        missing = sorted(set(default) - set(texts[lang]))
+        if missing:
+            print(f"{lang}: in English for want of a translation: {', '.join(missing)}")
+        texts[lang] = {**default, **texts[lang]}
     pages = sorted(p.name for p in (SITE / "pages").glob("*.html"))
     urls = []
     for page in pages:

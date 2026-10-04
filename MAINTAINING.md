@@ -33,8 +33,8 @@ loads nothing from another server.
 The pages are made by `site/build.py` from a template in `site/pages/`
 and a file of texts per language in `site/i18n/`: English at the root,
 French, German, Spanish and Italian under `/fr/`, `/de/`, `/es/` and
-`/it/`. A change of wording goes in every language's file; the build stops
-if a text is missing from one. To add a language, copy `en.json`, translate
+`/it/`. A change of wording goes in every language's file; a text missing
+from one is shown in English, and the build lists it. To add a language, copy `en.json`, translate
 it, and add its code to `LANGUAGES` in `build.py`. To look at the site
 before pushing, build it with `python3 site/build.py _site`.
 
