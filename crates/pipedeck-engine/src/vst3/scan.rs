@@ -106,26 +106,45 @@ pub fn bundles() -> Vec<PathBuf> {
 /// because a plug-in that registered anything with the process, static
 /// objects included, would take it down with it on unload; hosts keep them
 /// loaded for the life of the process for that reason.
+///
+/// The module's entry point is handed the handle its library was loaded
+/// with, which a plug-in keeps to find its own resources, and is called
+/// once per module however many times its factory is asked for: the
+/// specification has a host enter a module once, and a plug-in keeps only
+/// what the first call gave it.
 pub(crate) fn module_factory(bundle: &Path) -> Result<ComPtr<IPluginFactory>, String> {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// The modules already entered, which stay loaded and entered.
+    static ENTERED: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+
     let binary = binary(bundle).ok_or("no binary for this architecture")?;
     // SAFETY: loading is the plug-in's own code; there is no way to host one
-    // without running it.
-    let library = unsafe { libloading::Library::new(&binary) }.map_err(|e| e.to_string())?;
+    // without running it. Loading it again hands back the same library.
+    let library =
+        unsafe { libloading::os::unix::Library::new(&binary) }.map_err(|e| e.to_string())?;
     unsafe {
-        let entry: libloading::Symbol<unsafe extern "C" fn(*mut c_void) -> bool> = library
+        let entry: unsafe extern "C" fn(*mut c_void) -> bool = *library
             .get(b"ModuleEntry\0")
             .map_err(|_| "no ModuleEntry".to_string())?;
-        if !entry(std::ptr::null_mut()) {
-            return Err("the module refused to start".into());
+        let get_factory: unsafe extern "C" fn() -> *mut IPluginFactory = *library
+            .get(b"GetPluginFactory\0")
+            .map_err(|_| "no GetPluginFactory".to_string())?;
+        // Kept loaded on purpose: see the note above. The raw handle is
+        // what the entry point is given.
+        let handle = library.into_raw();
+
+        let mut entered = ENTERED.lock().map_err(|_| "the module list is poisoned")?;
+        let entered = entered.get_or_insert_with(HashSet::new);
+        if !entered.contains(&binary) {
+            if !entry(handle) {
+                return Err("the module refused to start".into());
+            }
+            entered.insert(binary.clone());
         }
-        let get_factory: libloading::Symbol<unsafe extern "C" fn() -> *mut IPluginFactory> =
-            library
-                .get(b"GetPluginFactory\0")
-                .map_err(|_| "no GetPluginFactory".to_string())?;
-        let factory = ComPtr::from_raw(get_factory()).ok_or("the factory is null")?;
-        // Kept loaded on purpose: see the note above.
-        std::mem::forget(library);
-        Ok(factory)
+        ComPtr::from_raw(get_factory()).ok_or_else(|| "the factory is null".into())
     }
 }
 
