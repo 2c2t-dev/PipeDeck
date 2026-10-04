@@ -1,316 +1,145 @@
 # Pipedeck
 
 A PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link.
+Send each application to a channel, then decide how loud every channel is
+in each mix: what you hear, what goes to the stream and what goes to the
+call are separate balances.
 
-The mixer is a **matrix**. Sources are rows, mixes are columns, and each cell
-is an independent fader and mute. What you hear is not what goes to the
-stream, because they are different columns.
-
-- A **source**, called a channel in the interface, is either a virtual output
-  any application can select in its audio settings, or a capture device such
-  as a microphone. Creating one offers ready-made kinds, Music, Browser,
-  System, Game, SFX, Voice chat and two Aux, each with its own icon and
-  colour. A channel can also hold applications: their audio is moved
-  onto it as they start playing, so you pick them once instead of every time.
-  The picker offers what is playing right now and what the system knows how
-  to launch, read from the desktop entries.
-- A **mix** is created ready-made: the first is a Personal Mix, then a Chat,
-  Stream, Record and Aux Mix, each with its own icon, and the window renames
-  them. A mix collects the sources you send to it into a sink a capture client
-  such as OBS can read, and plays to any number of output devices you attach
-  to it, each with its own level. It has a master level of its own. Up to
-  five mixes.
-- Every channel and every mix carries a **meter**, and a cell draws what it
-  passes on: its channel's level scaled by its own fader.
-- A **cell** exists only when you press `+` on it. It is what links a source
-  to a mix, and it carries that pair's fader and mute.
-
-## Status
-
-MVP: routing plumbing, the mixer UI, and effects on a channel.
+- **A matrix mixer**: channels are rows, mixes are columns, and each cell has
+  its own fader and mute.
+- **Effects per channel**: noise suppression, equaliser, de-esser and
+  compressor built in, plus VST3 plug-ins and Thimeo's Stereo Tool.
+- **Meters** on every channel, mix and cell.
+- **Stream Deck** support through OpenDeck or StreamController, with keys
+  and dials that look like the mixer.
+- **Discord calls** split into one track per person, with Vesktop.
+- Lives through PipeWire and WirePlumber restarts.
 
 ## Building
 
-Runtime and build dependencies: PipeWire >= 1.2 (headers), GTK >= 4.18,
-libadwaita >= 1.7, clang (for bindgen), pkg-config, a Rust toolchain >= 1.80.
+Requirements: PipeWire ≥ 1.2 (with headers), GTK ≥ 4.18, libadwaita ≥ 1.7,
+clang (for bindgen), pkg-config and Rust ≥ 1.80.
 
 ```sh
 cargo build --release
 ./target/release/pipedeck
 ```
 
-Logs go through `env_logger`: `RUST_LOG=pipedeck_engine=debug ./target/release/pipedeck`.
+On its first start, Pipedeck adds itself to the launcher, with its icon,
+under `~/.local/share`.
 
-The level of a channel and of a mix is the volume of its sink, which is the
-volume the system shows for it: move it from a volume applet or a media key
-and the mixer follows, and the other way around.
+## How it works
 
-State is persisted in `$XDG_CONFIG_HOME/pipedeck/config.toml`. A config from
-the earlier two-bus layout is converted on first start into two mixes named
-Stream Mix and Monitor, keeping every fader.
+**Channels** (rows) are where sound comes from. A channel is either a
+virtual output, which any application can pick in its audio settings, or a
+capture device such as a microphone. You can attach applications to a
+channel: Pipedeck moves their audio there whenever they start playing.
 
-Set `PIPEDECK_APP_ID` to run a development build next to an installed one,
-instead of handing over to the running instance.
+**Mixes** (columns) are where sound goes. Each mix is an input device named
+after it: OBS, Discord or a browser list it with the microphones. A mix can
+also play to one or more output devices, each with its own level. There can
+be up to five mixes: Personal, Chat, Stream, Record and Aux.
 
-Each card carries an icon from the bundled set, chosen from a small set of
-looks: a channel picks
-one when it is created, and both a channel and a mix can change it later from
-the menu above their icon.
+**Cells** connect a channel to a mix. A cell exists only once you press `+`
+on it, and it carries that pair's fader and mute.
 
-Every card can be dragged by its grip, which shows on hover with the pencil
-in place of the card's icon: a channel along the rows, a mix along the
-columns, never one among the other. A card dropped on another takes its place. The order is only how the
-matrix is drawn; nothing on the graph moves, and it is saved with the rest.
+**The ear** on a mix card says whether you hear that mix in your
+headphones. The button in the header bar chooses which device your
+headphones are, and moves every mix you listen to when you change it.
 
-Clicking a card opens the window of that object. A mix window holds its
-name, its master level and the devices it plays to, each with a level of
-its own. A channel window holds its name, its trim and the applications it carries.
-A channel bound to a capture device shows that device instead, since
-applications play into virtual outputs, not into a microphone. Both are where you rename or
-remove the object.
-
-## Discord calls
-
-With Vesktop and Pipedeck's plugin for it, installed from Settings, Plug-ins,
-Discord voices (see [integrations/vencord](integrations/vencord/README.md)),
-the channel Vesktop
-is assigned to unfolds into the people of the call you are in: each has a
-sub-track of their own, with a level and a mute, on its way into the
-channel, whose effects and cells they then go through. A person's level is
-remembered for the next call. Discord's own mix of them is not played, so
-each voice is heard once.
-
-## Stream Deck
-
-The [StreamController plugin](integrations/streamcontroller/README.md) and
-the [OpenDeck plugin](integrations/opendeck/README.md) put mutes, levels, the
-mix heard in the headphones and the device it is heard on under keys and
-dials, each showing what it controls as Pipedeck draws it, meters and all,
-the way Elgato's Wave Link plugin does. Both are installed from Settings,
-Plug-ins, Stream Deck, which also keeps OpenDeck's ready-made Pipedeck
-profiles laid out from the mixer.
+A channel's or a mix's level is the volume of its PipeWire node, so a volume
+applet or a media key moves the fader too. Cards can be reordered by
+dragging them by their grip, and a click on a card opens its settings.
 
 ## Effects
 
-A channel can run effects, which every mix then hears. The mixer runs four
-of its own, written in Rust, so nothing has to be installed:
+Effects run on a channel, and every mix hears the result. A channel bound to
+a microphone runs them too. Mixes have no effects.
 
-- **Noise suppression**, RNNoise through `nnnoiseless`: fans, keyboards and
-  hiss behind a voice. It holds the sound back 10 ms, and its strength mixes
-  the treated sound with the untouched one. Its window draws a voice over a
-  room, the room as loud as it is left; dragging the noise's level down
-  takes more out, and presets go from off to full. As it runs, its corner says
-  whether it hears a voice now, or how far it takes the room down.
-- **Equaliser**, five bands shaped for a voice — a low cut, a low shelf, two
-  bells and a high shelf — set by dragging them on a curve. Each band has
-  its colour and draws its own shape under the curve; scroll over a bell to
-  widen it, double-click a band to put it back, or pick one under the graph
-  to type its exact values. Behind the curve, the range is cut into the
-  zones a voice is talked about in — rumble, body, mud, honk, presence,
-  sibilance, air — and pointing at one says what to do there. Presets give
-  a starting point: clear, warm, podcast, less boom, less mud, and more.
-- **De-esser**: splits the sound at a frequency, listens for s and sh there,
-  and turns only the part above down when they are too loud. Its window
-  draws what it does to a loud s across the top of the range; one handle
-  sets both controls, sideways for where the s start and down to take them
-  further, and presets suit a light touch, a deep voice or a high one. As it
-  runs, the curve of what it is doing now is drawn over it, with how far the s
-  are going down. *Learn from my
-  voice* listens for five seconds of speech with s in it, finds where they
-  are loudest, splits just under, and sets the strength so the s go over
-  its threshold and the rest of the voice does not.
-- **Compressor**, with only a threshold, a ratio and a makeup gain, set on
-  its curve: the threshold is the bend, dragged sideways; the ratio the top
-  of the curve, dragged down for more; the makeup its foot, dragged up. A
-  line under it says what it does to a shout, and presets go from gentle to
-  broadcast. As it runs, a dot on the curve shows where the voice is now, and
-  a line under it how far it is turned down. Its timing is fixed at what suits a voice. *Learn from my voice* listens for
-  five seconds while you speak and sets all three from what it heard: the
-  threshold where the voice usually is, a ratio as firm as the voice is
-  uneven, and the makeup that brings its loud moments to about -10 dB.
+| Effect | What it does |
+| --- | --- |
+| Noise suppression | Removes fans, keyboards and hiss behind a voice (RNNoise, 10 ms of delay). |
+| Equaliser | Five bands shaped for a voice, set by dragging them on a curve, with presets. |
+| De-esser | Turns down harsh s and sh sounds. *Learn from my voice* sets it for you. |
+| Compressor | Evens out loud and quiet moments. *Learn from my voice* sets it for you. |
 
-Each one's controls open in a window of their own, from the gear on its card,
-so the ones being set can stay open beside the mixer; they close with the
-channel's window.
+Each effect can be switched off without removing it. Changing a setting is
+heard at once; adding or removing an effect stops the audio for a moment.
 
-They run with the plug-ins, on the audio thread. Adding or taking one off
-makes the chain again, which stops the audio for a moment; a control turned
-is only a number written, so it is heard at once and the audio never stops
-for it.
+**VST3 plug-ins** are read from the usual folders and from `VST3_PATH`. The
+**Plug-ins** page of the settings installs a `.vst3` bundle, or a bare `.so`,
+into `~/.vst3`. Plug-in windows are not supported yet, so their parameters
+stay at their defaults.
 
-A channel bound to a microphone runs them too, in a tab of its own: it has no
-sink to read, so the chain captures the device itself and every mix hears the
-microphone through it.
-
-A mix runs none: a mix is what comes out of the channels, not another place to
-treat them.
-
-A channel can also run **VST3 plug-ins**, which the mixer hosts itself. It
-reads the bundles installed under the usual paths, plus `VST3_PATH`, and
-offers their effects alongside the ones above. A plug-in runs between two
-streams of its own, after whatever PipeWire runs for the channel, and every
-mix hears the result.
-
-Their windows are not implemented: a plug-in's own editor is an X11 surface
-to embed, and GTK4 has no socket for one. Parameters are at their defaults.
-
-A VST3 on Linux is a directory named `something.vst3`, not a file, and it
-holds the shared object under `Contents/x86_64-linux/`. The **Plug-ins** page
-of the settings installs one into `~/.vst3`: point it at the directory and it
-is copied whole, or at a bare `.so` and the directory is built around it. It
-then reads the paths again, so the effect is offered right away. Plug-ins are
-read once per run, because opening one runs its own code.
-
-## Stereo Tool
-
-Thimeo's broadcast processor runs as an effect like any other, on a channel
-or on a mix. Pipedeck hosts `libStereoTool`, the shared library the vendor
-ships for exactly this and the one Liquidsoap calls, rather than the VST3
-build: the library takes its settings from a preset file through the API,
-where the plug-in would need an editor window Pipedeck has no way to embed.
-
-It is proprietary and nothing of it is bundled. Download it from
+**Stereo Tool** is proprietary and not bundled: download it from
 [thimeo.com](https://www.thimeo.com/stereo-tool/download/) and import the
-archive from the **Plug-ins** page. The archive is built on Windows and holds
-every machine's build — half a gigabyte of them, the Kantar edition under the
-same names in a directory of its own — so only the builds for this machine are
-kept, flat, in `~/.local/share/pipedeck/stereotool/`. The one the vendor
-documents is loaded first, and the `noX11` build after it, for a machine whose
-X11 libraries a normal build would ask for and not find.
-`PIPEDECK_STEREOTOOL` points at a copy kept elsewhere.
+archive from the **Plug-ins** page. Only the builds for your machine are
+kept, in `~/.local/share/pipedeck/stereotool/`. Its own window opens from the
+effect (X11 builds only), or load a preset exported from it. Without a
+licence key it inserts speech and beeps into the audio. It adds 50 to 100 ms
+of delay.
 
-The library is talkative on its own account: creating a processor walks every
-ALSA device on the machine and looks for a JACK server, some fifty lines of
-complaint each time, written in C straight to the standard error. Pipedeck
-points that descriptor at `/dev/null` for the length of those calls and puts
-it back after; `PIPEDECK_STEREOTOOL_NOISE=1` leaves it alone when the
-library's own words are what is wanted. It is asked where it stands once per
-run — at startup, after an import, and when a licence key is given — because
-a library already loaded cannot be swapped inside one run anyway. It also
-keeps its state in `~/.libStereoTool_*.so.rc`.
+## Stream Deck and Discord
 
-**Window** on the effect brings up Stereo Tool's own interface — every band
-and every curve it has — on the processor the mixer is running, so what you
-change is heard at once and stays in its own settings file. It is a window of
-its own next to Pipedeck's, drawn by the library in X11, which is why the X11
-build is the one loaded first. The builds for a machine without X11 carry no
-window, and then the button is not offered; a preset exported from Stereo Tool
-can be loaded on the effect instead, which is what a machine with no display
-has.
+| Integration | What it does |
+| --- | --- |
+| [OpenDeck plugin](integrations/opendeck/README.md) | Mutes, levels, the mix you hear, effects and more on keys and dials, with meters. Ready-made profiles for the Stream Deck, Stream Deck + and XL. |
+| [StreamController plugin](integrations/streamcontroller/README.md) | The same actions and the same look, for StreamController. |
+| [Vesktop plugin](integrations/vencord/README.md) | Splits the Discord call into one sub-track per person, each with its own level and mute, remembered for the next call. |
 
-Its interface has to be asked for the way a plug-in's is. `GUI_Show` takes the
-X11 id of a host window, as a plug-in is handed the window its host drew for
-it, and given none it does nothing at all — no error, no window. Told about
-one, it opens a toplevel of its own beside it, which declares the usual close
-request and then ignores it, the way a plug-in leaves its editor to whoever
-opened it: a window whose close button does nothing.
+All three are installed from **Settings → Plug-ins**. They talk to the
+mixer through its control socket, `$XDG_RUNTIME_DIR/pipedeck/control.sock`.
 
-So Pipedeck adopts it. It makes an X11 window of its own, hands its id to the
-library, finds the window the library opens a moment later and reparents it
-under its own. The window manager then decorates Pipedeck's window, and the
-close button reaches a client that listens: the engine reads the request on
-its next tick and takes the interface down. The window keeps the size the
-library gave it — whether the library lays itself out again at another size
-is not something to find out on the user — and **Window** on the effect
-opens it, or brings it to the front if it is already up. Removing the effect
-or changing the chain closes it as well, since the processor it draws goes
-with them.
-
-The licence key is a field on the settings page, passed to the library and to
-nothing else. Without one Stereo Tool still runs and puts speech and beeps in
-the audio, which is the vendor's doing; the settings say so rather than let it
-be discovered on air. It adds 50 to 100 ms of delay depending on what it runs,
-and a channel is heard by every mix, so what it delays includes the mix you
-monitor on.
-
-`cargo run -p pipedeck-engine --example stereotool_check [preset.sts]` runs a
-tone through it with no PipeWire in the way, and says what the licence covers;
-`--window` puts its interface on the screen for ten seconds, which is the one
-thing the symbols alone cannot tell you. `PIPEDECK_SMOKE_WINDOW=1` adds the
-same check to the smoke test, where the window is opened the way the interface
-opens it: from the engine thread.
-
-## When PipeWire restarts
-
-The mixer lives through it. Losing the server ends a session and nothing
-more: the graph is taken apart with the loop already stopped — taking one
-apart while its loop runs double-frees what the broken connection has
-already freed — and what the mixer *is* outlives it, since the config is
-handed from one session to the next. A loop with nothing on it but the
-command channel then knocks once a second until a server answers, and the
-whole mixer goes back on the graph.
-
-WirePlumber restarting on its own is quieter and does more damage: PipeWire
-and every node stay, but the metadata applications are routed through is made
-again, empty, and the streams at either end of a cell are renegotiated, taking
-with them the links the mixer made itself. The mixer notices both. It binds
-the new metadata and sends every assigned application back to its channel,
-and it watches the links it made, so one that goes without being asked to is
-made again on the next tick. `examples/relink_check` shows it: a cell and an
-application, a WirePlumber restarted under them, and the two whole again two
-seconds later.
-
-Closing the mixer hands the applications it moved back to the session
-manager. A move lives in the server's metadata, not in the mixer, and left
-there it would keep an application aimed at a channel that is gone, or at
-another mixer's that answers to the same name: the mixer takes its moves
-back, and waits for the server to have heard before it disconnects. An
-application then plays where it would without Pipedeck, and goes back to its
-channel the next time Pipedeck starts.
-
-`cargo run -p pipedeck-engine --example reconnect_check` watches that happen.
-Point `PIPEWIRE_REMOTE` at a server you are willing to kill — a private one,
-started with `PIPEWIRE_RUNTIME_DIR=/tmp/pdw PIPEWIRE_CORE=pdtest pipewire`,
-since restarting the session's own cuts everybody's audio.
+On KDE, **Application in front** lets a Stream Deck key send the application
+you are looking at to a channel.
 
 ## Settings
 
-The gear in the header bar opens them: the colour theme, whether Pipedeck
-starts with the session, the quantum asked of its nodes, the VST3 plug-ins it
-found and where Stereo Tool stands. Changing the quantum reloads every route,
-so the audio stops for a moment.
+- **General**: colour theme, start at login, keep running in the
+  notification area when the window is closed (`pipedeck --background`
+  starts it that way, Ctrl+Q quits), and drawing without the graphics card
+  if text shows up damaged.
+- **Audio**: the quantum Pipedeck's nodes ask for, 512 frames by default.
+  Raise it if you get xruns.
+- **Plug-ins**: VST3, Stereo Tool, Stream Deck and Discord.
 
-With **Keep running when the window is closed** on, closing the window
-leaves the mixer, its control socket and so the Stream Decks running, with
-an icon in the notification area to open the window again or quit;
-starting Pipedeck again opens the window too, and Ctrl+Q quits for good.
-Started with the session, it then starts with its window closed
-(`pipedeck --background`). Off, as it is unless turned on, closing the
-window stops the mixer, as before.
+The mixer is saved in `$XDG_CONFIG_HOME/pipedeck/config.toml`, the window's
+own settings in `interface.toml` next to it.
 
-## Switching sound cards
+## Environment variables
 
-You listen on one device — your headphones — and the ear on each mix card
-says whether that mix is heard there: lit, it is; dark, it is not. Several can
-be lit, to hear the chat over the game. The button in the header bar says
-which device that is, sets how loud, and lists every output device; picking
-another moves every mix you hear onto it and off the old one, which is what
-changing sound cards means when you are wearing one of them. Until one is
-picked, the first device a mix already plays to stands in, so nothing changes
-for someone who never touches it.
+| Variable | Use |
+| --- | --- |
+| `RUST_LOG` | Log level, e.g. `RUST_LOG=pipedeck_engine=debug`. |
+| `PIPEDECK_APP_ID` | Run a development build next to an installed one. |
+| `PIPEDECK_CONTROL_SOCKET` | Use another path for the control socket. |
+| `PIPEDECK_NODE_PREFIX` | Name the nodes differently, so two mixers can run side by side. |
+| `PIPEDECK_STEREOTOOL` | Load Stereo Tool from somewhere else. |
+| `PIPEDECK_STEREOTOOL_NOISE` | Show what Stereo Tool writes to the terminal, which is hidden otherwise. |
+| `VST3_PATH` | More folders to look for VST3 plug-ins in. |
 
-Underneath, it is all outputs. A mix is heard on your headphones when it has
-an output to them that is switched on; the ear switches it, adding one if
-there is none. Each output in a mix's window has that switch of its own: off,
-the mix stops playing there and lets go of the device, and the output stays
-in the list with its level for when it comes back on.
+## Development
 
-## Using it with OBS
+| Folder | Contents |
+| --- | --- |
+| `crates/pipedeck-engine` | The PipeWire graph, the config and the control socket. No GTK. |
+| `crates/pipedeck` | The GTK 4 and libadwaita application. |
+| `integrations/opendeck` | The OpenDeck plugin, in Rust. |
+| `integrations/streamcontroller` | The StreamController plugin, in Python. |
+| `integrations/vencord` | The Vesktop plugin. |
 
-Every mix *is* an input device, named after it, so OBS, Discord or a browser
-list it where they list microphones and nowhere else: add an audio input
-capture and pick the mix by name. It is there whether or not the mix plays to
-a device. Renaming one makes the node again, since a node carries the
-description it was born with and that description is the name in someone's
-list; a recorder has to pick it again. Attach your headphones to a different
-mix to hear a different balance.
+Checks against the live PipeWire server, all run with
+`cargo run -p pipedeck-engine --example <name>`:
 
-A channel is the opposite: a sink, which the system lists among the outputs
-like a pair of headphones, so an application can be pointed at it. Rows are
-what you play into, columns are what you record — and each is only ever in the
-one list.
+| Example | Checks |
+| --- | --- |
+| `smoke` | Builds a whole mixer, plays a tone through it and checks every node, then that nothing is left behind. It runs next to your own Pipedeck without touching it. |
+| `relink_check` | The mixer repairs itself after WirePlumber restarts. |
+| `reconnect_check` | The mixer comes back after PipeWire restarts. Point `PIPEWIRE_REMOTE` at a private server, since restarting your own cuts all audio. |
+| `plugins`, `plugin_check [name]` | Lists the VST3 plug-ins, runs a tone through one. |
+| `stereotool_check [preset.sts]` | Runs a tone through Stereo Tool; `--window` also shows its window. |
 
-## How the graph looks
+### The graph
 
 ```
  apps ──▶ [pipedeck.src.N] ──monitor──┐
@@ -319,66 +148,16 @@ one list.
                                                                    (recorded by OBS)
 ```
 
-A row is a sink and a column is a source, which is what each of them is to the
-rest of the system, and the reason each appears in one list only. Both are the
-same null node underneath — a column has input ports like any sink, and what
-plays into them comes out of its capture ports — but its class says source,
-and a session manager routes nothing into a source. So the cells (`═▶` above)
-are linked into their column by hand, port to port, by the mixer itself. That
-is the one place here where PipeWire's own routing is not asked to do the
-work; everything else still is.
+A channel is a sink, and a mix is a source, which is why each shows up in
+only one list. A session manager routes nothing into a source, so Pipedeck
+links the cells (`═▶`) into their mix itself, port by port. A channel with
+effects adds a node, `pipedeck.vst.N`, between itself and its cells.
 
-Volume comes with it: `monitor.channel-volumes` makes a node apply its volume
-to what it hands on, which is a pre-fader trim on a row and the master on a
-column, and it works on a source made this way as well as on a sink.
+Every node belongs to Pipedeck's own PipeWire connection, so if Pipedeck
+dies, nothing is left behind. On quitting, it hands the applications it
+moved back to the session manager.
 
-With effects, a channel grows a stage or two before the cells read it. A row
-bound to a microphone starts on that microphone instead of on a sink:
+## Credits
 
-```
- [pipedeck.src.N] ─▶ [pipedeck.vst.N] ─▶ cells
-  or the microphone   the mixer's own effects and hosted plug-ins
-```
-
-Audio crosses two of our nodes on its way to a device, one for the cell and
-one for the mix output. Both request the quantum set in the settings, 512 frames by default, so the
-round trip stays in the same ballpark as a single hop at PipeWire's usual
-1024. Raise it if the machine reports xruns.
-
-The faders are the `Props` volume of each loopback's playback node. Capture
-sides are internal streams (`Stream/Input/Audio/Internal`) so they stay out of
-pavucontrol's recording tab, and every node belongs to the app's client
-connection: if the app dies, PipeWire drops them all, nothing lingers.
-
-## Icons
-
-The icons are Material Symbols, bundled under `crates/pipedeck/icons` and
-compiled into the binary, rather than taken from the desktop's icon theme:
-a name a theme lacks is drawn as a broken image, and the names that do exist
-come from different families, which shows when a row of them sits in a grid.
-Apache License 2.0, see that directory.
-
-Pipedeck's own icon, a console with three faders in the colours of the
-channels' badges, is in `crates/pipedeck/data`, with a symbolic one for the
-smallest sizes. A build run from where it was built puts it, and a desktop
-entry for itself, in `~/.local/share` when it starts, so it is in the
-launcher and under its icon in the task bar.
-
-## Workspace
-
-- `crates/pipedeck-engine`: the PipeWire graph, config, command/event API.
-  No UI dependency; meant to become a D-Bus daemon later.
-- `crates/pipedeck`: the GTK4 + libadwaita application.
-- `integrations/opendeck`: the OpenDeck plugin, which talks to the mixer
-  through its control socket only.
-
-`cargo run -p pipedeck-engine --example smoke` exercises the engine against
-the live PipeWire daemon: it builds a matrix, checks the nodes and volumes it
-creates, attaches a real output device, then tears everything down and
-verifies that nothing is left behind.
-
-It runs beside your own Pipedeck. Its nodes go by a prefix of their own
-(`PIPEDECK_NODE_PREFIX=pipedeck-smoke`) and it plays its call as an
-application of its own (`PIPEDECK_VOICE_APP`), so neither mixer takes the
-other's nodes for its own, and your own applications and Vesktop are left
-where they are.
+The interface icons are [Material Symbols](https://fonts.google.com/icons),
+under the Apache License 2.0, in `crates/pipedeck/icons`.
