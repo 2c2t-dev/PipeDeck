@@ -14,7 +14,7 @@ use vst3::Steinberg::Vst::{
     AudioBusBuffers, BusDirections_, IAudioProcessor, IAudioProcessorTrait, IComponent,
     IComponentTrait, IParamValueQueue, IParamValueQueueTrait, IParameterChanges,
     IParameterChangesTrait, MediaTypes_, ParamID, ParamValue, ProcessData, ProcessModes_,
-    ProcessSetup, SymbolicSampleSizes_,
+    ProcessSetup, SpeakerArr, SpeakerArrangement, SymbolicSampleSizes_,
 };
 use vst3::Steinberg::{
     int32, kResultFalse, kResultOk, tresult, IPluginBaseTrait, IPluginFactory, IPluginFactoryTrait,
@@ -154,10 +154,40 @@ impl Instance {
             if component.initialize(std::ptr::null_mut()) != kResultOk {
                 return Err(format!("{} refused to initialise", plugin.name));
             }
+            // Initialised, it is terminated again whatever goes wrong from
+            // here: released half started, some plug-ins leak or crash.
+            let give_up = |why: String| {
+                component.terminate();
+                Err(why)
+            };
 
-            let processor: ComPtr<IAudioProcessor> = component
-                .cast()
-                .ok_or_else(|| format!("{} processes no audio", plugin.name))?;
+            let Some(processor) = component.cast::<IAudioProcessor>() else {
+                return give_up(format!("{} processes no audio", plugin.name));
+            };
+
+            // Two channels in and two out, which is all the mixer hands a
+            // plug-in: one left in the layout it starts with — surround, say
+            // — would read and write channels that are not there.
+            let audio = MediaTypes_::kAudio as i32;
+            let (input, output) = (
+                BusDirections_::kInput as i32,
+                BusDirections_::kOutput as i32,
+            );
+            if component.getBusCount(audio, input) < 1 || component.getBusCount(audio, output) < 1 {
+                return give_up(format!("{} has no audio in and out", plugin.name));
+            }
+            let mut stereo_in: SpeakerArrangement = SpeakerArr::kStereo;
+            let mut stereo_out: SpeakerArrangement = SpeakerArr::kStereo;
+            processor.setBusArrangements(&mut stereo_in, 1, &mut stereo_out, 1);
+            let mut taken_in: SpeakerArrangement = 0;
+            let mut taken_out: SpeakerArrangement = 0;
+            let arranged = processor.getBusArrangement(input, 0, &mut taken_in) == kResultOk
+                && processor.getBusArrangement(output, 0, &mut taken_out) == kResultOk
+                && taken_in == SpeakerArr::kStereo
+                && taken_out == SpeakerArr::kStereo;
+            if !arranged {
+                return give_up(format!("{} does not run in stereo", plugin.name));
+            }
 
             let mut setup = ProcessSetup {
                 processMode: ProcessModes_::kRealtime as i32,
@@ -166,17 +196,16 @@ impl Instance {
                 sampleRate: sample_rate,
             };
             if processor.setupProcessing(&mut setup) != kResultOk {
-                return Err(format!(
+                return give_up(format!(
                     "{} does not run at {sample_rate} Hz in blocks of {max_block}",
                     plugin.name
                 ));
             }
 
-            let audio = MediaTypes_::kAudio as i32;
-            component.activateBus(audio, BusDirections_::kInput as i32, 0, 1);
-            component.activateBus(audio, BusDirections_::kOutput as i32, 0, 1);
+            component.activateBus(audio, input, 0, 1);
+            component.activateBus(audio, output, 0, 1);
             if component.setActive(1) != kResultOk {
-                return Err(format!("{} refused to start", plugin.name));
+                return give_up(format!("{} refused to start", plugin.name));
             }
             processor.setProcessing(1);
 
@@ -216,13 +245,18 @@ impl Instance {
             return Err(ProcessError::BlockSize);
         }
 
-        let mut pointers: Vec<*mut f32> = channels
-            .iter_mut()
-            .map(|channel| channel.as_mut_ptr())
-            .collect();
+        // Stereo, as the plug-in was arranged, in an array on the stack: the
+        // real-time thread must not ask for memory.
+        if channels.len() != CHANNELS {
+            return Err(ProcessError::BlockSize);
+        }
+        let mut pointers: [*mut f32; CHANNELS] = [std::ptr::null_mut(); CHANNELS];
+        for (pointer, channel) in pointers.iter_mut().zip(channels.iter_mut()) {
+            *pointer = channel.as_mut_ptr();
+        }
 
         let mut bus = AudioBusBuffers {
-            numChannels: pointers.len() as i32,
+            numChannels: CHANNELS as i32,
             silenceFlags: 0,
             __field0: vst3::Steinberg::Vst::AudioBusBuffers__type0 {
                 channelBuffers32: pointers.as_mut_ptr(),
