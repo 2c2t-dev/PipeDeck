@@ -27,6 +27,19 @@ call are separate balances.
   </picture>
 </p>
 
+## Installing
+
+Each [release](https://github.com/2c2t/Pipedeck/releases) has:
+
+| Package | For |
+| --- | --- |
+| `.deb` | Debian 13, Ubuntu 25.04 and later |
+| `.rpm` | Fedora 42 and later |
+| `.AppImage` | Other distributions with glibc 2.41 or later. It carries GTK and libadwaita, and uses the system's PipeWire. |
+
+All three need a GTK at least 4.18, a libadwaita at least 1.7 and PipeWire
+1.2 or later, which is why older releases are not covered.
+
 ## Building
 
 Requirements: PipeWire ≥ 1.2 (with headers), GTK ≥ 4.18, libadwaita ≥ 1.7,
@@ -37,8 +50,8 @@ cargo build --release
 ./target/release/pipedeck
 ```
 
-On its first start, Pipedeck adds itself to the launcher, with its icon,
-under `~/.local/share`.
+Run this way, or from an AppImage, Pipedeck adds itself to the launcher,
+with its icon, under `~/.local/share` on its first start.
 
 ## How it works
 
@@ -157,6 +170,9 @@ Checks against the live PipeWire server, all run with
 | `reconnect_check` | The mixer comes back after PipeWire restarts. Point `PIPEWIRE_REMOTE` at a private server, since restarting your own cuts all audio. |
 | `plugins`, `plugin_check [name]` | Lists the VST3 plug-ins, runs a tone through one. |
 | `stereotool_check [preset.sts]` | Runs a tone through Stereo Tool; `--window` also shows its window. |
+
+`packaging/package.sh deb|rpm|appimage` builds a package into `dist`, on
+the system it is for; the release workflow runs it on every tag.
 
 `cargo run -p pipedeck --example screenshot .github [--light]` draws the
 README's pictures from a made-up mixer, without touching yours. Run it on

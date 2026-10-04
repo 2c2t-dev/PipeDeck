@@ -28,3 +28,63 @@ zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 glib-build-tools = "0.22"
+
+# The packages, built by packaging/package.sh. Besides Pipedeck itself they
+# carry OpenDeck's plugin program, which Pipedeck installs into OpenDeck
+# from beside its own.
+[package.metadata.deb]
+name = "pipedeck"
+maintainer = "Fabien MILLET <zipname80@gmail.com>"
+copyright = "2026, Fabien MILLET"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+A PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link: \
+channels in rows, mixes in columns, a fader in each cell between them, \
+effects per channel, and Stream Deck and Discord integrations."""
+section = "sound"
+priority = "optional"
+depends = "$auto"
+recommends = "pipewire, wireplumber"
+assets = [
+    ["target/release/pipedeck", "usr/bin/", "755"],
+    ["target/release/pipedeck-opendeck", "usr/bin/", "755"],
+    ["data/dev._2c2t.Pipedeck.desktop", "usr/share/applications/", "644"],
+    ["data/dev._2c2t.Pipedeck.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["data/dev._2c2t.Pipedeck-symbolic.svg", "usr/share/icons/hicolor/symbolic/apps/", "644"],
+    ["data/icons/16.png", "usr/share/icons/hicolor/16x16/apps/dev._2c2t.Pipedeck.png", "644"],
+    ["data/icons/24.png", "usr/share/icons/hicolor/24x24/apps/dev._2c2t.Pipedeck.png", "644"],
+    ["data/icons/32.png", "usr/share/icons/hicolor/32x32/apps/dev._2c2t.Pipedeck.png", "644"],
+    ["data/icons/48.png", "usr/share/icons/hicolor/48x48/apps/dev._2c2t.Pipedeck.png", "644"],
+    ["data/icons/64.png", "usr/share/icons/hicolor/64x64/apps/dev._2c2t.Pipedeck.png", "644"],
+    ["data/icons/96.png", "usr/share/icons/hicolor/96x96/apps/dev._2c2t.Pipedeck.png", "644"],
+    ["data/icons/128.png", "usr/share/icons/hicolor/128x128/apps/dev._2c2t.Pipedeck.png", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "pipedeck"
+summary = "PipeWire mixer for streamers"
+description = """\
+A PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link: \
+channels in rows, mixes in columns, a fader in each cell between them, \
+effects per channel, and Stream Deck and Discord integrations."""
+license = "MIT"
+url = "https://github.com/2c2t/Pipedeck"
+assets = [
+    { source = "target/release/pipedeck", dest = "/usr/bin/pipedeck", mode = "755" },
+    { source = "target/release/pipedeck-opendeck", dest = "/usr/bin/pipedeck-opendeck", mode = "755" },
+    { source = "data/dev._2c2t.Pipedeck.desktop", dest = "/usr/share/applications/dev._2c2t.Pipedeck.desktop", mode = "644" },
+    { source = "data/dev._2c2t.Pipedeck.svg", dest = "/usr/share/icons/hicolor/scalable/apps/dev._2c2t.Pipedeck.svg", mode = "644" },
+    { source = "data/dev._2c2t.Pipedeck-symbolic.svg", dest = "/usr/share/icons/hicolor/symbolic/apps/dev._2c2t.Pipedeck-symbolic.svg", mode = "644" },
+    { source = "data/icons/16.png", dest = "/usr/share/icons/hicolor/16x16/apps/dev._2c2t.Pipedeck.png", mode = "644" },
+    { source = "data/icons/24.png", dest = "/usr/share/icons/hicolor/24x24/apps/dev._2c2t.Pipedeck.png", mode = "644" },
+    { source = "data/icons/32.png", dest = "/usr/share/icons/hicolor/32x32/apps/dev._2c2t.Pipedeck.png", mode = "644" },
+    { source = "data/icons/48.png", dest = "/usr/share/icons/hicolor/48x48/apps/dev._2c2t.Pipedeck.png", mode = "644" },
+    { source = "data/icons/64.png", dest = "/usr/share/icons/hicolor/64x64/apps/dev._2c2t.Pipedeck.png", mode = "644" },
+    { source = "data/icons/96.png", dest = "/usr/share/icons/hicolor/96x96/apps/dev._2c2t.Pipedeck.png", mode = "644" },
+    { source = "data/icons/128.png", dest = "/usr/share/icons/hicolor/128x128/apps/dev._2c2t.Pipedeck.png", mode = "644" },
+    { source = "../../LICENSE", dest = "/usr/share/licenses/pipedeck/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.recommends]
+pipewire = "*"
+wireplumber = "*"
