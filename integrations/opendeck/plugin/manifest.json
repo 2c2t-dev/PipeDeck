@@ -2,7 +2,7 @@
   "Name": "Pipedeck",
   "Description": "Control Pipedeck, the PipeWire mixer: mute channels, mixes and the people of a call, move their levels with keys or dials, choose the mix heard in your headphones and the device it is heard on.",
   "Author": "Fabien Millet",
-  "URL": "https://github.com/2c2t/Pipedeck",
+  "URL": "https://github.com/2c2t-dev/PipeDeck",
   "Version": "0.1.0",
   "SDKVersion": 2,
   "CodePaths": {

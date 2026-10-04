@@ -68,7 +68,7 @@ A PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link: \
 channels in rows, mixes in columns, a fader in each cell between them, \
 effects per channel, and Stream Deck and Discord integrations."""
 license = "MIT"
-url = "https://github.com/2c2t/Pipedeck"
+url = "https://github.com/2c2t-dev/PipeDeck"
 assets = [
     { source = "target/release/pipedeck", dest = "/usr/bin/pipedeck", mode = "755" },
     { source = "target/release/pipedeck-opendeck", dest = "/usr/bin/pipedeck-opendeck", mode = "755" },

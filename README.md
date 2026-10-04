@@ -29,7 +29,7 @@ call are separate balances.
 
 ## Installing
 
-Each [release](https://github.com/2c2t/Pipedeck/releases) has:
+Each [release](https://github.com/2c2t-dev/PipeDeck/releases) has:
 
 | Package | For |
 | --- | --- |
