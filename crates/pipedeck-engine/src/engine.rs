@@ -792,7 +792,13 @@ fn handle_command(
             cfg.sources.retain(|s| s.id != id);
             cfg.prune_links();
         }),
-        Command::RenameSource { id, name } => rename_source(&mut g, id, name),
+        Command::RenameSource { id, name } => rename_source(&mut g, id, name).and_then(|renamed| {
+            if renamed {
+                g.rebuild_source(id)
+            } else {
+                Ok(())
+            }
+        }),
         Command::SetSourceGain { id, gain } => {
             structural = false;
             g.update_source(id, |c| c.gain = gain.clamp(0.0, 1.0))
@@ -915,16 +921,25 @@ fn rename_mix(g: &mut Graph, id: MixId, name: String) -> Result<(), EngineError>
     Ok(())
 }
 
-fn rename_source(g: &mut Graph, id: SourceId, name: String) -> Result<(), EngineError> {
+/// Give a row its new name, and say whether it changed: a row is made
+/// again for a new name, and the same name again is no reason to.
+fn rename_source(g: &mut Graph, id: SourceId, name: String) -> Result<bool, EngineError> {
     let name = name.trim().to_owned();
     if name.is_empty() {
-        return Ok(());
+        return Ok(false);
+    }
+    let cfg = g
+        .config()
+        .source(id)
+        .ok_or(EngineError::UnknownSource(id))?;
+    if cfg.name == name {
+        return Ok(false);
     }
     g.config_mut()
         .source_mut(id)
         .ok_or(EngineError::UnknownSource(id))?
         .name = name;
-    Ok(())
+    Ok(true)
 }
 
 fn set_link(g: &mut Graph, source: SourceId, mix: MixId, linked: bool) -> Result<(), EngineError> {

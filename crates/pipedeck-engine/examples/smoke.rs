@@ -1563,6 +1563,29 @@ fn main() -> ExitCode {
     });
     settle();
 
+    // A row renamed is made again under its new name, which the system
+    // lists it by, and its cells with it.
+    engine
+        .send(Command::RenameSource {
+            id: source,
+            name: "Smoke Renamed".into(),
+        })
+        .unwrap();
+    wait_state(&rx, "the row renamed", |s| {
+        s.sources.iter().any(|row| row.name == "Smoke Renamed")
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    let dump = pw_dump();
+    let described = our_node(&dump, &format!("pipedeck-smoke.src.{source}"))
+        .and_then(|node| props(node)["node.description"].as_str())
+        .map(str::to_owned);
+    let cell = our_node(&dump, &format!("pipedeck-smoke.link.{source}.{mix}")).is_some();
+    check(
+        described.as_deref() == Some("Pipedeck: Smoke Renamed") && cell,
+        &format!("a row renamed is listed by its new name: {described:?}, cell {cell}"),
+        &mut failures,
+    );
+
     // An output switched off lets go of its device and stays in the list;
     // switched on, it comes back with the level it had.
     engine

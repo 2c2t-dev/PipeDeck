@@ -958,6 +958,37 @@ impl Graph {
         Ok(())
     }
 
+    /// Make a row again under its new name, as a mix is: its sink, and the
+    /// effects and plug-ins after it, carry the description they were born
+    /// with, which is what the system lists them by. With them go the cells
+    /// that read it, made again, its applications, sent back to it, and the
+    /// people of a call it carries, given sinks again.
+    pub fn rebuild_source(&mut self, id: SourceId) -> Result<(), EngineError> {
+        let Some(cfg) = self.config.source(id).cloned() else {
+            return Ok(());
+        };
+        let cells: Vec<LinkConfig> = self
+            .config
+            .links
+            .iter()
+            .filter(|link| link.source == id)
+            .copied()
+            .collect();
+        self.remove_source(id)?;
+        self.create_source(&cfg)?;
+        for link in &cells {
+            if let Err(e) = self.create_link(link) {
+                log::error!("{e}");
+                self.emit(Event::Error(e.to_string()));
+            }
+        }
+        for key in &cfg.apps {
+            self.move_app(key, Some(id));
+        }
+        self.sync_voices();
+        Ok(())
+    }
+
     /// Tear a mix down, cells first. Only ever called from the command
     /// handler, never from a listener (see [`LoadedModule`]).
     pub fn remove_mix(&mut self, id: MixId) -> Result<(), EngineError> {
