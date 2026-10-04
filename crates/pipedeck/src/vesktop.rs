@@ -207,7 +207,7 @@ fn build_and_point(say: &impl Fn(&str)) -> Result<(), String> {
     let _ = std::fs::remove_file(dist().join(MARKER));
     if dir.join(".git").is_dir() {
         say("Updating Vencord…");
-        run(Command::new("git")
+        run(crate::launcher::host_command("git")
             .args(["pull", "--ff-only", "--quiet"])
             .current_dir(&dir))?;
     } else {
@@ -215,7 +215,7 @@ fn build_and_point(say: &impl Fn(&str)) -> Result<(), String> {
         if let Some(parent) = dir.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        run(Command::new("git")
+        run(crate::launcher::host_command("git")
             .args(["clone", "--quiet", "--depth", "1", VENCORD_REPO])
             .arg(&dir))?;
     }
@@ -229,11 +229,11 @@ fn build_and_point(say: &impl Fn(&str)) -> Result<(), String> {
     // Vencord is built with the pnpm its package names, fetched by npx.
     let pnpm = format!("pnpm@{}", pnpm_version(&dir)?);
     say("Fetching what Vencord is built with…");
-    run(Command::new("npx")
+    run(crate::launcher::host_command("npx")
         .args(["--yes", &pnpm, "install", "--frozen-lockfile", "--silent"])
         .current_dir(&dir))?;
     say("Building Vencord with the plugin…");
-    run(Command::new("npx")
+    run(crate::launcher::host_command("npx")
         .args(["--yes", &pnpm, "build"])
         .current_dir(&dir))?;
     let renderer = std::fs::read_to_string(dist().join("vencordDesktopRenderer.js"))

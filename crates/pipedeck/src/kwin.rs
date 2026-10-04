@@ -9,7 +9,6 @@
 //! while it does not, KWin's calls go nowhere.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use adw::gtk::gio;
 use adw::prelude::*;
@@ -82,7 +81,7 @@ pub fn installed() -> bool {
 /// Switch the script on or off in KWin's settings, and have KWin read them
 /// again.
 fn switch(on: bool) -> Result<(), String> {
-    let set = Command::new("kwriteconfig6")
+    let set = crate::launcher::host_command("kwriteconfig6")
         .args(["--file", "kwinrc", "--group", "Plugins", "--key"])
         .arg(format!("{SCRIPT}Enabled"))
         .arg(if on { "true" } else { "false" })

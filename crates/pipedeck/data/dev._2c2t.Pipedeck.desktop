@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Pipedeck
+GenericName=Audio mixer
+Comment=Mix what plays into mixes to hear, record and stream
+Exec=pipedeck
+Icon=dev._2c2t.Pipedeck
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=mixer;audio;pipewire;stream deck;
+StartupNotify=true

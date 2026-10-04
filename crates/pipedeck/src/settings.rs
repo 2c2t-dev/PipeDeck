@@ -129,12 +129,11 @@ pub fn starts_at_login() -> bool {
     autostart_path().is_some_and(|path| path.exists())
 }
 
-/// Write or remove that desktop entry.
-///
-/// It points at the running binary rather than at an installed name, so it
-/// works for a build that was never installed.
 /// Write or remove the desktop entry starting the mixer with the session:
 /// in the background, its window closed, when `background`.
+///
+/// It points at the program that runs rather than at an installed name, so
+/// it works for a build that was never installed, and for an AppImage.
 pub fn set_start_at_login(enabled: bool, background: bool) -> std::io::Result<()> {
     let Some(path) = autostart_path() else {
         return Ok(());
@@ -146,7 +145,8 @@ pub fn set_start_at_login(enabled: bool, background: bool) -> std::io::Result<()
         };
     }
 
-    let binary = std::env::current_exe()?;
+    let binary = crate::launcher::program()
+        .ok_or_else(|| std::io::Error::other("cannot tell which program runs"))?;
     let entry = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
@@ -156,7 +156,7 @@ pub fn set_start_at_login(enabled: bool, background: bool) -> std::io::Result<()
          Exec={}{}\n\
          Terminal=false\n\
          X-GNOME-Autostart-enabled=true\n",
-        binary.display(),
+        crate::launcher::exec(&binary),
         if background { " --background" } else { "" }
     );
     if let Some(dir) = path.parent() {

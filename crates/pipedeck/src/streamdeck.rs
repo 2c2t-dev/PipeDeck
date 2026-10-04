@@ -13,7 +13,7 @@
 //! after, which is done here when it was running.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -293,12 +293,12 @@ fn close_opendeck() -> bool {
 fn start_opendeck() {
     let mut command = match on_path("setsid") {
         Some(setsid) => {
-            let mut command = Command::new(setsid);
+            let mut command = crate::launcher::host_command(setsid);
             command.args(["-f", "opendeck", "--hide"]);
             command
         }
         None => {
-            let mut command = Command::new("opendeck");
+            let mut command = crate::launcher::host_command("opendeck");
             command.arg("--hide");
             command
         }
@@ -381,7 +381,7 @@ fn install_opendeck() -> Result<(), String> {
     std::fs::copy(&program, &installed).map_err(|e| format!("{}: {e}", installed.display()))?;
     let icons = dir.join("icons");
     std::fs::create_dir_all(&icons).map_err(|e| format!("{}: {e}", icons.display()))?;
-    let drawn = Command::new(&installed)
+    let drawn = crate::launcher::host_command(&installed)
         .arg("--icons")
         .arg(&icons)
         .status()
@@ -460,7 +460,7 @@ pub fn lay_out_profiles() -> Result<String, String> {
 /// Run OpenDeck's plugin program on something to lay out, and note what
 /// it was laid out from, so it is not laid out again for it.
 fn run_layout(program: &Path, args: &[&std::ffi::OsStr]) -> Result<(), String> {
-    let out = Command::new(program)
+    let out = crate::launcher::host_command(program)
         .args(args)
         .output()
         .map_err(|e| format!("{}: {e}", program.display()))?;
