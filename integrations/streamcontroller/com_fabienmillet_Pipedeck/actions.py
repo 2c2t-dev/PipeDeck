@@ -13,6 +13,8 @@ the OpenDeck plugin has them too (`integrations/opendeck/src/deck.rs`):
   two.
 - **Call Voice**, Pipedeck's own: whoever is at a place in a Discord call,
   the first, the second, and on, following the call as people come and go.
+- **Channel Effect**: one effect of a channel, switched off or on.
+- **Add to Channel**: an application put on a channel, or taken off it.
 
 Everything is kept by id, so renaming a channel does not lose its key, and
 shown as Pipedeck says it is, whoever changed it.
@@ -269,6 +271,7 @@ class LevelAction(PipedeckAction):
             meter=meter,
             muted=found["muted"],
             below=("Muted", draw.RED) if found["muted"] else (draw.percent(found["volume"]), draw.TEXT),
+            avatar=draw.avatar(found.get("avatar")),
         )
 
     def level_rows(self) -> list:
@@ -422,6 +425,148 @@ class CallVoice(LevelAction):
         place = self.combo("Person", places, self.place(settings))
         self.picked(place, lambda value, _: self.save(slot=value, label=f"Person {value}"))
         return [place] + self.level_rows()
+
+
+class PressAction(PipedeckAction):
+    """An action a press does once, a key's or a dial's."""
+
+    def create_event_assigners(self) -> None:
+        self.add_event_assigner(
+            EventAssigner(
+                id="press",
+                ui_label="Press",
+                default_events=[
+                    Input.Key.Events.DOWN,
+                    Input.Dial.Events.DOWN,
+                    Input.Dial.Events.SHORT_TOUCH_PRESS,
+                ],
+                callback=lambda data=None: self.press(),
+            )
+        )
+
+    def press(self) -> None:
+        order = self.pipedeck.state and self.order(self.settings())
+        if not order or not self.pipedeck.do(order):
+            self.show_error(1)
+
+    def order(self, settings: dict):
+        raise NotImplementedError
+
+    def channel(self, settings: dict):
+        return next(
+            (c for c in (self.pipedeck.state or {}).get("channels", []) if c["id"] == settings.get("channel")),
+            None,
+        )
+
+    def channel_row(self, settings: dict, then=None) -> Adw.ComboRow:
+        channels = (self.pipedeck.state or {}).get("channels", [])
+        row = self.combo("Channel", [(c["id"], c["name"]) for c in channels], settings.get("channel"))
+
+        def on_channel(value, _):
+            self.save(channel=value)
+            if then:
+                then(value)
+
+        self.picked(row, on_channel)
+        return row
+
+
+class ChannelEffect(PressAction):
+    """One effect of a channel, by its name, or its place when renamed."""
+
+    def place(self, settings: dict):
+        channel = self.channel(settings)
+        if not channel:
+            return None
+        names = [e["name"] for e in channel.get("effects", [])]
+        if settings.get("effect") in names:
+            return channel["id"], names.index(settings["effect"])
+        index = settings.get("index")
+        return (channel["id"], index) if index is not None and index < len(names) else None
+
+    def order(self, settings: dict):
+        place = self.place(settings)
+        return place and {"what": "effect", "channel": place[0], "index": place[1], "bypass": "toggle"}
+
+    def picture(self, settings: dict) -> draw.Picture:
+        if settings.get("channel") is None or settings.get("effect") is None:
+            raise LookupError("Pick one")
+        place = self.place(settings)
+        if not place:
+            raise LookupError("Gone")
+        channel = self.channel(settings)
+        effect = channel["effects"][place[1]]
+        off = effect["bypassed"]
+        return draw.Picture(
+            name=effect["name"],
+            look=draw.look(channel.get("icon"), channel["input"]),
+            dim=off,
+            below=("Off", draw.FAINT) if off else ("On", draw.TEXT),
+        )
+
+    def get_config_rows(self) -> list:
+        settings = self.settings()
+        effect = Adw.ComboRow(title="Effect")
+
+        def fill_effects(channel_id):
+            channel = self.channel({"channel": channel_id}) or {}
+            names = [e["name"] for e in channel.get("effects", [])]
+            chosen = self.settings().get("index")
+            if self.settings().get("effect") in names:
+                chosen = names.index(self.settings()["effect"])
+            self.fill(effect, [(None, "Pick one")] + list(enumerate(names)), chosen)
+
+        def on_effect(row, *_):
+            if getattr(row, "_filling", False):
+                return
+            index = row.get_selected()
+            if index < len(row._options) and row._options[index][0] is not None:
+                value, name = row._options[index]
+                self.save(index=value, effect=name, label=name)
+
+        effect.connect("notify::selected", on_effect)
+        channel = self.channel_row(settings, then=lambda value: (self.save(index=None, effect=None), fill_effects(value)))
+        fill_effects(settings.get("channel"))
+        return [channel, effect]
+
+
+class AddApp(PressAction):
+    """An application put on a channel; pressed again, taken off it."""
+
+    def order(self, settings: dict):
+        channel, app = settings.get("channel"), settings.get("app")
+        if channel is None or not app:
+            return None
+        here = app in (self.channel(settings) or {}).get("apps", [])
+        return {"what": "app", "app": app, "channel": channel, "release": here}
+
+    def picture(self, settings: dict) -> draw.Picture:
+        app = settings.get("app")
+        if settings.get("channel") is None or not app:
+            raise LookupError("Pick one")
+        channel = self.channel(settings)
+        if not channel:
+            raise LookupError("Gone")
+        playing = {a["key"]: a["name"] for a in self.pipedeck.state.get("apps", [])}
+        here = app in channel.get("apps", [])
+        return draw.Picture(
+            name=playing.get(app, settings.get("label", app)),
+            look=draw.look(channel.get("icon"), channel["input"]),
+            dim=not here,
+            below=(f"On {channel['name']}", draw.TEXT) if here else (f"To {channel['name']}", draw.FAINT),
+        )
+
+    def get_config_rows(self) -> list:
+        settings = self.settings()
+        state = self.pipedeck.state or {}
+        # What plays now, and what is on a channel already.
+        apps = {a["key"]: a["name"] for a in state.get("apps", [])}
+        for channel in state.get("channels", []):
+            for key in channel.get("apps", []):
+                apps.setdefault(key, key)
+        app = self.combo("Application", list(apps.items()), settings.get("app"), settings.get("label", GONE))
+        self.picked(app, lambda value, label: self.save(app=value, label=label))
+        return [app, self.channel_row(settings)]
 
 
 class SwitchAction(PipedeckAction):

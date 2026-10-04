@@ -13,9 +13,12 @@ changed it.
 | **Monitor Mix** | one mix, or two to switch between | hears that mix in the headphones, alone | press, the same |
 | **Main Output Device** | one device, or two to switch between | listens on that device | press, the same |
 | **Call Voice** | a place in the Discord call: the first, the second… | as Channel Level, for whoever is there | the same |
+| **Channel Effect** | a channel and one of its effects | switches the effect off or on | press, the same |
+| **Add to Channel** | an application and a channel | puts the application on the channel, or takes it off | press, the same |
 | **Call** | the call, or back to the mixer | goes to the Pipedeck Call profile, or back | press, the same |
 
-A level shows its meter with it, as the mixer's do: inside the ring on a
+A person of a call wears their Discord picture, as Vesktop's plugin
+fetched it. A level shows its meter with it, as the mixer's do: inside the ring on a
 key, in the bar on the touch strip with the level as a handle on it; set
 **Display** to *Volume only* to leave it out. A channel's level in one mix
 is what the mixer calls a cell: the key wears
@@ -80,7 +83,10 @@ with OpenDeck closed.
 Each has a **Call** key, which says how many are in the call and goes to a
 second profile, **Pipedeck Call**: a person of the call on every dial and
 key, by their place in it, so it follows the call as people come and go
-without being laid out again, and a key back to the mixer.
+without being laid out again, and a key back to the mixer. With **Follow
+calls** ticked in a Call key's settings, every deck showing a Pipedeck
+profile goes to the call's as a call starts, and back as it ends; a deck on
+a profile of your own is left there.
 
 Every key on them is an ordinary action: change it in its settings, move it
 or replace it as any other, in a profile of your own.

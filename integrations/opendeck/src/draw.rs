@@ -101,20 +101,43 @@ fn badge(svg: &mut String, icon: &str, color: &str, x: f32, y: f32, side: f32, s
         d = glyph(icon),
     );
     if state.muted {
-        let (x0, y0, x1, y1) = (
-            x + side * 0.12,
-            y + side * 0.88,
-            x + side * 0.88,
-            y + side * 0.12,
-        );
-        let width = side * 0.09;
-        let _ = write!(
-            svg,
-            r#"<line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y1}" stroke="{GLYPH}" stroke-width="{outer}" stroke-linecap="round"/><line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y1}" stroke="{RED}" stroke-width="{width}" stroke-linecap="round"/>"#,
-            outer = width * 2.2,
-        );
+        slash(svg, x, y, side);
     }
     svg.push_str("</g>");
+}
+
+/// The red line across a muted badge.
+fn slash(svg: &mut String, x: f32, y: f32, side: f32) {
+    let (x0, y0, x1, y1) = (
+        x + side * 0.12,
+        y + side * 0.88,
+        x + side * 0.88,
+        y + side * 0.12,
+    );
+    let width = side * 0.09;
+    let _ = write!(
+        svg,
+        r#"<line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y1}" stroke="{GLYPH}" stroke-width="{outer}" stroke-linecap="round"/><line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y1}" stroke="{RED}" stroke-width="{width}" stroke-linecap="round"/>"#,
+        outer = width * 2.2,
+    );
+}
+
+/// What goes over a picture, a person's, in place of a badge: grey when
+/// muted, faint when off, and the red line.
+fn over_picture(svg: &mut String, x: f32, y: f32, side: f32, state: State) {
+    if state.muted || state.dim {
+        let shade = if state.dim { 0.65 } else { 0.5 };
+        let _ = write!(
+            svg,
+            r#"<circle cx="{cx}" cy="{cy}" r="{r}" fill="rgba(0,0,0,{shade})"/>"#,
+            cx = x + side / 2.0,
+            cy = y + side / 2.0,
+            r = side / 2.0,
+        );
+    }
+    if state.muted {
+        slash(svg, x, y, side);
+    }
 }
 
 /// An arc around `cx, cy`, from the bottom left round to `part` of the way
@@ -171,10 +194,22 @@ pub struct Picture<'a> {
     pub state: State,
     /// What it is doing, and in what colour.
     pub below: (&'a str, &'a str),
+    /// A person's picture, round, as a PNG data URL, worn in place of the
+    /// badge.
+    pub avatar: Option<&'a str>,
 }
 
-/// The badge, and the mix's in its corner when there is one.
+/// The badge, and the mix's in its corner when there is one; or the
+/// person's picture.
 fn badges(svg: &mut String, picture: &Picture, x: f32, y: f32, side: f32) {
+    if let Some(avatar) = picture.avatar {
+        let _ = write!(
+            svg,
+            r#"<image x="{x}" y="{y}" width="{side}" height="{side}" href="{avatar}"/>"#
+        );
+        over_picture(svg, x, y, side, picture.state);
+        return;
+    }
     badge(
         svg,
         picture.look.0,
@@ -260,7 +295,11 @@ pub fn strip(picture: &Picture) -> String {
     let mut svg = String::from(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><rect width="200" height="100" fill="#000000"/>"##,
     );
-    badges(&mut svg, picture, 12.0, 27.0, 46.0);
+    // OpenDeck draws the strip without pictures inside it: a person's is a
+    // layer of its own, and what goes over it another. See `strip_layers`.
+    if picture.avatar.is_none() {
+        badges(&mut svg, picture, 12.0, 27.0, 46.0);
+    }
     let left = 70.0;
     let name = shorten(picture.name, 14);
     let (words, color) = picture.below;
@@ -312,6 +351,22 @@ pub fn strip(picture: &Picture) -> String {
     svg
 }
 
+/// Where a person's picture sits on the strip, as `plugin/layouts/strip.json`
+/// puts its layers.
+pub const STRIP_PICTURE: (f32, f32, f32) = (12.0, 27.0, 46.0);
+
+/// What goes over a person's picture on the strip: an SVG the size of the
+/// picture, empty but for the grey and the red line.
+pub fn strip_over(picture: &Picture) -> String {
+    let side = STRIP_PICTURE.2;
+    let mut svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{side}" height="{side}" viewBox="0 0 {side} {side}">"#
+    );
+    over_picture(&mut svg, 0.0, 0.0, side, picture.state);
+    svg.push_str("</svg>");
+    svg
+}
+
 /// A key that has nothing to show yet, and why.
 pub fn waiting(name: &str, why: &str, strip_sized: bool) -> String {
     let picture = Picture {
@@ -325,6 +380,7 @@ pub fn waiting(name: &str, why: &str, strip_sized: bool) -> String {
             dim: true,
         },
         below: (why, FAINT),
+        avatar: None,
     };
     if strip_sized {
         strip(&picture)
@@ -342,9 +398,14 @@ pub fn percent(level: f32) -> String {
 /// key's image to a file when it saves the profile, and only decodes it
 /// first when it is.
 pub fn data_url(svg: &str) -> String {
+    format!("data:image/svg+xml;base64,{}", base64(svg.as_bytes()))
+}
+
+/// Bytes in base64, as a data URL carries them.
+pub fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut url = String::from("data:image/svg+xml;base64,");
-    for chunk in svg.as_bytes().chunks(3) {
+    let mut url = String::new();
+    for chunk in bytes.chunks(3) {
         let bytes = [
             chunk[0],
             *chunk.get(1).unwrap_or(&0),
@@ -380,6 +441,8 @@ pub fn catalogue_icons() -> Vec<(&'static str, String)> {
         ("mix", badge_only("pd-speaker-symbolic", WHITE, plain)),
         ("voice", badge_only("pd-people-symbolic", "#5b8cf5", plain)),
         ("call", badge_only("pd-people-symbolic", "#5b8cf5", plain)),
+        ("effect", badge_only("pd-sfx-symbolic", "#f08a24", plain)),
+        ("app", badge_only("pd-browser-symbolic", "#9b6ef3", plain)),
         ("monitor", badge_only("pd-listen-symbolic", WHITE, plain)),
         (
             "output",
@@ -438,6 +501,7 @@ mod tests {
             meter: Some(0.9),
             state: State::default(),
             below: ("50%", TEXT),
+            avatar: None,
         });
         assert!(svg.contains("&lt;a &amp; &quot;b&quot;&gt;"));
         assert!(!data_url(&svg).contains(['<', '#', '"']));

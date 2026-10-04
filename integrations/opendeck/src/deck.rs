@@ -18,7 +18,13 @@
 //!   second, and on: their level as a channel's, following the call as
 //!   people come and go.
 //! - **Call**: to the profile laid out for the call, saying how many are in
-//!   it, and back to the mixer's.
+//!   it, and back to the mixer's; and, when asked, the decks go there by
+//!   themselves as a call starts, and back as it ends.
+//!
+//! And two more of Wave Link's:
+//!
+//! - **Channel Effect**: one effect of a channel, switched off or on.
+//! - **Add to Channel**: an application put on a channel, or taken off it.
 //!
 //! Everything is kept by id, so renaming a channel does not lose its key,
 //! and shown as Pipedeck says it is, whoever changed it.
@@ -29,6 +35,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::avatar::Avatars;
 use crate::draw::{self, Picture, State};
 use crate::mixer::{order, Mixer, Peaks, Target, View};
 
@@ -46,6 +53,8 @@ pub enum Action {
     MainOutput,
     CallVoice,
     CallPage,
+    ChannelEffect,
+    AddApp,
 }
 
 /// The profiles the Call action goes between. See `profiles.rs`.
@@ -61,6 +70,8 @@ impl Action {
             "output" => Some(Action::MainOutput),
             "voice" => Some(Action::CallVoice),
             "call" => Some(Action::CallPage),
+            "effect" => Some(Action::ChannelEffect),
+            "app" => Some(Action::AddApp),
             _ => None,
         }
     }
@@ -105,11 +116,28 @@ struct Settings {
     slot: Option<usize>,
     /// Where the Call action goes: "call", or back to the "mixer".
     page: Option<String>,
+    /// An effect of the channel, by its place and its name: found by its
+    /// name when the chain moved, by its place when it was renamed.
+    index: Option<usize>,
+    effect: Option<String>,
+    /// An application, by its key.
+    app: Option<String>,
     /// What it was called, shown while Pipedeck is away.
     label: String,
 }
 
 impl Settings {
+    /// The channel and the place of the effect an effect action works on.
+    fn effect_in(&self, view: &View) -> Option<(u32, usize)> {
+        let channel = view.channels.iter().find(|c| Some(c.id) == self.channel)?;
+        let by_name = self
+            .effect
+            .as_ref()
+            .and_then(|name| channel.effects.iter().position(|e| e.name == *name));
+        let index = by_name.or(self.index.filter(|i| *i < channel.effects.len()))?;
+        Some((channel.id, index))
+    }
+
     /// The level a level action works on. A person of the call is found
     /// by their place in it, so the mixer is needed for that.
     fn target(&self, action: Action, view: Option<&View>) -> Option<Target> {
@@ -130,7 +158,11 @@ impl Settings {
                 })
             }
             Action::MixLevel => Some(Target::Mix { id: self.mix? }),
-            Action::MonitorMix | Action::MainOutput | Action::CallPage => None,
+            Action::MonitorMix
+            | Action::MainOutput
+            | Action::CallPage
+            | Action::ChannelEffect
+            | Action::AddApp => None,
         }
     }
 
@@ -182,6 +214,11 @@ pub struct Deck {
     /// The action whose settings page is open, which is told when what
     /// there is to pick from changes.
     open_page: Option<String>,
+    /// The people's pictures, made round.
+    avatars: Avatars,
+    /// Whether the decks go to the call's profile as a call starts, and
+    /// back as it ends: the plugin's own setting, the same for every key.
+    follow_call: bool,
 }
 
 impl Deck {
@@ -193,12 +230,18 @@ impl Deck {
             mixer,
             fades: Vec::new(),
             open_page: None,
+            avatars: Avatars::default(),
+            follow_call: false,
         }
     }
 
     /// Take in a message from OpenDeck, and say what to send it back.
     pub fn hear(&mut self, message: &Value) -> Vec<Value> {
         let event = message["event"].as_str().unwrap_or_default();
+        if event == "didReceiveGlobalSettings" {
+            self.follow_call = message["payload"]["settings"]["follow_call"] == true;
+            return Vec::new();
+        }
         let Some(context) = message["context"].as_str().map(str::to_owned) else {
             return Vec::new();
         };
@@ -258,13 +301,43 @@ impl Deck {
             return Vec::new();
         }
         let listed = catalogue(self.view.as_ref()) != catalogue(view.as_ref());
+        let before = self.view.as_ref().map_or(0, View::people_in_call);
+        let after = view.as_ref().map_or(0, View::people_in_call);
         self.view = view;
+        let mut followed = Vec::new();
+        if self.follow_call && (before == 0) != (after == 0) && self.view.is_some() {
+            followed = self.follow(after > 0);
+        }
         let contexts: Vec<String> = self.instances.keys().cloned().collect();
         let mut messages: Vec<Value> = contexts.iter().flat_map(|c| self.draw(c)).collect();
+        messages.extend(followed);
         if let Some(open) = self.open_page.clone().filter(|_| listed) {
             messages.extend(self.tell_settings_page(&open));
         }
         messages
+    }
+
+    /// Take every deck showing one Pipedeck profile to the other: to the
+    /// call's as a call starts, back to the mixer's as it ends. A deck on a
+    /// profile of the user's own is left there.
+    fn follow(&self, started: bool) -> Vec<Value> {
+        let (from, to) = if started {
+            (MIXER_PROFILE, CALL_PROFILE)
+        } else {
+            (CALL_PROFILE, MIXER_PROFILE)
+        };
+        let mut devices: Vec<&str> = self
+            .instances
+            .iter()
+            .filter(|(context, instance)| profile_of(context, &instance.device) == Some(from))
+            .map(|(_, instance)| instance.device.as_str())
+            .collect();
+        devices.sort_unstable();
+        devices.dedup();
+        devices
+            .into_iter()
+            .map(|device| json!({ "event": "switchProfile", "device": device, "profile": to }))
+            .collect()
     }
 
     /// Take in what the meters read, and redraw the meters it moved.
@@ -318,6 +391,29 @@ impl Deck {
             return vec![alert(context)];
         };
         let change = match instance.action {
+            Action::ChannelEffect => {
+                if matches!(press, Press::Turn(_)) {
+                    return Vec::new();
+                }
+                let Some((channel, index)) = settings.effect_in(view) else {
+                    return vec![alert(context)];
+                };
+                json!({ "what": "effect", "channel": channel, "index": index, "bypass": "toggle" })
+            }
+            Action::AddApp => {
+                if matches!(press, Press::Turn(_)) {
+                    return Vec::new();
+                }
+                let (Some(channel), Some(app)) = (settings.channel, settings.app.clone()) else {
+                    return vec![alert(context)];
+                };
+                // On it already: a press takes it off again.
+                let here = view
+                    .channels
+                    .iter()
+                    .any(|c| c.id == channel && c.apps.contains(&app));
+                json!({ "what": "app", "app": app, "channel": channel, "release": here })
+            }
             Action::CallPage => {
                 if matches!(press, Press::Turn(_)) {
                     return Vec::new();
@@ -415,25 +511,36 @@ impl Deck {
         let Some(instance) = self.instances.get_mut(context) else {
             return Vec::new();
         };
-        let (key, strip) = match picture(
+        let drawn = picture(
             instance.action,
             &instance.settings,
             self.view.as_ref(),
             &self.levels,
-        ) {
-            Ok(picture) => (
-                draw::key(&picture.as_picture()),
-                draw::strip(&picture.as_picture()),
-            ),
+        );
+        // The strip in three layers, since OpenDeck draws no picture inside
+        // an SVG: the drawing, a person's picture, and what goes over it.
+        let (key, strip, avatar, over) = match drawn {
+            Ok(mut drawn) => {
+                let avatar = drawn
+                    .avatar_file
+                    .take()
+                    .and_then(|path| self.avatars.get(&path).map(str::to_owned));
+                drawn.avatar = avatar.clone();
+                let picture = drawn.as_picture();
+                let over = avatar.as_ref().map(|_| draw::strip_over(&picture));
+                (draw::key(&picture), draw::strip(&picture), avatar, over)
+            }
             Err(why) => {
                 let label = &instance.settings.label;
                 (
                     draw::waiting(label, why, false),
                     draw::waiting(label, why, true),
+                    None,
+                    None,
                 )
             }
         };
-        let shown = json!([key, strip]);
+        let shown = json!([key, strip, over]);
         if instance.shown.as_ref() == Some(&shown) {
             return Vec::new();
         }
@@ -448,7 +555,11 @@ impl Deck {
             messages.push(json!({
                 "event": "setFeedback",
                 "context": context,
-                "payload": { "canvas": strip },
+                "payload": {
+                    "canvas": strip,
+                    "avatar": avatar.unwrap_or_default(),
+                    "over": over.unwrap_or_default(),
+                },
             }));
         }
         messages
@@ -479,7 +590,10 @@ fn catalogue(view: Option<&View>) -> Value {
             "id": c.id,
             "name": c.name,
             "voices": c.voices.iter().map(|v| json!({ "user": v.user, "name": v.name })).collect::<Vec<_>>(),
+            "effects": c.effects.iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+            "apps": c.apps,
         })).collect::<Vec<_>>(),
+        "apps": view.apps.iter().map(|a| json!({ "key": a.key, "name": a.name })).collect::<Vec<_>>(),
         "mixes": view.mixes.iter().map(|m| json!({ "id": m.id, "name": m.name })).collect::<Vec<_>>(),
         "cells": view.cells.iter().map(|c| json!([c.channel, c.mix])).collect::<Vec<_>>(),
         "outputs": view.outputs.iter().map(|o| json!({ "name": o.name, "description": o.description })).collect::<Vec<_>>(),
@@ -495,9 +609,26 @@ struct Drawn {
     meter: Option<f32>,
     state: State,
     below: (String, &'static str),
+    /// A person's picture: the file, then what it is drawn from.
+    avatar_file: Option<String>,
+    avatar: Option<String>,
 }
 
 impl Drawn {
+    fn new(name: impl Into<String>, look: (&'static str, &'static str)) -> Self {
+        Drawn {
+            name: name.into(),
+            look,
+            corner: None,
+            level: None,
+            meter: None,
+            state: State::default(),
+            below: (String::new(), "#ffffff"),
+            avatar_file: None,
+            avatar: None,
+        }
+    }
+
     fn as_picture(&self) -> Picture<'_> {
         Picture {
             name: &self.name,
@@ -507,6 +638,7 @@ impl Drawn {
             meter: self.meter,
             state: self.state,
             below: (&self.below.0, self.below.1),
+            avatar: self.avatar.as_deref(),
         }
     }
 }
@@ -521,6 +653,53 @@ fn picture(
     let view = view.ok_or("Offline")?;
     let unset = "Pick one";
     match action {
+        Action::ChannelEffect => {
+            let channel = settings.channel.ok_or(unset)?;
+            let (_, index) = settings.effect_in(view).ok_or("Gone")?;
+            let channel = view
+                .channels
+                .iter()
+                .find(|c| c.id == channel)
+                .ok_or("Gone")?;
+            let effect = &channel.effects[index];
+            let mut drawn = Drawn::new(
+                effect.name.clone(),
+                draw::look(channel.icon.as_deref(), channel.input, false),
+            );
+            drawn.state.dim = effect.bypassed;
+            drawn.below = if effect.bypassed {
+                ("Off".to_owned(), draw::FAINT)
+            } else {
+                ("On".to_owned(), "#ffffff")
+            };
+            Ok(drawn)
+        }
+        Action::AddApp => {
+            let channel = settings.channel.ok_or(unset)?;
+            let app = settings.app.as_ref().ok_or(unset)?;
+            let channel = view
+                .channels
+                .iter()
+                .find(|c| c.id == channel)
+                .ok_or("Gone")?;
+            let name = view
+                .apps
+                .iter()
+                .find(|a| a.key == *app)
+                .map_or(settings.label.clone(), |a| a.name.clone());
+            let here = channel.apps.contains(app);
+            let mut drawn = Drawn::new(
+                name,
+                draw::look(channel.icon.as_deref(), channel.input, false),
+            );
+            drawn.state.dim = !here;
+            drawn.below = if here {
+                (format!("On {}", channel.name), "#ffffff")
+            } else {
+                (format!("To {}", channel.name), draw::FAINT)
+            };
+            Ok(drawn)
+        }
         Action::CallPage => {
             if settings.page.as_deref() == Some("mixer") {
                 return Ok(Drawn {
@@ -531,6 +710,8 @@ fn picture(
                     meter: None,
                     state: State::default(),
                     below: ("Back".to_owned(), "#ffffff"),
+                    avatar_file: None,
+                    avatar: None,
                 });
             }
             let people = view.people_in_call();
@@ -549,6 +730,8 @@ fn picture(
                     1 => ("1 person".to_owned(), "#ffffff"),
                     n => (format!("{n} people"), "#ffffff"),
                 },
+                avatar_file: None,
+                avatar: None,
             })
         }
         Action::CallVoice if settings.target(action, Some(view)).is_none() => {
@@ -564,6 +747,8 @@ fn picture(
                     dim: true,
                 },
                 below: ("Empty".to_owned(), draw::FAINT),
+                avatar_file: None,
+                avatar: None,
             })
         }
         Action::ChannelLevel | Action::MixLevel | Action::CallVoice => {
@@ -593,6 +778,8 @@ fn picture(
                     dim: false,
                 },
                 below,
+                avatar_file: found.avatar.clone(),
+                avatar: None,
             })
         }
         Action::MonitorMix => {
@@ -623,6 +810,8 @@ fn picture(
                 } else {
                     ("Hear".to_owned(), draw::FAINT)
                 },
+                avatar_file: None,
+                avatar: None,
             })
         }
         Action::MainOutput => {
@@ -651,9 +840,20 @@ fn picture(
                 } else {
                     ("Listen".to_owned(), draw::FAINT)
                 },
+                avatar_file: None,
+                avatar: None,
             })
         }
     }
+}
+
+/// The profile an action is on, from its context, which OpenDeck makes of
+/// the deck, the profile, the controller and the place.
+fn profile_of<'a>(context: &'a str, device: &str) -> Option<&'a str> {
+    let rest = context.strip_prefix(device)?.strip_prefix('.')?;
+    let mut parts = rest.rsplitn(4, '.');
+    let (_index, _position, _controller) = (parts.next()?, parts.next()?, parts.next()?);
+    parts.next()
 }
 
 fn settings_of(payload: &Value) -> Settings {
@@ -753,6 +953,7 @@ mod tests {
                 name: (*name).to_owned(),
                 volume: 1.0,
                 muted: false,
+                avatar: None,
             })
             .collect();
         view
@@ -795,6 +996,97 @@ mod tests {
         assert_eq!(
             told,
             vec![json!({"event": "switchProfile", "device": "sd-1", "profile": CALL_PROFILE})]
+        );
+    }
+
+    #[test]
+    fn a_profile_is_read_from_where_opendeck_says_an_action_is() {
+        assert_eq!(
+            profile_of("sd-1.Pipedeck Call.Keypad.3.0", "sd-1"),
+            Some(CALL_PROFILE)
+        );
+        assert_eq!(
+            profile_of("sd-1.Pipedeck.Encoder.0.0", "sd-1"),
+            Some(MIXER_PROFILE)
+        );
+        assert_eq!(profile_of("sd-2.Pipedeck.Keypad.0.0", "sd-1"), None);
+    }
+
+    #[test]
+    fn the_decks_follow_a_call_when_asked() {
+        let mut deck = Deck::new(Mixer::default());
+        deck.mixer_changed(Some(view()));
+        deck.hear(&json!({
+            "event": "willAppear",
+            "action": format!("{PLUGIN}.call"),
+            "context": "sd-1.Pipedeck.Keypad.0.0",
+            "device": "sd-1",
+            "payload": {"controller": "Keypad", "settings": {}},
+        }));
+        let switches = |told: &[Value]| -> Vec<Value> {
+            told.iter()
+                .filter(|m| m["event"] == "switchProfile")
+                .cloned()
+                .collect()
+        };
+        // Not asked: nothing moves.
+        assert!(switches(&deck.mixer_changed(Some(in_call(&["Alice"])))).is_empty());
+        deck.mixer_changed(Some(view()));
+        deck.hear(&json!({"event": "didReceiveGlobalSettings", "payload": {"settings": {"follow_call": true}}}));
+        assert_eq!(
+            switches(&deck.mixer_changed(Some(in_call(&["Alice"])))),
+            vec![json!({"event": "switchProfile", "device": "sd-1", "profile": CALL_PROFILE})]
+        );
+        // Someone else joining is not a call starting.
+        assert!(switches(&deck.mixer_changed(Some(in_call(&["Alice", "Bob"])))).is_empty());
+    }
+
+    #[test]
+    fn an_effect_and_an_app_are_found_and_shown() {
+        let mut view = view();
+        view.channels[0].effects = vec![
+            crate::mixer::EffectState {
+                name: "EQ".into(),
+                bypassed: false,
+            },
+            crate::mixer::EffectState {
+                name: "Noise suppression".into(),
+                bypassed: true,
+            },
+        ];
+        view.channels[0].apps = vec!["spotify".into()];
+        view.apps = vec![crate::mixer::App {
+            key: "spotify".into(),
+            name: "Spotify".into(),
+        }];
+        // Found by its name, though it moved.
+        let effect = Settings {
+            channel: Some(2),
+            index: Some(0),
+            effect: Some("Noise suppression".into()),
+            ..Settings::default()
+        };
+        assert_eq!(effect.effect_in(&view), Some((2, 1)));
+        let drawn = picture(
+            Action::ChannelEffect,
+            &effect,
+            Some(&view),
+            &Peaks::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            (drawn.name.as_str(), drawn.below.0.as_str()),
+            ("Noise suppression", "Off")
+        );
+        let app = Settings {
+            channel: Some(2),
+            app: Some("spotify".into()),
+            ..Settings::default()
+        };
+        let drawn = picture(Action::AddApp, &app, Some(&view), &Peaks::default()).unwrap();
+        assert_eq!(
+            (drawn.name.as_str(), drawn.below.0.as_str()),
+            ("Spotify", "On Music")
         );
     }
 

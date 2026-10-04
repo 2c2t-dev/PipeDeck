@@ -56,6 +56,17 @@
 			<label class="row">Person <select id="slot"></select></label>
 		</div>
 
+		<div id="effect-rows" hidden>
+			<label class="row">Channel <select id="effect-channel"></select></label>
+			<label class="row">Effect <select id="effect"></select></label>
+		</div>
+
+		<div id="app-rows" hidden>
+			<label class="row">Application <select id="app"></select></label>
+			<label class="row">Channel <select id="app-channel"></select></label>
+			<p class="note">A press puts it on the channel, or takes it off again.</p>
+		</div>
+
 		<div id="call-rows" hidden>
 			<label class="row">
 				Goes to
@@ -64,6 +75,8 @@
 					<option value="mixer">The mixer</option>
 				</select>
 			</label>
+			<label class="row">Follow calls <input id="follow" type="checkbox" /></label>
+			<p class="note">Every deck goes to the call as one starts, and back as it ends.</p>
 		</div>
 
 		<div id="level-rows" hidden>
@@ -122,6 +135,8 @@
 			let dial;
 			let settings = {};
 			let mixer = null;
+			let globals = {};
+			let uuidOf = null;
 
 			const $ = (id) => document.getElementById(id);
 
@@ -134,14 +149,19 @@
 				settings = actionInfo.payload.settings || {};
 
 				socket = new WebSocket("ws://localhost:" + port);
+				uuidOf = uuid;
 				socket.onopen = () => {
 					socket.send(JSON.stringify({ event: registerEvent, uuid }));
+					socket.send(JSON.stringify({ event: "getGlobalSettings", context: uuid }));
 					socket.send(JSON.stringify({ event: "sendToPlugin", action: actionUuid, context, payload: { request: "mixer" } }));
 				};
 				socket.onmessage = (message) => {
 					const data = JSON.parse(message.data);
 					if (data.event === "sendToPropertyInspector" && "mixer" in data.payload) {
 						mixer = data.payload.mixer;
+						show();
+					} else if (data.event === "didReceiveGlobalSettings") {
+						globals = data.payload.settings || {};
 						show();
 					} else if (data.event === "didReceiveSettings") {
 						settings = data.payload.settings || {};
@@ -180,6 +200,23 @@
 				$("switch-rows").hidden = action !== "monitor" && action !== "output";
 				$("voice-rows").hidden = action !== "voice";
 				$("call-rows").hidden = action !== "call";
+				$("effect-rows").hidden = action !== "effect";
+				$("app-rows").hidden = action !== "app";
+				$("follow").checked = globals.follow_call === true;
+				if (action === "effect") {
+					fill($("effect-channel"), channels.map((c) => [String(c.id), c.name]), settings.channel, settings.label);
+					const channel = channels.find((c) => c.id === settings.channel);
+					const effects = (channel?.effects ?? []).map((name, index) => [String(index), name]);
+					const chosen = settings.effect !== undefined && channel ? channel.effects.indexOf(settings.effect) : -1;
+					fill($("effect"), effects, chosen >= 0 ? chosen : settings.index, settings.effect);
+				}
+				if (action === "app") {
+					// What plays now, and what is on a channel already.
+					const apps = new Map((mixer?.apps ?? []).map((a) => [a.key, a.name]));
+					for (const c of channels) for (const key of c.apps ?? []) if (!apps.has(key)) apps.set(key, key);
+					fill($("app"), [...apps].map(([key, name]) => [key, name]), settings.app, settings.label);
+					fill($("app-channel"), channels.map((c) => [String(c.id), c.name]), settings.channel);
+				}
 				if (action === "voice") {
 					const places = [];
 					for (let n = 1; n <= 24; n++) places.push([String(n), n === 1 ? "1st in the call" : n === 2 ? "2nd in the call" : n === 3 ? "3rd in the call" : `${n}th in the call`]);
@@ -271,6 +308,36 @@
 			$("slot").onchange = () => {
 				settings.slot = Number($("slot").value) || 1;
 				settings.label = `Person ${settings.slot}`;
+				save();
+			};
+			$("follow").onchange = () => {
+				globals.follow_call = $("follow").checked;
+				socket.send(JSON.stringify({ event: "setGlobalSettings", context: uuidOf, payload: globals }));
+			};
+			$("effect-channel").onchange = () => {
+				if (!$("effect-channel").value) return;
+				settings.channel = Number($("effect-channel").value);
+				delete settings.effect;
+				delete settings.index;
+				save();
+				show();
+			};
+			$("effect").onchange = () => {
+				if ($("effect").value === "") return;
+				settings.index = Number($("effect").value);
+				settings.effect = $("effect").selectedOptions[0].text;
+				settings.label = settings.effect;
+				save();
+			};
+			$("app").onchange = () => {
+				if (!$("app").value) return;
+				settings.app = $("app").value;
+				settings.label = $("app").selectedOptions[0].text;
+				save();
+			};
+			$("app-channel").onchange = () => {
+				if (!$("app-channel").value) return;
+				settings.channel = Number($("app-channel").value);
 				save();
 			};
 			$("page").onchange = () => {

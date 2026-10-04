@@ -8,6 +8,7 @@ The looks are Pipedeck's own, from `crates/pipedeck/src/presets.rs`; the
 icons are copied next to this file by `install.sh`.
 """
 
+import base64
 import io
 import math
 import os
@@ -15,7 +16,7 @@ from functools import lru_cache
 from typing import NamedTuple, Optional
 
 import cairosvg
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icons")
 
@@ -73,6 +74,9 @@ class Picture(NamedTuple):
     dim: bool = False
     # What it is doing, and in what colour.
     below: tuple = ("", TEXT)
+    # A person's picture, round, as a PNG data URL, worn in place of the
+    # badge.
+    avatar: Optional[str] = None
 
 
 def look(key: Optional[str], is_input: bool = False, mix: bool = False) -> tuple:
@@ -137,18 +141,31 @@ def _badge(icon, color, x, y, side, muted=False, dim=False) -> str:
         f'height="{inner}" viewBox="0 -960 960 960"><path d="{glyph(icon)}" fill="{GLYPH}"/></svg>'
     )
     if muted:
-        x0, y0, x1, y1 = x + side * 0.12, y + side * 0.88, x + side * 0.88, y + side * 0.12
-        width = side * 0.09
-        svg += (
-            f'<line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y1}" stroke="{GLYPH}" stroke-width="{width * 2.2}" '
-            f'stroke-linecap="round"/><line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y1}" stroke="{RED}" '
-            f'stroke-width="{width}" stroke-linecap="round"/>'
-        )
+        svg += _slash(x, y, side)
     return svg + "</g>"
 
 
+def _slash(x, y, side) -> str:
+    x0, y0, x1, y1 = x + side * 0.12, y + side * 0.88, x + side * 0.88, y + side * 0.12
+    width = side * 0.09
+    return (
+        f'<line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y1}" stroke="{GLYPH}" stroke-width="{width * 2.2}" '
+        f'stroke-linecap="round"/><line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y1}" stroke="{RED}" '
+        f'stroke-width="{width}" stroke-linecap="round"/>'
+    )
+
+
 def _badges(picture: Picture, x, y, side) -> str:
-    """The badge, and the mix's in its corner when there is one."""
+    """The badge, and the mix's in its corner when there is one; or the
+    person's picture."""
+    if picture.avatar:
+        svg = f'<image x="{x}" y="{y}" width="{side}" height="{side}" href="{picture.avatar}"/>'
+        if picture.muted or picture.dim:
+            shade = 0.65 if picture.dim else 0.5
+            svg += f'<circle cx="{x + side / 2}" cy="{y + side / 2}" r="{side / 2}" fill="rgba(0,0,0,{shade})"/>'
+        if picture.muted:
+            svg += _slash(x, y, side)
+        return svg
     svg = _badge(*picture.look, x, y, side, picture.muted, picture.dim)
     if picture.corner:
         small = side * 0.5
@@ -230,6 +247,28 @@ def strip_svg(picture: Picture) -> str:
 def waiting(name: str, why: str) -> Picture:
     """What a key shows while it has nothing to show, and why."""
     return Picture(name=name, look=("pd-speaker-symbolic", GREY), dim=True, below=(why, FAINT))
+
+
+@lru_cache(maxsize=64)
+def avatar(path: Optional[str]) -> Optional[str]:
+    """A person's picture, the PNG their client fetched, made round and
+    carried in a data URL; None when there is none to read."""
+    if not path:
+        return None
+    try:
+        with Image.open(path) as image:
+            image = image.convert("RGBA")
+    except OSError:
+        return None
+    # Drawn four times larger and brought down, for a smooth edge.
+    width, height = image.size
+    mask = Image.new("L", (width * 4, height * 4), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, width * 4 - 1, height * 4 - 1), fill=255)
+    mask = mask.resize((width, height), Image.LANCZOS)
+    image.putalpha(Image.composite(image.getchannel("A"), Image.new("L", image.size, 0), mask))
+    out = io.BytesIO()
+    image.save(out, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(out.getvalue()).decode()
 
 
 def render(svg: str, size: tuple) -> Image.Image:

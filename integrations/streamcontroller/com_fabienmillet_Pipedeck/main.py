@@ -13,7 +13,7 @@ from src.backend.PluginManager.ActionInputSupport import ActionInputSupport
 from src.backend.PluginManager.PluginBase import PluginBase
 
 from . import draw
-from .actions import CallVoice, ChannelLevel, MainOutput, MixLevel, MonitorMix
+from .actions import AddApp, CallVoice, ChannelEffect, ChannelLevel, MainOutput, MixLevel, MonitorMix
 from .client import Pipedeck
 
 KEYS_AND_DIALS = {
@@ -34,6 +34,8 @@ class PipedeckPlugin(PluginBase):
             (MonitorMix, "MonitorMix", "Monitor Mix"),
             (MainOutput, "MainOutput", "Main Output Device"),
             (CallVoice, "CallVoice", "Call Voice"),
+            (ChannelEffect, "ChannelEffect", "Channel Effect"),
+            (AddApp, "AddApp", "Add to Channel"),
         ]:
             self.add_action_holder(
                 ActionHolder(

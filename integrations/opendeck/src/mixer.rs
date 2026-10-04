@@ -26,6 +26,21 @@ pub struct View {
     pub cells: Vec<Cell>,
     pub listen: Option<String>,
     pub outputs: Vec<Output>,
+    /// The applications playing now.
+    #[serde(default)]
+    pub apps: Vec<App>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct App {
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EffectState {
+    pub name: String,
+    pub bypassed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -37,6 +52,11 @@ pub struct Channel {
     pub muted: bool,
     pub input: bool,
     pub voices: Vec<Voice>,
+    #[serde(default)]
+    pub effects: Vec<EffectState>,
+    /// The applications put on it, by their keys.
+    #[serde(default)]
+    pub apps: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -63,6 +83,9 @@ pub struct Voice {
     pub name: String,
     pub volume: f32,
     pub muted: bool,
+    /// Their picture, a PNG file on this machine.
+    #[serde(default)]
+    pub avatar: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -95,6 +118,8 @@ pub struct Found {
     pub listening: bool,
     /// The mix a channel's level is taken in, when it is not its own.
     pub within: Option<Mix>,
+    /// A person's picture, a PNG file.
+    pub avatar: Option<String>,
 }
 
 impl View {
@@ -126,6 +151,7 @@ impl View {
                 muted: c.muted,
                 listening: false,
                 within: None,
+                avatar: None,
             }),
             Target::Mix { id } => mix(*id).map(|m| Found {
                 name: m.name.clone(),
@@ -136,6 +162,7 @@ impl View {
                 muted: m.muted,
                 listening: m.listening,
                 within: None,
+                avatar: None,
             }),
             Target::Cell {
                 channel: from,
@@ -155,6 +182,7 @@ impl View {
                     muted: cell.muted,
                     listening: false,
                     within: Some(into.clone()),
+                    avatar: None,
                 })
             }
             Target::Voice { channel: on, user } => {
@@ -168,6 +196,7 @@ impl View {
                     muted: voice.muted,
                     listening: false,
                     within: None,
+                    avatar: voice.avatar.clone(),
                 })
             }
             Target::Output { device } => {
@@ -181,6 +210,7 @@ impl View {
                     muted: false,
                     listening: self.listen.as_deref() == Some(device.as_str()),
                     within: None,
+                    avatar: None,
                 })
             }
         }

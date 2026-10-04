@@ -171,6 +171,56 @@
       },
       "SupportedInMultiActions": true,
       "PropertyInspectorPath": "propertyInspector/index.html"
+    },
+    {
+      "UUID": "com.fabienmillet.pipedeck.effect",
+      "Name": "Channel Effect",
+      "Tooltip": "Switch one effect of a channel off or on",
+      "Icon": "icons/effect",
+      "States": [
+        {
+          "Image": "icons/effect"
+        }
+      ],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/strip.json",
+        "Icon": "icons/effect",
+        "TriggerDescription": {
+          "Push": "Switch",
+          "Touch": "Switch"
+        }
+      },
+      "SupportedInMultiActions": true,
+      "PropertyInspectorPath": "propertyInspector/index.html"
+    },
+    {
+      "UUID": "com.fabienmillet.pipedeck.app",
+      "Name": "Add to Channel",
+      "Tooltip": "Put an application on a channel, or take it off",
+      "Icon": "icons/app",
+      "States": [
+        {
+          "Image": "icons/app"
+        }
+      ],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/strip.json",
+        "Icon": "icons/app",
+        "TriggerDescription": {
+          "Push": "Move",
+          "Touch": "Move"
+        }
+      },
+      "SupportedInMultiActions": true,
+      "PropertyInspectorPath": "propertyInspector/index.html"
     }
   ]
 }

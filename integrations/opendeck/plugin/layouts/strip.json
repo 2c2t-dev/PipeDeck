@@ -10,7 +10,30 @@
         0,
         200,
         100
-      ]
+      ],
+      "zOrder": 0
+    },
+    {
+      "key": "avatar",
+      "type": "pixmap",
+      "rect": [
+        12,
+        27,
+        46,
+        46
+      ],
+      "zOrder": 1
+    },
+    {
+      "key": "over",
+      "type": "pixmap",
+      "rect": [
+        12,
+        27,
+        46,
+        46
+      ],
+      "zOrder": 2
     }
   ]
 }
