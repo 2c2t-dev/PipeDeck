@@ -862,7 +862,7 @@ fn general_page() -> adw::PreferencesPage {
 
     let keep = adw::SwitchRow::new();
     keep.set_title("Keep running when the window is closed");
-    keep.set_subtitle("The mixer and the Stream Decks carry on; Ctrl+Q quits");
+    keep.set_subtitle("The mixer and the Stream Decks carry on, with an icon to open or quit");
     keep.set_active(saved.borrow().keep_running);
     keep.connect_active_notify({
         let saved = saved.clone();
@@ -871,10 +871,11 @@ fn general_page() -> adw::PreferencesPage {
             saved.borrow_mut().keep_running = on;
             saved.borrow().save();
             // The window open now, and the session's next start.
-            if let Some(app) = gtk::gio::Application::default().and_downcast::<gtk::Application>() {
+            if let Some(app) = gtk::gio::Application::default().and_downcast::<adw::Application>() {
                 for window in app.windows() {
                     window.set_hide_on_close(on);
                 }
+                crate::tray::show(&app, on);
             }
             if settings::starts_at_login() {
                 if let Err(e) = settings::set_start_at_login(true, on) {

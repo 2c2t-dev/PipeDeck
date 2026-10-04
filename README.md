@@ -271,8 +271,9 @@ found and where Stereo Tool stands. Changing the quantum reloads every route,
 so the audio stops for a moment.
 
 With **Keep running when the window is closed** on, closing the window
-leaves the mixer, its control socket and so the Stream Decks running;
-starting Pipedeck again opens the window, and Ctrl+Q quits for good.
+leaves the mixer, its control socket and so the Stream Decks running, with
+an icon in the notification area to open the window again or quit;
+starting Pipedeck again opens the window too, and Ctrl+Q quits for good.
 Started with the session, it then starts with its window closed
 (`pipedeck --background`). Off, as it is unless turned on, closing the
 window stops the mixer, as before.

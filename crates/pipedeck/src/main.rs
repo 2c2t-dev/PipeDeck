@@ -21,6 +21,7 @@ mod presets;
 mod settings;
 mod signals;
 mod streamdeck;
+mod tray;
 mod vesktop;
 mod widgets;
 mod window;
@@ -66,7 +67,6 @@ fn main() -> glib::ExitCode {
     if app_id == APP_ID {
         launcher::install(&app_id);
     }
-    gtk::Window::set_default_icon_name(&app_id);
     let app = adw::Application::builder().application_id(app_id).build();
     app.add_main_option(
         "background",
@@ -177,6 +177,8 @@ fn activate(app: &adw::Application) {
     let window = Window::new(app, engine.clone());
     let keep_running = settings::Settings::load().keep_running;
     window.set_keep_running(keep_running);
+    // Somewhere to open the window from, and to quit, while it is closed.
+    tray::show(app, keep_running);
 
     // Quitting for good, mixer and all, which closing the window no longer
     // does when it keeps running.
