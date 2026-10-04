@@ -13,6 +13,7 @@
 //! runs — and the symbols are exactly those the API exposes.
 
 use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void, CStr, CString};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -365,36 +366,83 @@ pub fn probe(license: Option<&str>) -> Result<Info, String> {
 /// Keeps the library's chatter off the terminal.
 ///
 /// Stereo Tool walks every ALSA device and looks for a JACK server each time
-/// a processor is created, and says so on the standard error — a few hundred
+/// a processor is created, and says so on the standard error — dozens of
 /// lines, written in C straight to the descriptor, which no Rust logger can
-/// filter. The descriptor is pointed at `/dev/null` for exactly as long as
-/// the call takes and put back after.
+/// filter. For as long as the call takes, the descriptor is pointed at a
+/// pipe; a thread reads it, drops what ALSA, JACK and the device search say,
+/// and passes the rest on to where the descriptor went before.
 ///
-/// The descriptor belongs to the whole process, so a line the mixer itself
-/// logs during that moment is lost with it. That is the trade: a handful of
-/// milliseconds against a screenful on every start. `PIPEDECK_STEREOTOOL_NOISE`
-/// turns it off when the library's own words are what is wanted.
-struct Hushed(Option<c_int>);
+/// The descriptor belongs to the whole process, so what the mixer and GTK
+/// write in that moment goes through the pipe too, and is passed on rather
+/// than lost. `PIPEDECK_STEREOTOOL_NOISE` leaves the descriptor alone when
+/// the library's own words are what is wanted.
+struct Hushed(Option<OwnedFd>);
+
+/// The beginnings of what the library has ALSA, JACK and its device search
+/// say while it opens.
+const CHATTER: [&[u8]; 5] = [
+    b"ALSA lib ",
+    b"Jack",
+    b"jack server is not running",
+    b"Cannot connect to server",
+    b"GropeDevice: ",
+];
+
+fn chatter(line: &[u8]) -> bool {
+    CHATTER.iter().any(|start| line.starts_with(start))
+}
+
+/// Pass on what comes through `pipe`, line by line, but the chatter.
+fn pass_on(pipe: OwnedFd, out: OwnedFd) {
+    use std::io::{BufRead, Write};
+    let mut pipe = std::io::BufReader::new(std::fs::File::from(pipe));
+    let mut out = std::fs::File::from(out);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match pipe.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => return,
+            Ok(_) if chatter(&line) => {}
+            Ok(_) => {
+                let _ = out.write_all(&line);
+            }
+        }
+    }
+}
 
 impl Hushed {
     fn new() -> Self {
         if std::env::var_os("PIPEDECK_STEREOTOOL_NOISE").is_some() {
             return Self(None);
         }
-        // SAFETY: plain descriptor calls, each checked; nothing is kept on
-        // failure, and the drop below only acts on what was taken.
+        let mut ends = [0 as c_int; 2];
+        // SAFETY: plain descriptor calls, each checked; every descriptor
+        // made is owned at once, so a failure closes what was taken, and the
+        // drop below only acts on what was kept.
         unsafe {
             let saved = libc::dup(libc::STDERR_FILENO);
             if saved < 0 {
                 return Self(None);
             }
-            let null = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
-            if null < 0 {
-                libc::close(saved);
+            let saved = OwnedFd::from_raw_fd(saved);
+            if libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) < 0 {
                 return Self(None);
             }
-            libc::dup2(null, libc::STDERR_FILENO);
-            libc::close(null);
+            let (read, write) = (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1]));
+            let Ok(out) = saved.try_clone() else {
+                return Self(None);
+            };
+            let spawned = std::thread::Builder::new()
+                .name("stereotool-stderr".into())
+                .spawn(move || pass_on(read, out));
+            if spawned.is_err() {
+                return Self(None);
+            }
+            // The pipe's last writer is the descriptor from here on: once it
+            // is put back, the thread reads to the end and stops.
+            if libc::dup2(write.as_raw_fd(), libc::STDERR_FILENO) < 0 {
+                return Self(None);
+            }
             Self(Some(saved))
         }
     }
@@ -402,11 +450,10 @@ impl Hushed {
 
 impl Drop for Hushed {
     fn drop(&mut self) {
-        if let Some(saved) = self.0 {
-            // SAFETY: `saved` is ours, taken in `new` and released once.
+        if let Some(saved) = self.0.take() {
+            // SAFETY: `saved` is a descriptor of ours, put back once.
             unsafe {
-                libc::dup2(saved, libc::STDERR_FILENO);
-                libc::close(saved);
+                libc::dup2(saved.as_raw_fd(), libc::STDERR_FILENO);
             }
         }
     }
@@ -1214,6 +1261,36 @@ impl Instance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chatter_is_dropped_and_the_rest_passed_on() {
+        let kept = std::env::temp_dir().join(format!("pipedeck-stderr-{}", std::process::id()));
+        let file = std::fs::File::create(&kept).unwrap();
+        let say = |text: &[u8]| {
+            // SAFETY: a write of a buffer we hold, to the error descriptor.
+            unsafe { libc::write(libc::STDERR_FILENO, text.as_ptr().cast(), text.len()) };
+        };
+        // SAFETY: the test's own error descriptor, put back at the end.
+        let before = unsafe { OwnedFd::from_raw_fd(libc::dup(libc::STDERR_FILENO)) };
+        unsafe { libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO) };
+        {
+            let _quiet = Hushed::new();
+            say(b"ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.rear\n");
+            say(b"jack server is not running or cannot be started\n");
+            say(b"the mixer says this\n");
+        }
+        let mut read = String::new();
+        for _ in 0..200 {
+            read = std::fs::read_to_string(&kept).unwrap();
+            if !read.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        unsafe { libc::dup2(before.as_raw_fd(), libc::STDERR_FILENO) };
+        let _ = std::fs::remove_file(&kept);
+        assert_eq!(read, "the mixer says this\n");
+    }
 
     #[test]
     fn only_the_library_is_taken_for_it() {
