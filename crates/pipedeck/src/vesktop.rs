@@ -283,9 +283,9 @@ impl Stale {
     /// Why, in the words the window shows.
     pub fn reason(self) -> &'static str {
         match self {
-            Stale::Plugin => "This Pipedeck carries a newer version of the plugin",
-            Stale::Vesktop => "Vesktop was updated since the plugin was built",
-            Stale::Unknown => "The plugin was built before Pipedeck kept track of it",
+            Stale::Plugin => "Newer plugin available",
+            Stale::Vesktop => "Vesktop was updated",
+            Stale::Unknown => "Built by an older Pipedeck",
         }
     }
 }

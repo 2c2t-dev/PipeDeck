@@ -34,22 +34,22 @@ const LATENCIES: [Latency; 4] = [
     Latency {
         value: "256/48000",
         label: "5 ms",
-        detail: "The shortest. Only for a machine with headroom to spare.",
+        detail: "Needs a machine with headroom",
     },
     Latency {
         value: "512/48000",
         label: "11 ms",
-        detail: "The default. A round trip close to one PipeWire hop.",
+        detail: "Default",
     },
     Latency {
         value: "1024/48000",
         label: "21 ms",
-        detail: "PipeWire's own quantum. Safe on most machines.",
+        detail: "Safe on most machines",
     },
     Latency {
         value: "2048/48000",
         label: "43 ms",
-        detail: "The longest. For a machine that reports xruns at 21 ms.",
+        detail: "For a machine with xruns at 21 ms",
     },
 ];
 
@@ -156,10 +156,6 @@ fn plugins_page(
 
     let group = adw::PreferencesGroup::new();
     group.set_title("Installed");
-    group.set_description(Some(
-        "Effects a channel can run, read once when Pipedeck starts because \
-         opening one runs its own code.",
-    ));
 
     count.set_title(&plugin_count(installed));
     count.set_subtitle(&settings::user_plugin_dir().map_or_else(
@@ -178,11 +174,6 @@ fn plugins_page(
 
     let install = adw::PreferencesGroup::new();
     install.set_title("Add one");
-    install.set_description(Some(
-        "A VST3 on Linux is a directory called something.vst3, not a file. Pick \
-         the directory, or the shared object inside it and Pipedeck will build \
-         the directory around it.",
-    ));
 
     let status = gtk::Label::new(None);
     status.add_css_class("caption");
@@ -192,7 +183,7 @@ fn plugins_page(
 
     let bundle_row = adw::ActionRow::new();
     bundle_row.set_title("Import a bundle");
-    bundle_row.set_subtitle("A something.vst3 directory");
+    bundle_row.set_subtitle("A .vst3 directory");
     let choose_bundle = gtk::Button::with_label("Choose…");
     choose_bundle.set_valign(gtk::Align::Center);
     choose_bundle.connect_clicked({
@@ -206,7 +197,7 @@ fn plugins_page(
 
     let binary_row = adw::ActionRow::new();
     binary_row.set_title("Import a shared object");
-    binary_row.set_subtitle("A .so, which is wrapped in the directory it is missing");
+    binary_row.set_subtitle("A .so on its own");
     let choose_binary = gtk::Button::with_label("Choose…");
     choose_binary.set_valign(gtk::Align::Center);
     choose_binary.connect_clicked({
@@ -257,11 +248,6 @@ fn in_background(
 fn stream_deck_group() -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Stream Deck");
-    group.set_description(Some(
-        "Pipedeck's plugin puts channel and mix levels with their meters, the mix in your \
-         headphones and the device it is heard on under a Stream Deck's keys and dials, as \
-         Elgato's Wave Link plugin does. OpenDeck and StreamController each have one.",
-    ));
 
     let status = gtk::Label::new(None);
     status.add_css_class("caption");
@@ -276,12 +262,9 @@ fn stream_deck_group() -> adw::PreferencesGroup {
     let saved = Rc::new(RefCell::new(Settings::load()));
 
     let profiles = adw::SwitchRow::new();
-    profiles.set_title("Keep the Pipedeck profiles laid out from the mixer");
-    profiles.set_subtitle(
-        "A Pipedeck profile for each deck in OpenDeck, laid out again when a channel, a mix \
-         or a device comes or goes. OpenDeck is restarted for it, and what was changed on \
-         those profiles is replaced: keep your own in another profile.",
-    );
+    profiles.set_title("Pipedeck profiles follow the mixer");
+    profiles
+        .set_subtitle("Redone when a channel, a mix or a device comes or goes; restarts OpenDeck");
     profiles.set_active(saved.borrow().stream_deck_profiles);
     profiles.connect_active_notify({
         let saved = saved.clone();
@@ -355,18 +338,29 @@ fn stream_deck_group() -> adw::PreferencesGroup {
                 let installed = matches!(state, streamdeck::State::Installed { .. });
                 match (&state, streamdeck::can_install(app)) {
                     (streamdeck::State::Installed { current: true }, _) => {
-                        row.set_subtitle("Installed, up to date with this Pipedeck");
+                        row.set_subtitle("Up to date");
                     }
                     (streamdeck::State::Installed { .. }, Err(e)) => {
                         row.set_subtitle(&format!("Installed. {e}"))
                     }
                     (streamdeck::State::Installed { .. }, Ok(())) => {
-                        row.set_subtitle("Installed, from another Pipedeck: update it");
+                        row.set_subtitle("Update available");
                     }
                     (_, Err(e)) => row.set_subtitle(&e),
                     _ => row.set_subtitle("Not installed"),
                 }
-                install.set_label(if installed { "Update" } else { "Install" });
+                // Up to date, it can only be put back as it is.
+                let current = state == streamdeck::State::Installed { current: true };
+                install.set_label(match (installed, current) {
+                    (false, _) => "Install",
+                    (true, false) => "Update",
+                    (true, true) => "Reinstall",
+                });
+                if current {
+                    install.remove_css_class("suggested-action");
+                } else {
+                    install.add_css_class("suggested-action");
+                }
                 install.set_visible(streamdeck::can_install(app).is_ok());
                 remove.set_visible(installed);
                 if app == App::OpenDeck {
@@ -418,11 +412,7 @@ fn vesktop_group() -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Discord voices");
     group.set_description(Some(
-        "With Pipedeck's plugin in Vesktop, the channel Vesktop plays into unfolds into \
-         the people of your call, each with a level, a mute and a meter. Vencord only \
-         runs the plugins built into it, so installing builds Vencord with this one in \
-         and points Vesktop at it. It needs git and Node.js, and takes a minute or two \
-         the first time.",
+        "Each person of a Vesktop call gets a level, a mute and a meter. Needs git and Node.js.",
     ));
 
     let row = adw::ActionRow::new();
@@ -450,15 +440,15 @@ fn vesktop_group() -> adw::PreferencesGroup {
         move || {
             let installed = vesktop::state() == vesktop::State::Installed;
             if installed {
-                row.set_title("Installed in Vesktop");
+                row.set_title("Vesktop");
                 row.set_subtitle(&match vesktop::stale() {
-                    Some(stale) => format!("{}: update it.", stale.reason()),
-                    None => "Up to date with this Vesktop and this Pipedeck".to_owned(),
+                    Some(stale) => stale.reason().to_owned(),
+                    None => "Up to date".to_owned(),
                 });
                 install.set_label("Update");
             } else {
-                row.set_title("Not installed");
-                row.set_subtitle("Vesktop runs its own Vencord, without the plugin");
+                row.set_title("Vesktop");
+                row.set_subtitle("Not installed");
                 install.set_label("Install");
             }
             remove.set_visible(installed);
@@ -596,7 +586,7 @@ fn stereotool_state(status: &Status) -> (String, String) {
                 // and an unregistered copy running nothing that needs a key
                 // answers yes. Saying so plainly beats a word the window's
                 // own title bar would contradict.
-                (true, _) => format!("Nothing it runs needs a key. {}", info.path.display()),
+                (true, _) => "Nothing it runs needs a key".to_owned(),
                 (false, Some(features)) => {
                     format!("No licence for: {features}. It adds speech and beeps to the audio.")
                 }
@@ -620,7 +610,7 @@ fn stereotool_group(
     let group = adw::PreferencesGroup::new();
     group.set_title("Stereo Tool");
     group.set_description(Some(
-        "Thimeo's broadcast processor. It is not ours to ship, so download it          from thimeo.com and import the archive here; Pipedeck runs the          library it holds, on a preset you export from Stereo Tool itself.",
+        "Download it from thimeo.com and import the archive here.",
     ));
 
     let (title, subtitle) = stereotool_state(state.stereotool);
@@ -825,7 +815,6 @@ fn general_page() -> adw::PreferencesPage {
 
     let autostart = adw::SwitchRow::new();
     autostart.set_title("Start Pipedeck at login");
-    autostart.set_subtitle("Writes a desktop entry pointing at this build");
     // The file on disk is the truth, not what was saved last time: it can be
     // removed from outside.
     autostart.set_active(settings::starts_at_login());
@@ -854,11 +843,6 @@ fn audio_page(engine: &EngineLink, latency: &str) -> adw::PreferencesPage {
 
     let group = adw::PreferencesGroup::new();
     group.set_title("Latency");
-    group.set_description(Some(
-        "Audio crosses two Pipedeck nodes on its way to a device, and each one \
-         costs a quantum. A shorter one means less delay and more work for the \
-         machine.",
-    ));
 
     let labels: Vec<&str> = LATENCIES.iter().map(|entry| entry.label).collect();
     let row = adw::ComboRow::new();
@@ -891,8 +875,7 @@ fn audio_page(engine: &EngineLink, latency: &str) -> adw::PreferencesPage {
     group.add(&row);
 
     let warning = adw::ActionRow::new();
-    warning.set_title("Changing it reloads every route");
-    warning.set_subtitle("The audio stops for a moment");
+    warning.set_title("Changing it stops the audio for a moment");
     warning.add_prefix(&gtk::Image::from_icon_name("dialog-information-symbolic"));
     group.add(&warning);
     page.add(&group);
