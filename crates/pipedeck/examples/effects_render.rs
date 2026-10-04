@@ -5,8 +5,11 @@
 //! `cargo run -p pipedeck --example effects_render [out.png]` writes the tab
 //! to `out.png` and the windows to `out-1.png` and on. The tab needs
 //! an engine to talk to, so one is started on a scratch config and stopped
-//! once the image is taken; nothing is sent to it.
+//! once the image is taken; nothing is sent to it. On GTK's Broadway
+//! backend, nothing shows on the desktop: see the `screenshot` example.
 
+#[path = "shared/capture.rs"]
+mod capture;
 #[path = "../src/comp_graph.rs"]
 mod comp_graph;
 #[path = "../src/deesser_graph.rs"]
@@ -79,21 +82,23 @@ fn main() -> gtk::glib::ExitCode {
             // What the effects would say of a voice: the compressor, fourth,
             // at -10 dB turned down 6; the de-esser taking an s down 8; noise
             // suppression sure of a voice. Told a moment before the picture
-            // is taken, so the graphs have been drawn again by then.
-            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(600), {
+            // is taken, so the graphs have been drawn again by then. The
+            // picture waits a second and a half, which Broadway needs to
+            // draw the windows a first time.
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(1200), {
                 let panel = panel.clone();
                 move || panel.set_live(&[(3, -10.0, 6.0), (2, -20.0, 8.0), (0, 0.9, 4.0)])
             });
             let out = out.clone();
-            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(900), move || {
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
                 let stem = out.strip_suffix(".png").unwrap_or(&out).to_owned();
-                save(window.upcast_ref(), &out);
+                capture::save(window.upcast_ref(), out.as_ref(), 1.0);
                 let settings = gtk::Window::list_toplevels()
                     .into_iter()
                     .filter_map(|w| w.downcast::<gtk::Window>().ok())
                     .filter(|w| w.transient_for().as_ref() == Some(window.upcast_ref()));
                 for (n, settings) in settings.enumerate() {
-                    save(&settings, &format!("{stem}-{}.png", n + 1));
+                    capture::save(&settings, format!("{stem}-{}.png", n + 1).as_ref(), 1.0);
                 }
                 panel.close_windows();
                 window.close();
@@ -104,32 +109,4 @@ fn main() -> gtk::glib::ExitCode {
     link.shutdown();
     let _ = std::fs::remove_file(&config);
     code
-}
-
-/// Write what a window shows to a PNG.
-fn save(window: &gtk::Window, out: &str) {
-    let paintable = gtk::WidgetPaintable::new(Some(window));
-    let snapshot = gtk::Snapshot::new();
-    paintable.snapshot(
-        &snapshot,
-        f64::from(window.width()),
-        f64::from(window.height()),
-    );
-    match (snapshot.to_node(), window.renderer()) {
-        (Some(node), Some(renderer)) => {
-            match renderer.render_texture(node, None).save_to_png(out) {
-                Ok(()) => println!("saved {out}"),
-                Err(e) => println!("cannot save {out}: {e}"),
-            }
-        }
-        (node, renderer) => println!(
-            "nothing to save for {out} ({}): drawn {}, renderer {}, {}x{}, mapped {}",
-            window.title().unwrap_or_default(),
-            node.is_some(),
-            renderer.is_some(),
-            window.width(),
-            window.height(),
-            window.is_mapped()
-        ),
-    }
 }

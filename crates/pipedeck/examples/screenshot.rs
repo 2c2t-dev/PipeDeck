@@ -21,6 +21,8 @@
 
 #![allow(dead_code, unused_imports)]
 
+#[path = "shared/capture.rs"]
+mod capture;
 #[path = "../src/cell.rs"]
 mod cell;
 #[path = "../src/channel_dialog.rs"]
@@ -74,7 +76,7 @@ mod window;
 
 use std::time::Duration;
 
-use adw::gtk::{self, gsk};
+use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
@@ -335,7 +337,7 @@ fn main() -> gtk::glib::ExitCode {
                 let chain = state.sources[0].effects.clone();
                 move || {
                     if let Some(shown) = app.active_window() {
-                        save(&shown, &mixer_png, 2.0);
+                        capture::save(&shown, &mixer_png, 2.0);
                     }
                     show_equaliser(&app, &link, &chain, equaliser_png.clone());
                 }
@@ -372,7 +374,7 @@ fn show_equaliser(
                 .filter_map(|w| w.downcast::<gtk::Window>().ok())
                 .find(|w| w.transient_for().as_ref() == Some(holder.upcast_ref()));
             match settings {
-                Some(settings) => save(&settings, &out, 2.0),
+                Some(settings) => capture::save(&settings, &out, 2.0),
                 None => println!("the equaliser did not open"),
             }
             panel.close_windows();
@@ -386,30 +388,4 @@ fn device(name: &str, description: &str) -> Device {
         name: name.to_owned(),
         description: description.to_owned(),
     }
-}
-
-/// Write what a window shows to a PNG, `scale` times its size. Drawn by
-/// Cairo, which every backend has, Broadway's included.
-fn save(window: &gtk::Window, path: &std::path::Path, scale: f32) {
-    let out = path.display();
-    let (width, height) = (window.width() as f32, window.height() as f32);
-    let paintable = gtk::WidgetPaintable::new(Some(window));
-    let snapshot = gtk::Snapshot::new();
-    snapshot.scale(scale, scale);
-    paintable.snapshot(&snapshot, f64::from(width), f64::from(height));
-    let Some(node) = snapshot.to_node() else {
-        println!("nothing drawn for {out}");
-        return;
-    };
-    let renderer = gsk::CairoRenderer::new();
-    if let Err(e) = renderer.realize_for_display(&WidgetExt::display(window)) {
-        println!("cannot draw {out}: {e}");
-        return;
-    }
-    let area = gtk::graphene::Rect::new(0.0, 0.0, width * scale, height * scale);
-    match renderer.render_texture(node, Some(&area)).save_to_png(path) {
-        Ok(()) => println!("saved {out}"),
-        Err(e) => println!("cannot save {out}: {e}"),
-    }
-    renderer.unrealize();
 }
