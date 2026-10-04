@@ -316,6 +316,45 @@ fn drain(rx: &mpsc::Receiver<Event>) {
     while rx.try_recv().is_ok() {}
 }
 
+/// A client of the control socket, a line of JSON each way.
+struct Control {
+    writer: std::os::unix::net::UnixStream,
+    reader: std::io::BufReader<std::os::unix::net::UnixStream>,
+}
+
+impl Control {
+    fn open(path: &std::path::Path) -> Self {
+        let stream = std::os::unix::net::UnixStream::connect(path).unwrap_or_else(|e| {
+            panic!("cannot reach the control socket at {}: {e}", path.display())
+        });
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("a read timeout");
+        Control {
+            reader: std::io::BufReader::new(stream.try_clone().expect("a second handle")),
+            writer: stream,
+        }
+    }
+
+    fn say(&mut self, line: &str) {
+        use std::io::Write;
+        writeln!(self.writer, "{line}").expect("the socket takes a line");
+    }
+
+    fn read(&mut self) -> serde_json::Value {
+        use std::io::BufRead;
+        let mut line = String::new();
+        let _ = self.reader.read_line(&mut line);
+        serde_json::from_str(&line).unwrap_or_default()
+    }
+
+    /// Say something, and read the answer.
+    fn ask(&mut self, line: &str) -> serde_json::Value {
+        self.say(line);
+        self.read()
+    }
+}
+
 fn settle() {
     std::thread::sleep(Duration::from_millis(900));
 }
@@ -331,6 +370,13 @@ const VOICE_APP: &str = "pipedeck-smoke-vesktop";
 fn main() -> ExitCode {
     std::env::set_var("PIPEDECK_NODE_PREFIX", PREFIX);
     std::env::set_var("PIPEDECK_VOICE_APP", VOICE_APP);
+    // A control socket of its own, beside the user's mixer's.
+    let control_dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("pipedeck-smoke-{}", std::process::id()));
+    let control_path = control_dir.join("control.sock");
+    std::env::set_var("PIPEDECK_CONTROL_SOCKET", &control_path);
     env_logger::init();
     let mut failures = 0;
 
@@ -341,6 +387,7 @@ fn main() -> ExitCode {
     let engine = spawn(config_path.clone(), move |ev| {
         let _ = tx.send(ev);
     });
+    engine.serve_control();
 
     // A fresh config starts with one mix and no source.
     let state = wait_state(&rx, "initial state", |_| true);
@@ -593,6 +640,90 @@ fn main() -> ExitCode {
     } else {
         println!("[skip] {what}");
     }
+
+    // The control socket, as a Stream Deck uses it: where things stand,
+    // orders that land on the graph, and the meters while the tone plays.
+    let mut control = Control::open(&control_path);
+    let told = control.ask(r#"{"get": "state"}"#);
+    let cell = told["state"]["cells"]
+        .as_array()
+        .and_then(|cells| {
+            cells
+                .iter()
+                .find(|c| c["channel"] == source.0 && c["mix"] == mix.0)
+        })
+        .cloned();
+    check(
+        told["state"]["channels"][0]["name"] == "Smoke"
+            && cell
+                .as_ref()
+                .is_some_and(|c| c["muted"] == true && c["volume"] == 0.5),
+        &format!("the socket tells the channel and its muted cell: {cell:?}"),
+        &mut failures,
+    );
+    let done = control.ask(&format!(
+        r#"{{"do": {{"what": "channel", "id": {source}, "volume": 0.5}}}}"#
+    ));
+    settle();
+    let volume = node_volume(&pw_dump(), &format!("pipedeck-smoke.src.{source}"));
+    check(
+        done["ok"] == true
+            && volume
+                .as_ref()
+                .is_some_and(|(v, _)| v.iter().all(|x| (x - 0.125).abs() < 1e-3)),
+        &format!("a level set on the socket lands on the channel's sink: {done} {volume:?}"),
+        &mut failures,
+    );
+    let done = control.ask(&format!(
+        r#"{{"do": {{"what": "cell", "channel": {source}, "mix": {mix}, "mute": "toggle", "nudge": -0.25}}}}"#
+    ));
+    settle();
+    let volume = node_volume(&pw_dump(), &format!("pipedeck-smoke.link.{source}.{mix}"));
+    check(
+        done["ok"] == true
+            && volume
+                .as_ref()
+                .is_some_and(|(v, m)| v.iter().all(|x| (x - 0.015625).abs() < 1e-3) && !*m),
+        &format!("a cell turned over and nudged on the socket follows: {done} {volume:?}"),
+        &mut failures,
+    );
+    let refused = control.ask(r#"{"do": {"what": "mix", "id": 9999, "mute": true}}"#);
+    check(
+        refused["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("no mix")),
+        &format!("an order for nothing is refused: {refused}"),
+        &mut failures,
+    );
+    // Back as it was, for what follows.
+    control.ask(&format!(
+        r#"{{"do": {{"what": "channel", "id": {source}, "volume": 1.0}}}}"#
+    ));
+    control.ask(&format!(
+        r#"{{"do": {{"what": "cell", "channel": {source}, "mix": {mix}, "mute": true, "volume": 0.5}}}}"#
+    ));
+    let mut meters = Control::open(&control_path);
+    meters.say(r#"{"meters": true}"#);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let (mut heard, mut lines) = (0.0f64, 0);
+    while Instant::now() < deadline {
+        let line = meters.read();
+        if let Some(channels) = line["levels"]["channels"].as_array() {
+            lines += 1;
+            for reading in channels {
+                if reading[0] == source.0 {
+                    heard = heard.max(reading[1].as_f64().unwrap_or(0.0));
+                }
+            }
+        }
+    }
+    check(
+        heard > 0.05 && (15..=40).contains(&lines),
+        &format!("the socket's meters hear the tone, ten times a second: {heard:.3} in {lines} lines over 3 s"),
+        &mut failures,
+    );
+    drop(meters);
+    settle();
 
     let _ = player.kill();
     let _ = player.wait();
@@ -1854,6 +1985,7 @@ fn main() -> ExitCode {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&control_dir);
     if failures == 0 {
         println!("SMOKE PASS");
         ExitCode::SUCCESS

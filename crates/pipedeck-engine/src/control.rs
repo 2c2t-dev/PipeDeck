@@ -69,8 +69,12 @@ use serde::{Deserialize, Serialize};
 use crate::engine::{Command, Event, StateSnapshot, Watch};
 use crate::types::{voice_labels, CallMember, Device, MixId, SourceId};
 
-/// Where the socket is.
+/// Where the socket is: `PIPEDECK_CONTROL_SOCKET` when set, for a test
+/// running beside the user's own mixer, which answers on the usual one.
 pub fn socket_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("PIPEDECK_CONTROL_SOCKET").filter(|p| !p.is_empty()) {
+        return PathBuf::from(path);
+    }
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
