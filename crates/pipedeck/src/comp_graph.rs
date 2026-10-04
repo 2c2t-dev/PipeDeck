@@ -181,8 +181,11 @@ impl CompGraph {
             row.append(&self.scales[index]);
             row.append(&self.shown[index]);
             self.scales[index].connect_value_changed({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 move |scale| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     if this.syncing.get() {
                         return;
                     }
@@ -213,9 +216,12 @@ impl CompGraph {
             button.add_css_class("flat");
             button.set_child(Some(&labels));
             button.connect_clicked({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 let popover = popover.clone();
                 move |_| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     *this.values.borrow_mut() = preset.values;
                     popover.popdown();
                     this.after_change();
@@ -268,14 +274,21 @@ impl CompGraph {
 
     fn wire(self: &Rc<Self>) {
         self.area.set_draw_func({
-            let this = self.clone();
-            move |_, cr, width, height| this.draw(cr, f64::from(width), f64::from(height))
+            let this = Rc::downgrade(self);
+            move |_, cr, width, height| {
+                if let Some(this) = this.upgrade() {
+                    this.draw(cr, f64::from(width), f64::from(height));
+                }
+            }
         });
 
         let motion = gtk::EventControllerMotion::new();
         motion.connect_motion({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if this.dragging() {
                     return;
                 }
@@ -288,8 +301,11 @@ impl CompGraph {
             }
         });
         motion.connect_leave({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if !this.dragging() {
                     this.hovered.set(None);
                     this.say();
@@ -303,9 +319,12 @@ impl CompGraph {
         let drag = gtk::GestureDrag::new();
         let grabbed = Rc::new(Cell::new(None::<(usize, f64, f64)>));
         drag.connect_drag_begin({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let grabbed = grabbed.clone();
             move |_, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let near = this.nearest(x, y);
                 grabbed.set(near.map(|which| {
                     let (hx, hy) = this.handle(which);
@@ -317,9 +336,12 @@ impl CompGraph {
             }
         });
         drag.connect_drag_update({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let grabbed = grabbed.clone();
             move |_, dx, dy| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if let Some((which, x, y)) = grabbed.get() {
                     this.move_handle(which, x + dx, y + dy);
                 }
@@ -334,8 +356,11 @@ impl CompGraph {
         // A double-click puts a handle back where it starts.
         let click = gtk::GestureClick::new();
         click.connect_pressed({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_, presses, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if presses != 2 {
                     return;
                 }

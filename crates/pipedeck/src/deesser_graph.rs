@@ -180,8 +180,11 @@ impl DeEsserGraph {
             row.append(&self.scales[index]);
             row.append(&self.shown[index]);
             self.scales[index].connect_value_changed({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 move |scale| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     if this.syncing.get() {
                         return;
                     }
@@ -212,9 +215,12 @@ impl DeEsserGraph {
             button.add_css_class("flat");
             button.set_child(Some(&labels));
             button.connect_clicked({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 let popover = popover.clone();
                 move |_| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     *this.values.borrow_mut() = preset.values;
                     popover.popdown();
                     this.after_change();
@@ -267,14 +273,21 @@ impl DeEsserGraph {
 
     fn wire(self: &Rc<Self>) {
         self.area.set_draw_func({
-            let this = self.clone();
-            move |_, cr, width, height| this.draw(cr, f64::from(width), f64::from(height))
+            let this = Rc::downgrade(self);
+            move |_, cr, width, height| {
+                if let Some(this) = this.upgrade() {
+                    this.draw(cr, f64::from(width), f64::from(height));
+                }
+            }
         });
 
         let motion = gtk::EventControllerMotion::new();
         motion.connect_motion({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if this.dragging() {
                     return;
                 }
@@ -287,8 +300,11 @@ impl DeEsserGraph {
             }
         });
         motion.connect_leave({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if !this.dragging() {
                     this.hovered.set(false);
                     this.say();
@@ -303,9 +319,12 @@ impl DeEsserGraph {
         let drag = gtk::GestureDrag::new();
         let grabbed = Rc::new(Cell::new(None::<(f64, f64)>));
         drag.connect_drag_begin({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let grabbed = grabbed.clone();
             move |_, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let near = this.near(x, y);
                 grabbed.set(near.then(|| this.handle()));
                 this.hovered.set(near);
@@ -314,9 +333,12 @@ impl DeEsserGraph {
             }
         });
         drag.connect_drag_update({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let grabbed = grabbed.clone();
             move |_, dx, dy| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if let Some((x, y)) = grabbed.get() {
                     this.move_handle(x + dx, y + dy);
                 }
@@ -331,8 +353,11 @@ impl DeEsserGraph {
         // A double-click puts it back where it starts.
         let click = gtk::GestureClick::new();
         click.connect_pressed({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_, presses, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if presses != 2 || !this.near(x, y) {
                     return;
                 }

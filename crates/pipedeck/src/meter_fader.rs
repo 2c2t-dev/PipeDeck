@@ -57,14 +57,25 @@ impl MeterFader {
         let level = std::rc::Rc::new(std::cell::Cell::new(0.0));
         let area = gtk::DrawingArea::new();
         area.set_hexpand(true);
+        // Each knows the other only weakly: held both ways, the two would
+        // keep each other alive once the fader was taken off the screen,
+        // and every grid drawn again would leave its faders behind.
         area.set_draw_func({
-            let scale = scale.clone();
+            let scale = scale.downgrade();
             let level = level.clone();
-            move |area, cr, _, _| draw_track(area, &scale, level.get(), cr)
+            move |area, cr, _, _| {
+                if let Some(scale) = scale.upgrade() {
+                    draw_track(area, &scale, level.get(), cr);
+                }
+            }
         });
         scale.connect_value_changed({
-            let area = area.clone();
-            move |_| area.queue_draw()
+            let area = area.downgrade();
+            move |_| {
+                if let Some(area) = area.upgrade() {
+                    area.queue_draw();
+                }
+            }
         });
 
         let root = gtk::Overlay::new();

@@ -144,8 +144,11 @@ impl ChannelDialog {
         left.append(&self.name);
 
         let menu = widgets::channel_look_menu(source.icon.as_deref(), source.is_input(), {
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |icon| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 this.engine
                     .send(Command::SetSourceIcon { id: this.id, icon })
             }
@@ -188,8 +191,11 @@ impl ChannelDialog {
         delete.add_css_class("destructive-action");
         delete.set_halign(gtk::Align::Start);
         delete.connect_clicked({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 this.gone.set(true);
                 this.engine.send(Command::RemoveSource(this.id));
                 this.dialog.close();
@@ -265,9 +271,12 @@ impl ChannelDialog {
         // Renaming lands when the field is validated or the window closes,
         // rather than on every keystroke.
         let rename = {
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let previous = previous.clone();
             move || {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let chosen = this.name.text().trim().to_owned();
                 if !chosen.is_empty() && chosen != *previous.borrow() {
                     *previous.borrow_mut() = chosen.clone();
@@ -298,8 +307,11 @@ impl ChannelDialog {
         });
 
         self.volume.connect_value_changed({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |scale| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if this.syncing.get() {
                     return;
                 }
@@ -310,8 +322,11 @@ impl ChannelDialog {
             }
         });
         self.mute.connect_toggled({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |button| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if this.syncing.get() {
                     return;
                 }
@@ -475,9 +490,12 @@ impl ChannelDialog {
         remove.add_css_class("flat");
         remove.set_tooltip_text(Some("Hand this application back to the system"));
         remove.connect_clicked({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let key = key.to_owned();
             move |_| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 this.engine.send(Command::ReleaseApp {
                     id: this.id,
                     app: key.clone(),
@@ -597,10 +615,13 @@ impl ChannelDialog {
         button.set_child(Some(&content));
         button.set_tooltip_text(Some(key));
         button.connect_clicked({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let popover = popover.clone();
             let key = key.to_owned();
             move |_| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 this.engine.send(Command::AssignApp {
                     id: this.id,
                     app: key.clone(),

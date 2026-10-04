@@ -127,8 +127,12 @@ impl MixDialog {
 
         // The "..." sits above the badge, as a mixer's own icon picker does.
         let menu = widgets::mix_look_menu(mix.icon.as_deref(), {
-            let this = self.clone();
-            move |icon| this.engine.send(Command::SetMixIcon { id: this.id, icon })
+            let this = Rc::downgrade(self);
+            move |icon| {
+                if let Some(this) = this.upgrade() {
+                    this.engine.send(Command::SetMixIcon { id: this.id, icon });
+                }
+            }
         });
         self.look.append(&menu);
         self.badge.set_margin_top(6);
@@ -156,8 +160,11 @@ impl MixDialog {
         delete.add_css_class("destructive-action");
         delete.set_halign(gtk::Align::Start);
         delete.connect_clicked({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 this.gone.set(true);
                 this.engine.send(Command::RemoveMix(this.id));
                 this.dialog.close();
@@ -215,9 +222,12 @@ impl MixDialog {
         // Renaming lands when the field is validated or the window closes,
         // rather than on every keystroke.
         let rename = {
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let previous = previous.clone();
             move || {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let chosen = this.name.text().trim().to_owned();
                 if !chosen.is_empty() && chosen != *previous.borrow() {
                     *previous.borrow_mut() = chosen.clone();
@@ -244,8 +254,11 @@ impl MixDialog {
         });
 
         self.volume.connect_value_changed({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |scale| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if this.syncing.get() {
                     return;
                 }
@@ -256,8 +269,11 @@ impl MixDialog {
             }
         });
         self.mute.connect_toggled({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |button| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if this.syncing.get() {
                     return;
                 }
@@ -408,8 +424,11 @@ impl MixDialog {
             "Switched off; this mix does not play here"
         }));
         switch.connect_active_notify({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |switch| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if this.syncing.get() {
                     return;
                 }
@@ -426,8 +445,11 @@ impl MixDialog {
         remove.add_css_class("flat");
         remove.set_tooltip_text(Some("Stop sending this mix to this device"));
         remove.connect_clicked({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let devices = this
                     .attached
                     .borrow()
@@ -452,8 +474,11 @@ impl MixDialog {
         mute.add_css_class("circular");
         mute.set_active(state.muted);
         mute.connect_toggled({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |button| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if this.syncing.get() {
                     return;
                 }
@@ -473,8 +498,11 @@ impl MixDialog {
         scale.set_digits(0);
         scale.set_value(f64::from(state.gain) * FADER_MAX);
         scale.connect_value_changed({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |scale| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if this.syncing.get() {
                     return;
                 }
@@ -521,10 +549,13 @@ impl MixDialog {
                     .build(),
             ));
             button.connect_clicked({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 let popover = popover.clone();
                 let name = device.name.clone();
                 move |_| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     let mut devices = this.attached.borrow().clone();
                     devices.push(name.clone());
                     this.engine.send(Command::SetMixOutputs {

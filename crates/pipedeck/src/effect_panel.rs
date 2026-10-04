@@ -120,7 +120,14 @@ struct SettingsWindow {
     /// What the controls are drawn in, drawn again when the chain changes
     /// under them.
     body: gtk::Box,
+    /// The graph drawn in it, held here and nowhere else: its handlers
+    /// know it only weakly, so it goes with the window, or when the window
+    /// is drawn again.
+    kept: RefCell<Option<Kept>>,
 }
+
+/// A graph a settings window holds, of whichever kind.
+type Kept = Rc<dyn std::any::Any>;
 
 impl EffectPanel {
     pub fn new(engine: &EngineLink, target: Target) -> Rc<Self> {
@@ -280,7 +287,7 @@ impl EffectPanel {
         body.set_margin_bottom(18);
         body.set_margin_start(18);
         body.set_margin_end(18);
-        self.settings_body(position, &effect, spec, &body);
+        let kept = self.settings_body(position, &effect, spec, &body);
 
         let view = adw::ToolbarView::new();
         view.add_top_bar(&adw::HeaderBar::new());
@@ -322,6 +329,7 @@ impl EffectPanel {
             label: effect.label.clone(),
             window: window.clone(),
             body,
+            kept: RefCell::new(kept),
         });
         window.present();
     }
@@ -357,7 +365,7 @@ impl EffectPanel {
             while let Some(child) = open.body.first_child() {
                 open.body.remove(&child);
             }
-            self.settings_body(open.position, effect, spec, &open.body);
+            *open.kept.borrow_mut() = self.settings_body(open.position, effect, spec, &open.body);
         }
     }
 
@@ -368,13 +376,14 @@ impl EffectPanel {
         effect: &Effect,
         spec: &'static pipedeck_engine::dsp::EffectSpec,
         body: &gtk::Box,
-    ) {
+    ) -> Option<Kept> {
         if spec.id == "eq" {
-            self.equaliser_body(position, effect, body);
+            Some(self.equaliser_body(position, effect, body))
         } else if matches!(spec.id, "compressor" | "deesser" | "denoise") {
-            self.graph_body(position, effect, spec, body);
+            Some(self.graph_body(position, effect, spec, body))
         } else {
             self.controls_body(position, effect, spec, body);
+            None
         }
     }
 
@@ -399,8 +408,11 @@ impl EffectPanel {
             open.add_css_class("flat");
             open.set_tooltip_text(Some("Open Stereo Tool's own window"));
             open.connect_clicked({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 move |_| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     this.engine.send(Command::SetEffectWindow {
                         id: this.target,
                         index: position,
@@ -416,8 +428,12 @@ impl EffectPanel {
             settings.add_css_class("flat");
             settings.set_tooltip_text(Some("Open its settings"));
             settings.connect_clicked({
-                let this = self.clone();
-                move |_| this.open_settings(position)
+                let this = Rc::downgrade(self);
+                move |_| {
+                    if let Some(this) = this.upgrade() {
+                        this.open_settings(position);
+                    }
+                }
             });
             top.append(&settings);
         }
@@ -426,8 +442,11 @@ impl EffectPanel {
         remove.add_css_class("flat");
         remove.set_tooltip_text(Some("Take this effect off"));
         remove.connect_clicked({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let mut chain = this.shown.borrow().clone();
                 if position < chain.len() {
                     chain.remove(position);
@@ -504,9 +523,12 @@ impl EffectPanel {
             value.set_xalign(1.0);
 
             scale.connect_value_changed({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 let value = value.clone();
                 move |scale| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     let now = scale.value() as f32;
                     value.set_text(&effects::format(param, now));
                     this.set_param(position, param.name, now);
@@ -548,9 +570,12 @@ impl EffectPanel {
         row.append(&said);
 
         button.connect_clicked({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let said = said.clone();
             move |button| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let learn = |step| {
                     this.engine.send(Command::LearnEffect {
                         id: this.target,
@@ -642,7 +667,7 @@ impl EffectPanel {
         effect: &Effect,
         spec: &'static pipedeck_engine::dsp::EffectSpec,
         inner: &gtk::Box,
-    ) {
+    ) -> Kept {
         if pipedeck_engine::dsp::learns(spec.id) {
             inner.append(&self.learn_row(position, spec.id));
         }
@@ -652,8 +677,11 @@ impl EffectPanel {
             .map(|param| effects::value_of(effect, param))
             .collect();
         let changed = {
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |values: &[f32]| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let mut shown = this.shown.borrow_mut();
                 let Some(effect) = shown.get_mut(position) else {
                     return;
@@ -674,6 +702,7 @@ impl EffectPanel {
                 self.live
                     .borrow_mut()
                     .insert(position, LiveGraph::Compressor(Rc::downgrade(&graph)));
+                graph
             }
             "deesser" => {
                 let graph = DeEsserGraph::new(&values);
@@ -682,6 +711,7 @@ impl EffectPanel {
                 self.live
                     .borrow_mut()
                     .insert(position, LiveGraph::DeEsser(Rc::downgrade(&graph)));
+                graph
             }
             _ => {
                 let graph = DenoiseGraph::new(&values);
@@ -690,12 +720,13 @@ impl EffectPanel {
                 self.live
                     .borrow_mut()
                     .insert(position, LiveGraph::Denoise(Rc::downgrade(&graph)));
+                graph
             }
         }
     }
 
     /// The equaliser, as a curve with a handle on each band.
-    fn equaliser_body(self: &Rc<Self>, position: usize, effect: &Effect, inner: &gtk::Box) {
+    fn equaliser_body(self: &Rc<Self>, position: usize, effect: &Effect, inner: &gtk::Box) -> Kept {
         use pipedeck_engine::dsp::eq::PARAMS;
         let values: Vec<f32> = PARAMS
             .iter()
@@ -703,8 +734,11 @@ impl EffectPanel {
             .collect();
         let graph = EqGraph::new(&values);
         graph.connect_changed({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |values| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let mut shown = this.shown.borrow_mut();
                 let Some(effect) = shown.get_mut(position) else {
                     return;
@@ -719,6 +753,7 @@ impl EffectPanel {
         });
         graph.root.set_margin_top(4);
         inner.append(&graph.root);
+        graph
     }
 
     /// Stereo Tool has no controls of ours: it is configured by the preset
@@ -753,8 +788,12 @@ impl EffectPanel {
         let choose = gtk::Button::with_label("Choose…");
         choose.add_css_class("flat");
         choose.connect_clicked({
-            let this = self.clone();
-            move |button| this.pick_preset(position, button.upcast_ref())
+            let this = Rc::downgrade(self);
+            move |button| {
+                if let Some(this) = this.upgrade() {
+                    this.pick_preset(position, button.upcast_ref());
+                }
+            }
         });
         row.append(&choose);
 
@@ -763,8 +802,12 @@ impl EffectPanel {
             clear.add_css_class("flat");
             clear.set_tooltip_text(Some("Go back to the settings it starts with"));
             clear.connect_clicked({
-                let this = self.clone();
-                move |_| this.set_preset(position, None)
+                let this = Rc::downgrade(self);
+                move |_| {
+                    if let Some(this) = this.upgrade() {
+                        this.set_preset(position, None);
+                    }
+                }
             });
             row.append(&clear);
         }
@@ -810,8 +853,11 @@ impl EffectPanel {
         dialog.set_filters(Some(&filters));
         let window = near.root().and_downcast::<gtk::Window>();
         dialog.open(window.as_ref(), None::<&gtk::gio::Cancellable>, {
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |answer| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let Ok(file) = answer else {
                     return;
                 };
@@ -854,9 +900,12 @@ impl EffectPanel {
         for spec in effects::catalogue() {
             let button = entry(spec.name, spec.description);
             button.connect_clicked({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 let popover = popover.clone();
                 move |_| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     let mut chain = this.shown.borrow().clone();
                     chain.push(effects::build(spec));
                     this.send(chain);
@@ -881,9 +930,12 @@ impl EffectPanel {
         if stereotool {
             let button = entry("Stereo Tool", "Thimeo's broadcast processor, on a preset");
             button.connect_clicked({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 let popover = popover.clone();
                 move |_| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     let mut chain = this.shown.borrow().clone();
                     chain.push(Effect {
                         name: "Stereo Tool".to_owned(),
@@ -902,10 +954,13 @@ impl EffectPanel {
         for plugin in plugins.iter() {
             let button = entry(&plugin.name, &plugin.vendor);
             button.connect_clicked({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 let popover = popover.clone();
                 let plugin = plugin.clone();
                 move |_| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     let mut chain = this.shown.borrow().clone();
                     chain.push(Effect {
                         name: plugin.name.clone(),

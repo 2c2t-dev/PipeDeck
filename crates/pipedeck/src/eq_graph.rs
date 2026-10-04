@@ -217,8 +217,11 @@ impl EqGraph {
                 chip.set_group(Some(&self.chips[0]));
             }
             chip.connect_toggled({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 move |chip| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     if chip.is_active() && !this.syncing.get() {
                         this.select(band);
                         this.area.queue_draw();
@@ -254,8 +257,11 @@ impl EqGraph {
 
         for (spin, which) in [(&self.freq, 0), (&self.gain, 1), (&self.width, 2)] {
             spin.connect_value_changed({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 move |spin| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     if this.syncing.get() {
                         return;
                     }
@@ -297,9 +303,12 @@ impl EqGraph {
             button.add_css_class("flat");
             button.set_child(Some(&labels));
             button.connect_clicked({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 let popover = popover.clone();
                 move |_| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     *this.values.borrow_mut() = preset.values.to_vec();
                     popover.popdown();
                     this.after_change(this.selected.get());
@@ -353,15 +362,22 @@ impl EqGraph {
 
     fn wire(self: &Rc<Self>) {
         self.area.set_draw_func({
-            let this = self.clone();
-            move |_, cr, width, height| this.draw(cr, f64::from(width), f64::from(height))
+            let this = Rc::downgrade(self);
+            move |_, cr, width, height| {
+                if let Some(this) = this.upgrade() {
+                    this.draw(cr, f64::from(width), f64::from(height));
+                }
+            }
         });
 
         // Hovering says which band, or which zone, is under the pointer.
         let motion = gtk::EventControllerMotion::new();
         motion.connect_motion({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if this.dragging() {
                     return;
                 }
@@ -381,8 +397,11 @@ impl EqGraph {
             }
         });
         motion.connect_leave({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if !this.dragging() {
                     this.hovered.set(None);
                     this.zone.set(None);
@@ -399,9 +418,12 @@ impl EqGraph {
         let drag = gtk::GestureDrag::new();
         let grabbed = Rc::new(Cell::new(None::<(usize, f64, f64)>));
         drag.connect_drag_begin({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let grabbed = grabbed.clone();
             move |_, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let near = this.nearest(x, y);
                 grabbed.set(near.map(|band| {
                     let (hx, hy) = this.handle(band);
@@ -417,9 +439,12 @@ impl EqGraph {
             }
         });
         drag.connect_drag_update({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let grabbed = grabbed.clone();
             move |_, dx, dy| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let Some((band, x, y)) = grabbed.get() else {
                     return;
                 };
@@ -435,8 +460,11 @@ impl EqGraph {
         // Scrolling over a bell makes it wider or narrower.
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         scroll.connect_scroll({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_, _, dy| {
+                let Some(this) = this.upgrade() else {
+                    return gtk::glib::Propagation::Proceed;
+                };
                 let Some(band) = this.hovered.get() else {
                     return gtk::glib::Propagation::Proceed;
                 };
@@ -458,8 +486,11 @@ impl EqGraph {
         // A double-click puts a band back flat.
         let click = gtk::GestureClick::new();
         click.connect_pressed({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_, presses, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if presses != 2 {
                     return;
                 }

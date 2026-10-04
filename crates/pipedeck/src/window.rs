@@ -930,10 +930,15 @@ fn reorderable(
             ))
         }
     });
+    // The card is known weakly: the drag is the card's own, and held
+    // strongly the two would keep each other once the grid is drawn again.
     drag.connect_drag_begin({
-        let card = card.clone();
+        let card = card.downgrade();
         let grabbed = grabbed.clone();
         move |source, _| {
+            let Some(card) = card.upgrade() else {
+                return;
+            };
             // A still picture of the card, taken now. A live one redraws the
             // card all through the drag, pressed and hovered as it is, and
             // outlives it: dropping rebuilds the grid, and the icon went on
@@ -946,8 +951,12 @@ fn reorderable(
         }
     });
     drag.connect_drag_end({
-        let card = card.clone();
-        move |_, _, _| card.remove_css_class("pd-dragging")
+        let card = card.downgrade();
+        move |_, _, _| {
+            if let Some(card) = card.upgrade() {
+                card.remove_css_class("pd-dragging");
+            }
+        }
     });
     card.add_controller(drag);
 

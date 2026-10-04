@@ -154,8 +154,11 @@ impl DenoiseGraph {
         row.append(&self.scale);
         row.append(&self.shown);
         self.scale.connect_value_changed({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |scale| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if !this.syncing.get() {
                     this.set(scale.value() as f32);
                 }
@@ -183,9 +186,12 @@ impl DenoiseGraph {
             button.add_css_class("flat");
             button.set_child(Some(&labels));
             button.connect_clicked({
-                let this = self.clone();
+                let this = Rc::downgrade(self);
                 let popover = popover.clone();
                 move |_| {
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
                     popover.popdown();
                     this.set(preset.values[0]);
                 }
@@ -229,14 +235,21 @@ impl DenoiseGraph {
 
     fn wire(self: &Rc<Self>) {
         self.area.set_draw_func({
-            let this = self.clone();
-            move |_, cr, width, height| this.draw(cr, f64::from(width), f64::from(height))
+            let this = Rc::downgrade(self);
+            move |_, cr, width, height| {
+                if let Some(this) = this.upgrade() {
+                    this.draw(cr, f64::from(width), f64::from(height));
+                }
+            }
         });
 
         let motion = gtk::EventControllerMotion::new();
         motion.connect_motion({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if this.dragging() {
                     return;
                 }
@@ -249,8 +262,11 @@ impl DenoiseGraph {
             }
         });
         motion.connect_leave({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if !this.dragging() {
                     this.hovered.set(false);
                     this.say();
@@ -265,9 +281,12 @@ impl DenoiseGraph {
         let drag = gtk::GestureDrag::new();
         let grabbed = Rc::new(Cell::new(None::<f64>));
         drag.connect_drag_begin({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let grabbed = grabbed.clone();
             move |_, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 let near = this.near(x, y);
                 grabbed.set(near.then(|| this.handle().1));
                 this.hovered.set(near);
@@ -276,9 +295,12 @@ impl DenoiseGraph {
             }
         });
         drag.connect_drag_update({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             let grabbed = grabbed.clone();
             move |_, _, dy| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if let Some(y) = grabbed.get() {
                     let db = y_to_db(y + dy, f64::from(this.area.height()));
                     this.hovered.set(true);
@@ -295,8 +317,11 @@ impl DenoiseGraph {
         // A double-click puts it back where it starts.
         let click = gtk::GestureClick::new();
         click.connect_pressed({
-            let this = self.clone();
+            let this = Rc::downgrade(self);
             move |_, presses, x, y| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
                 if presses == 2 && this.near(x, y) {
                     let spec = dsp::spec("denoise").expect("noise suppression is described");
                     this.set(spec.params[0].default);
