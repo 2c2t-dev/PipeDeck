@@ -11,3 +11,9 @@
   Cross-Origin-Opener-Policy: same-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
   Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+
+# The sitemap holds no script and no link anyone follows; without the
+# policy, a browser shows it with its own XML viewer, which the policy
+# would leave unstyled.
+/sitemap.xml
+  ! Content-Security-Policy
