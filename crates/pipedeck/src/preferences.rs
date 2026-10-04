@@ -94,7 +94,7 @@ impl Preferences {
         // Not while it is being typed into: the engine echoes back what it
         // was given, and that must not move the cursor under the user.
         let known = license.unwrap_or_default();
-        if !self.key.has_focus() && self.key.text() != known {
+        if !crate::widgets::being_edited(&self.key) && self.key.text() != known {
             self.key.set_text(known);
         }
     }
@@ -685,12 +685,18 @@ fn audio_page(engine: &EngineLink, latency: &str) -> adw::PreferencesPage {
     let row = adw::ComboRow::new();
     row.set_title("Quantum");
     row.set_model(Some(&gtk::StringList::new(&labels)));
-    let chosen = LATENCIES
-        .iter()
-        .position(|entry| entry.value == latency)
-        .unwrap_or(1);
-    row.set_selected(chosen as u32);
-    row.set_subtitle(LATENCIES[chosen].detail);
+    // A quantum set some other way than here is said as it is, with none of
+    // the four chosen, so that any of them can be picked from it.
+    match LATENCIES.iter().position(|entry| entry.value == latency) {
+        Some(chosen) => {
+            row.set_selected(chosen as u32);
+            row.set_subtitle(LATENCIES[chosen].detail);
+        }
+        None => {
+            row.set_selected(gtk::INVALID_LIST_POSITION);
+            row.set_subtitle(&format!("Set to {latency}, which is none of these."));
+        }
+    }
     row.connect_selected_notify({
         let engine = engine.clone();
         move |row| {
