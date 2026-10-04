@@ -50,6 +50,7 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends webp
           for theme in dark light; do
+            cwebp -quiet -q 82 -resize 768 0 .github/mixer-$theme.png -o _site/assets/mixer-$theme-768.webp
             cwebp -quiet -q 82 -resize 1024 0 .github/mixer-$theme.png -o _site/assets/mixer-$theme-1024.webp
             cwebp -quiet -q 82 .github/mixer-$theme.png -o _site/assets/mixer-$theme-2048.webp
             cwebp -quiet -q 82 -resize 720 0 .github/equaliser-$theme.png -o _site/assets/equaliser-$theme-720.webp
