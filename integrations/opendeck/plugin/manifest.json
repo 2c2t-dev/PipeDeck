@@ -1,0 +1,124 @@
+{
+  "Name": "Pipedeck",
+  "Description": "Control Pipedeck, the PipeWire mixer: mute channels, mixes and the people of a call, move their levels with keys or dials, choose the mix heard in your headphones and the device it is heard on.",
+  "Author": "Fabien Millet",
+  "URL": "https://github.com/fabienmillet/Pipedeck",
+  "Version": "0.1.0",
+  "SDKVersion": 2,
+  "CodePaths": {
+    "x86_64-unknown-linux-gnu": "x86_64-unknown-linux-gnu/bin/pipedeck-opendeck",
+    "aarch64-unknown-linux-gnu": "aarch64-unknown-linux-gnu/bin/pipedeck-opendeck"
+  },
+  "CodePathLin": "x86_64-unknown-linux-gnu/bin/pipedeck-opendeck",
+  "Icon": "icons/plugin",
+  "Category": "Pipedeck",
+  "CategoryIcon": "icons/category",
+  "OS": [
+    {
+      "Platform": "linux"
+    }
+  ],
+  "Actions": [
+    {
+      "UUID": "com.fabienmillet.pipedeck.mute",
+      "Name": "Mute",
+      "Tooltip": "Mute or unmute a channel, a mix, a cell or a person of a call",
+      "Icon": "icons/mute",
+      "States": [
+        {
+          "Image": "icons/mute"
+        }
+      ],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/strip.json",
+        "Icon": "icons/mute",
+        "TriggerDescription": {
+          "Push": "Mute",
+          "Touch": "Mute"
+        }
+      },
+      "SupportedInMultiActions": true,
+      "PropertyInspectorPath": "propertyInspector/index.html"
+    },
+    {
+      "UUID": "com.fabienmillet.pipedeck.volume",
+      "Name": "Volume",
+      "Tooltip": "Move the level of a channel, a mix, a cell or a person of a call",
+      "Icon": "icons/volume",
+      "States": [
+        {
+          "Image": "icons/volume"
+        }
+      ],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/strip.json",
+        "Icon": "icons/volume",
+        "TriggerDescription": {
+          "Push": "Mute",
+          "Touch": "Mute",
+          "Rotate": "Level"
+        }
+      },
+      "SupportedInMultiActions": true,
+      "PropertyInspectorPath": "propertyInspector/index.html"
+    },
+    {
+      "UUID": "com.fabienmillet.pipedeck.hear",
+      "Name": "Hear mix",
+      "Tooltip": "Choose the mix heard in your headphones",
+      "Icon": "icons/hear",
+      "States": [
+        {
+          "Image": "icons/hear"
+        }
+      ],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/strip.json",
+        "Icon": "icons/hear",
+        "TriggerDescription": {
+          "Push": "Hear",
+          "Touch": "Hear"
+        }
+      },
+      "SupportedInMultiActions": true,
+      "PropertyInspectorPath": "propertyInspector/index.html"
+    },
+    {
+      "UUID": "com.fabienmillet.pipedeck.output",
+      "Name": "Listen on",
+      "Tooltip": "Choose the device the mixes are heard on",
+      "Icon": "icons/output",
+      "States": [
+        {
+          "Image": "icons/output"
+        }
+      ],
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/strip.json",
+        "Icon": "icons/output",
+        "TriggerDescription": {
+          "Push": "Listen here",
+          "Touch": "Listen here"
+        }
+      },
+      "SupportedInMultiActions": true,
+      "PropertyInspectorPath": "propertyInspector/index.html"
+    }
+  ]
+}

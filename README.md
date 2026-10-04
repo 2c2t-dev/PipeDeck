@@ -82,9 +82,10 @@ each voice is heard once.
 
 ## Stream Deck
 
-The [StreamController plugin](integrations/streamcontroller/README.md) puts
-mutes, levels, the mix heard in the headphones and the device it is heard on
-under keys and dials, each showing what it controls as Pipedeck draws it.
+The [StreamController plugin](integrations/streamcontroller/README.md) and
+the [OpenDeck plugin](integrations/opendeck/README.md) put mutes, levels, the
+mix heard in the headphones and the device it is heard on under keys and
+dials, each showing what it controls as Pipedeck draws it.
 
 ## Effects
 
@@ -351,6 +352,8 @@ Apache License 2.0, see that directory.
 - `crates/pipedeck-engine`: the PipeWire graph, config, command/event API.
   No UI dependency; meant to become a D-Bus daemon later.
 - `crates/pipedeck`: the GTK4 + libadwaita application.
+- `integrations/opendeck`: the OpenDeck plugin, which talks to the mixer
+  through its control socket only.
 
 `cargo run -p pipedeck-engine --example smoke` exercises the engine against
 the live PipeWire daemon: it builds a matrix, checks the nodes and volumes it

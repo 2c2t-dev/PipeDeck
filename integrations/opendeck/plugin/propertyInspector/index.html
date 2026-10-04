@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<style>
+			:root {
+				color-scheme: light dark;
+				font-family: sans-serif;
+				font-size: 13px;
+			}
+			body {
+				margin: 0;
+				padding: 8px;
+			}
+			label {
+				display: grid;
+				grid-template-columns: 7em 1fr;
+				align-items: center;
+				gap: 8px;
+				margin-bottom: 8px;
+			}
+			select,
+			input[type="number"] {
+				width: 100%;
+				box-sizing: border-box;
+			}
+			.note {
+				opacity: 0.7;
+				margin: 0 0 8px 7em;
+				padding-left: 8px;
+			}
+			[hidden] {
+				display: none;
+			}
+		</style>
+		<script>
+			// One page for every action: what each can aim at comes from the
+			// plugin, which asks Pipedeck.
+			let socket;
+			let context;
+			let settings = {};
+			let choices = [];
+
+			function connectElgatoStreamDeckSocket(port, uuid, registerEvent, info, actionInfo) {
+				actionInfo = JSON.parse(actionInfo);
+				context = actionInfo.context ?? uuid;
+				settings = actionInfo.payload.settings || {};
+				const action = actionInfo.action.split(".").pop();
+
+				document.getElementById("step-row").hidden = action !== "volume";
+				document.getElementById("step-note").hidden = action !== "volume";
+				document.getElementById("only-row").hidden = action !== "hear";
+				document.getElementById("step").value = settings.step ?? 5;
+				document.getElementById("only").checked = settings.only ?? true;
+
+				socket = new WebSocket("ws://localhost:" + port);
+				socket.onopen = () => {
+					socket.send(JSON.stringify({ event: registerEvent, uuid }));
+					socket.send(JSON.stringify({ event: "sendToPlugin", action: actionInfo.action, context, payload: { request: "targets" } }));
+				};
+				socket.onmessage = (message) => {
+					const data = JSON.parse(message.data);
+					if (data.event === "sendToPropertyInspector" && data.payload.targets) {
+						fill(data.payload.targets, data.payload.running);
+					} else if (data.event === "didReceiveSettings") {
+						settings = data.payload.settings || {};
+					}
+				};
+			}
+
+			function same(a, b) {
+				return JSON.stringify(a) === JSON.stringify(b);
+			}
+
+			function fill(targets, running) {
+				const select = document.getElementById("target");
+				choices = targets.slice();
+				// Kept while Pipedeck is away, or the thing gone, so it is not lost
+				// by opening the settings.
+				if (settings.target && !choices.some((c) => same(c.target, settings.target))) {
+					choices.push({ target: settings.target, label: settings.label || "(gone)" });
+				}
+				select.replaceChildren();
+				if (!settings.target) {
+					select.add(new Option(choices.length ? "Pick one" : running ? "Nothing to pick" : "Start Pipedeck to pick", ""));
+				}
+				choices.forEach((choice, index) => {
+					const option = new Option(choice.label, String(index));
+					option.selected = same(choice.target, settings.target);
+					select.add(option);
+				});
+			}
+
+			function save() {
+				socket.send(JSON.stringify({ event: "setSettings", context, payload: settings }));
+			}
+
+			function pick() {
+				const choice = choices[Number(document.getElementById("target").value)];
+				if (!choice) return;
+				settings.target = choice.target;
+				settings.label = choice.label;
+				save();
+			}
+
+			function changeStep() {
+				settings.step = Number(document.getElementById("step").value) || 0;
+				save();
+			}
+
+			function changeOnly() {
+				settings.only = document.getElementById("only").checked;
+				save();
+			}
+		</script>
+	</head>
+	<body>
+		<label>Controls <select id="target" onchange="pick()"></select></label>
+		<label id="step-row">Step (%) <input id="step" type="number" min="-100" max="100" step="1" onchange="changeStep()" /></label>
+		<p id="step-note" class="note">How far a press moves the level; below zero lowers it. A dial turns by as much either way, for each notch.</p>
+		<label id="only-row">Only this mix <input id="only" type="checkbox" onchange="changeOnly()" /></label>
+	</body>
+</html>

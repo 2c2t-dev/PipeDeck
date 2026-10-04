@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/pipedeck-engine", "crates/pipedeck"]
+members = ["crates/pipedeck-engine", "crates/pipedeck", "integrations/opendeck"]
 
 [workspace.package]
 version = "0.1.0"
