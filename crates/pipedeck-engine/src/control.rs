@@ -61,6 +61,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use pipewire as pw;
 use serde::{Deserialize, Serialize};
@@ -228,7 +229,40 @@ struct Model {
     /// The clients that asked for the meters, and are handed every
     /// measurement to pass on at their own pace.
     meter_listeners: Vec<mpsc::Sender<Peaks>>,
+    /// The levels set here that the engine has yet to say it set, how many
+    /// times, and since when. See [`Model::hear`].
+    pending: HashMap<Level, (usize, Instant)>,
 }
+
+/// A level the engine says it set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Level {
+    Source(SourceId),
+    Mix(MixId),
+    Link(SourceId, MixId),
+}
+
+impl Level {
+    /// The level a command sets, when the engine says it set it.
+    fn set_by(command: &Command) -> Option<Self> {
+        match command {
+            Command::SetSourceGain { id, .. } | Command::SetSourceMute { id, .. } => {
+                Some(Level::Source(*id))
+            }
+            Command::SetMixGain { id, .. } | Command::SetMixMute { id, .. } => {
+                Some(Level::Mix(*id))
+            }
+            Command::SetLinkGain { source, mix, .. } | Command::SetLinkMute { source, mix, .. } => {
+                Some(Level::Link(*source, *mix))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// How long the engine is waited on to say it set a level, before what it
+/// says is taken as it comes: a fader moved in the mixer's own window.
+const ECHO_WAIT: Duration = Duration::from_secs(1);
 
 /// The loudest each channel, mix and person of a call got, as a linear
 /// amplitude: a meter's reading.
@@ -290,6 +324,25 @@ impl Peaks {
 impl Model {
     /// Take in what the engine said.
     fn hear(&mut self, event: Event) {
+        // The engine says it set every level it was asked to, in turn: a
+        // dial turned fast is told the first notch after the model has
+        // moved on to the third, which would put the key back a notch for
+        // a moment. Only the last is taken; it is what was asked last.
+        let set = match &event {
+            Event::SourceChanged { id, .. } => Some(Level::Source(*id)),
+            Event::MixChanged { id, .. } => Some(Level::Mix(*id)),
+            Event::LinkChanged { source, mix, .. } => Some(Level::Link(*source, *mix)),
+            _ => None,
+        };
+        if let Some(level) = set {
+            if let Some((left, since)) = self.pending.get_mut(&level) {
+                if since.elapsed() < ECHO_WAIT && *left > 1 {
+                    *left -= 1;
+                    return;
+                }
+                self.pending.remove(&level);
+            }
+        }
         match event {
             Event::Levels {
                 sources,
@@ -418,6 +471,21 @@ impl Model {
     /// model moved on as the engine will be, so the next action counts from
     /// there rather than from what the engine has not said back yet.
     fn act(&mut self, action: Action) -> Result<Vec<Command>, String> {
+        let commands = self.decide(action)?;
+        let now = Instant::now();
+        for level in commands.iter().filter_map(Level::set_by) {
+            let (left, since) = self.pending.entry(level).or_insert((0, now));
+            if since.elapsed() >= ECHO_WAIT {
+                *left = 0;
+            }
+            *left += 1;
+            *since = now;
+        }
+        Ok(commands)
+    }
+
+    /// The commands an action comes to, with the model moved on.
+    fn decide(&mut self, action: Action) -> Result<Vec<Command>, String> {
         let state = self.state.as_mut().ok_or("the mixer is not up yet")?;
         let mut commands = Vec::new();
         match action {
@@ -681,7 +749,7 @@ fn say(writer: &Mutex<UnixStream>, value: &impl Serialize) -> bool {
 }
 
 /// How often the meters are passed on.
-const METER_PACE: std::time::Duration = std::time::Duration::from_millis(100);
+const METER_PACE: Duration = Duration::from_millis(100);
 
 #[derive(Serialize)]
 struct LevelsLine {
@@ -1025,6 +1093,30 @@ mod tests {
         assert_eq!(peaks.voices, [(3, "a".into(), 0.1), (3, "b".into(), 0.2)]);
         assert!(!peaks.silent());
         assert!(Peaks::default().silent());
+    }
+
+    #[test]
+    fn a_dial_turned_fast_does_not_step_back() {
+        let mut model = model();
+        for _ in 0..3 {
+            act(
+                &mut model,
+                r#"{"do":{"what":"channel","id":2,"nudge":0.1}}"#,
+            )
+            .unwrap();
+        }
+        let said = |gain: f32| Event::SourceChanged {
+            id: SourceId(2),
+            state: crate::types::ChainState { gain, muted: false },
+        };
+        // The engine says, in turn, that it set each.
+        for (gain, shown) in [(0.6, 0.8), (0.7, 0.8), (0.8, 0.8)] {
+            model.hear(said(gain));
+            assert!((model.view().unwrap().channels[0].volume - shown).abs() < 1e-5);
+        }
+        // And then whatever moves it elsewhere comes through again.
+        model.hear(said(0.3));
+        assert!((model.view().unwrap().channels[0].volume - 0.3).abs() < 1e-5);
     }
 
     #[test]
