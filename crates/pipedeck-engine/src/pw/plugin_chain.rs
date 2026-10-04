@@ -236,6 +236,7 @@ fn block(planes: &mut [Vec<f32>], frames: usize) -> Option<[&mut [f32]; CHANNELS
 /// A channel's or a mix's plug-ins, running in the graph.
 pub struct PluginChain {
     // Field order matters: the listeners go before the streams they hang on.
+    // The streams are disconnected before any of it; see the `Drop` below.
     _playback_listener: StreamListener<Playing>,
     _capture_listener: StreamListener<Processing>,
     _playback: StreamRc,
@@ -252,6 +253,22 @@ pub struct PluginChain {
     /// chain was asked for, shared with the audio thread: writing one here
     /// is the effect taking it.
     params: Vec<Option<(String, Arc<dsp::Params>)>>,
+}
+
+impl Drop for PluginChain {
+    /// Stop the audio thread using the plug-ins before they go.
+    ///
+    /// The streams run their process callbacks on PipeWire's data thread,
+    /// and the plug-ins live in the callbacks' data, which goes with the
+    /// listeners. Dropping a listener only unhooks it, without waiting for
+    /// a callback running on the other thread: a chain dropped while sound
+    /// flows would free plug-ins that are still processing. Disconnecting
+    /// a stream takes it off the data thread and waits until it is off, so
+    /// both are disconnected first, and the fields go after.
+    fn drop(&mut self) {
+        let _ = self._capture.disconnect();
+        let _ = self._playback.disconnect();
+    }
 }
 
 impl PluginChain {

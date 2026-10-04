@@ -1091,6 +1091,50 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
+    // A chain made and dropped while sound goes through it, over and over:
+    // the plug-ins must not go while the audio thread is still running them.
+    match node_serial(&pw_dump(), &format!("pipedeck-smoke.src.{source}")) {
+        Some(serial) => {
+            let mut player = Process::new("pw-play")
+                .arg(format!("--target={serial}"))
+                .arg(&tone)
+                .spawn()
+                .expect("pw-play must be installed");
+            for round in 0..20 {
+                let effects = if round % 2 == 0 {
+                    vec![native("compressor", &[])]
+                } else {
+                    Vec::new()
+                };
+                engine
+                    .send(Command::SetEffects {
+                        id: source,
+                        effects,
+                    })
+                    .unwrap();
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            let _ = player.kill();
+            let _ = player.wait();
+            drain(&rx);
+            let alive = engine
+                .send(Command::SetEffects {
+                    id: source,
+                    effects: Vec::new(),
+                })
+                .is_ok();
+            wait_state(&rx, "the chain dropped for good", |s| {
+                s.sources.iter().all(|row| row.effects.is_empty())
+            });
+            check(
+                alive,
+                "a chain made and dropped twenty times with sound going through",
+                &mut failures,
+            );
+        }
+        None => check(false, "the channel has no sink to play into", &mut failures),
+    }
+
     // A plug-in uninstalled since it was chosen keeps its place in the chain:
     // the compressor after it is still the second effect, and says so.
     engine
