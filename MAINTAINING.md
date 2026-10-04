@@ -30,6 +30,17 @@ served with, its Content Security Policy among them, are in
 `site/_headers`. The typefaces are the site's own, in `site/fonts/`, so it
 loads nothing from another server.
 
+The pages are made by `site/build.py` from a template in `site/pages/`
+and a file of texts per language in `site/i18n/`: English at the root,
+French, German, Spanish and Italian under `/fr/`, `/de/`, `/es/` and
+`/it/`. A change of wording goes in every language's file; the build stops
+if a text is missing from one. To add a language, copy `en.json`, translate
+it, and add its code to `LANGUAGES` in `build.py`. To look at the site
+before pushing, build it with `python3 site/build.py _site`.
+
+The legal notice, `legal.html`, names the host and the contact address,
+contact@2c2t.dev; it changes with either.
+
 The workflow needs two repository secrets, `CLOUDFLARE_API_TOKEN`, a token
 allowed to edit Cloudflare Pages, and `CLOUDFLARE_ACCOUNT_ID`. Without them
 it publishes nothing.

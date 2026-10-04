@@ -85,7 +85,7 @@ p { margin: 0; }
 .bar .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font: 800 22px var(--display); }
 .brand img { width: 36px; height: 36px; }
-.bar nav { display: flex; gap: 22px; font-size: 15px; font-weight: 500; }
+.bar nav { display: flex; align-items: center; gap: 22px; font-size: 15px; font-weight: 500; }
 .bar nav a { text-decoration: none; color: var(--muted); }
 .bar nav a:hover { color: var(--text); }
 
@@ -189,7 +189,7 @@ footer a { color: var(--muted); }
 @media (max-width: 860px) {
   .package { grid-template-columns: 1fr; }
   .matrix-section .wrap, .effects .wrap { grid-template-columns: 1fr; gap: 36px; }
-  .bar nav a:not(.keep) { display: none; }
+  .bar nav > a:not(.keep) { display: none; }
   section { padding-block: 52px; }
 }
 @media (max-width: 480px) {
@@ -214,3 +214,31 @@ footer a { color: var(--muted); }
 .matrix .cell .w82 { width: 82%; }
 .matrix .cell .w92 { width: 92%; }
 .eyebrow + h2 { margin-top: 14px; }
+
+/* The language menu: a details element, so it opens without a script. */
+.langs { position: relative; }
+.langs summary {
+  list-style: none; cursor: pointer;
+  padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
+  font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--muted);
+}
+.langs summary::-webkit-details-marker { display: none; }
+.langs[open] summary, .langs summary:hover { color: var(--text); }
+.langs ul {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 10;
+  display: grid; gap: 2px; min-width: 150px; margin: 0; padding: 6px; list-style: none;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
+}
+.bar .langs a { display: block; padding: 8px 12px; border-radius: 8px; text-decoration: none; color: var(--text); }
+.bar .langs a:hover { background: var(--raised); }
+.bar .langs a[aria-current="page"] { font-weight: 600; }
+
+/* The legal notice: a column of text. */
+.legal .wrap { max-width: 760px; padding-block: 32px 72px; }
+.legal h1 { font-size: clamp(32px, 5vw, 44px); font-weight: 800; }
+.legal h2 { font-size: 22px; font-weight: 800; margin-top: 40px; }
+.legal p { margin-top: 12px; color: var(--muted); }
+.legal a { color: var(--blue); }
+.legal .note { margin-top: 48px; }
+

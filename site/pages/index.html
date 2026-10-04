@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="{{lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipedeck</title>
+<meta name="description" content="{{meta_description}}">
+<meta name="color-scheme" content="light dark">
+<link rel="canonical" href="{{url}}">
+{{alternates}}
+<meta property="og:title" content="Pipedeck">
+<meta property="og:description" content="{{og_description}}">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="{{og_locale}}">
+<meta property="og:url" content="{{url}}">
+<meta property="og:image" content="https://pipedeck.2c2t.dev/assets/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="preload" href="/fonts/nunito-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/style.css">
+<script src="/script.js" defer></script>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="{{home}}"><img src="/assets/icon.svg" alt="">Pipedeck</a>
+    <nav>
+      <a href="{{home}}#features">{{nav_features}}</a>
+      <a href="{{home}}#effects">{{nav_effects}}</a>
+      <a class="keep" href="{{home}}#install">{{nav_install}}</a>
+      <a class="keep" href="https://github.com/2c2t-dev/PipeDeck">GitHub</a>
+      <details class="langs">
+        <summary aria-label="{{language_label}}">{{lang}}</summary>
+        <ul>
+{{languages}}
+        </ul>
+      </details>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <div class="wrap">
+      <div class="faders" aria-hidden="true"><span></span><span></span><span></span></div>
+      <h1>{{hero_title}}</h1>
+      <p class="lead">{{hero_lead}}</p>
+      <div class="actions">
+        <a class="button primary" href="https://github.com/2c2t-dev/PipeDeck/releases/latest">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>
+          {{download}}
+        </a>
+        <a class="button" href="https://github.com/2c2t-dev/PipeDeck">{{source}}</a>
+      </div>
+      <div class="shot">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" type="image/webp" sizes="(max-width: 1072px) calc(100vw - 48px), 1024px" srcset="/assets/mixer-dark-768.webp 768w, /assets/mixer-dark-1024.webp 1024w, /assets/mixer-dark-2048.webp 2048w">
+          <source type="image/webp" sizes="(max-width: 1072px) calc(100vw - 48px), 1024px" srcset="/assets/mixer-light-768.webp 768w, /assets/mixer-light-1024.webp 1024w, /assets/mixer-light-2048.webp 2048w">
+          <source media="(prefers-color-scheme: dark)" srcset="/assets/mixer-dark.png">
+          <img src="/assets/mixer-light.png" width="1024" height="520" fetchpriority="high" alt="{{mixer_alt}}">
+        </picture>
+      </div>
+    </div>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">{{features_eyebrow}}</span>
+        <h2>{{features_title}}</h2>
+      </div>
+      <div class="features">
+        <div class="feature">
+          <span class="dot pink"></span>
+          <h3>{{f_matrix_title}}</h3>
+          <p>{{f_matrix_text}}</p>
+        </div>
+        <div class="feature">
+          <span class="dot yellow"></span>
+          <h3>{{f_apps_title}}</h3>
+          <p>{{f_apps_text}}</p>
+        </div>
+        <div class="feature">
+          <span class="dot blue"></span>
+          <h3>{{f_obs_title}}</h3>
+          <p>{{f_obs_text}}</p>
+        </div>
+        <div class="feature">
+          <span class="dot pink"></span>
+          <h3>{{f_meters_title}}</h3>
+          <p>{{f_meters_text}}</p>
+        </div>
+        <div class="feature">
+          <span class="dot yellow"></span>
+          <h3>{{f_keys_title}}</h3>
+          <p>{{f_keys_text}}</p>
+        </div>
+        <div class="feature">
+          <span class="dot blue"></span>
+          <h3>{{f_restart_title}}</h3>
+          <p>{{f_restart_text}}</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="matrix-section">
+    <div class="wrap">
+      <div>
+        <span class="eyebrow">{{how_eyebrow}}</span>
+        <h2>{{how_title}}</h2>
+        <dl class="terms">
+          <div><dt>{{channels_term}}</dt><dd>{{channels_text}}</dd></div>
+          <div><dt>{{mixes_term}}</dt><dd>{{mixes_text}}</dd></div>
+          <div><dt>{{cells_term}}</dt><dd>{{cells_text}}</dd></div>
+        </dl>
+      </div>
+      <div class="matrix" role="img" aria-label="{{matrix_label}}">
+        <div class="corner"></div>
+        <div class="mix">Personal</div>
+        <div class="mix">Chat</div>
+        <div class="mix">Stream</div>
+
+        <div class="row"><i class="mic"></i>Mic</div>
+        <div class="empty">+</div>
+        <div class="cell"><b class="w92"></b></div>
+        <div class="cell"><b class="w92"></b></div>
+
+        <div class="row"><i class="music"></i>Music</div>
+        <div class="cell"><b class="w55"></b><s></s></div>
+        <div class="cell"><b class="w22"></b><s></s></div>
+        <div class="cell"><b class="w32"></b><s></s></div>
+
+        <div class="row"><i class="game"></i>Game</div>
+        <div class="cell"><b class="w82"></b><s></s></div>
+        <div class="empty">+</div>
+        <div class="cell"><b class="w64"></b><s></s></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="effects" class="effects">
+    <div class="wrap">
+      <div>
+        <span class="eyebrow">{{effects_eyebrow}}</span>
+        <h2>{{effects_title}}</h2>
+        <ul class="effect-list">
+          <li><span class="dot pink"></span><p><strong>{{e_denoise_name}}</strong> <span>{{e_denoise_text}}</span></p></li>
+          <li><span class="dot yellow"></span><p><strong>{{e_eq_name}}</strong> <span>{{e_eq_text}}</span></p></li>
+          <li><span class="dot blue"></span><p><strong>{{e_deesser_name}}</strong> <span>{{e_deesser_text}}</span></p></li>
+          <li><span class="dot green"></span><p><strong>{{e_comp_name}}</strong> <span>{{e_comp_text}}</span></p></li>
+        </ul>
+        <p class="note">{{effects_note}}</p>
+      </div>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" type="image/webp" sizes="(max-width: 860px) calc(100vw - 48px), 520px" srcset="/assets/equaliser-dark-720.webp 720w, /assets/equaliser-dark-1440.webp 1440w">
+        <source type="image/webp" sizes="(max-width: 860px) calc(100vw - 48px), 520px" srcset="/assets/equaliser-light-720.webp 720w, /assets/equaliser-light-1440.webp 1440w">
+        <source media="(prefers-color-scheme: dark)" srcset="/assets/equaliser-dark.png">
+        <img src="/assets/equaliser-light.png" width="720" height="468" loading="lazy" decoding="async" alt="{{eq_alt}}">
+      </picture>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">{{integrations_eyebrow}}</span>
+        <h2>{{integrations_title}}</h2>
+      </div>
+      <div class="pair">
+        <div class="feature">
+          <h3>Stream Deck</h3>
+          <p>{{sd_text}}</p>
+          <p><a href="https://github.com/2c2t-dev/PipeDeck/tree/main/integrations/opendeck">{{opendeck_plugin}}</a> · <a href="https://github.com/2c2t-dev/PipeDeck/tree/main/integrations/streamcontroller">{{streamcontroller_plugin}}</a></p>
+        </div>
+        <div class="feature">
+          <h3>{{discord_title}}</h3>
+          <p>{{discord_text}}</p>
+          <p><a href="https://github.com/2c2t-dev/PipeDeck/tree/main/integrations/vencord">{{vesktop_plugin}}</a></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">{{install_eyebrow}}</span>
+        <h2>{{install_title}}</h2>
+        <p class="lead">{{install_lead}}</p>
+      </div>
+      <div class="install">
+        <div class="package">
+          <div><h3>.deb</h3><p class="for">{{deb_for}}</p></div>
+          <div class="command"><pre><code>sudo apt install ./pipedeck_*_amd64.deb</code></pre><button class="copy" type="button" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
+        </div>
+        <div class="package">
+          <div><h3>.rpm</h3><p class="for">{{rpm_for}}</p></div>
+          <div class="command"><pre><code>sudo dnf install ./pipedeck-*.x86_64.rpm</code></pre><button class="copy" type="button" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
+        </div>
+        <div class="package">
+          <div><h3>AppImage</h3><p class="for">{{appimage_for}}</p></div>
+          <div class="command"><pre><code>chmod +x Pipedeck-*-x86_64.AppImage
+./Pipedeck-*-x86_64.AppImage</code></pre><button class="copy" type="button" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
+        </div>
+      </div>
+      <div class="source">
+        <h3>{{source_title}}</h3>
+        <p>{{source_text}}</p>
+        <div class="command"><pre><code>git clone https://github.com/2c2t-dev/PipeDeck.git
+cd PipeDeck
+cargo build --release
+./target/release/pipedeck</code></pre><button class="copy" type="button" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>{{footer_license}}</p>
+    <p>{{footer_trademarks}}</p>
+    <p><a href="{{home}}legal.html">{{legal_link}}</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

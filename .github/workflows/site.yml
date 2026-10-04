@@ -39,8 +39,8 @@ jobs:
       - name: Gather the site
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
         run: |
+          python3 site/build.py _site
           mkdir -p _site/assets
-          cp -r site/. _site/
           cp .github/mixer-*.png .github/equaliser-*.png .github/social-preview.png _site/assets/
           cp crates/pipedeck/data/dev._2c2t.Pipedeck.svg _site/assets/icon.svg
       # The pictures as WebP, at the size they are shown and at twice that,

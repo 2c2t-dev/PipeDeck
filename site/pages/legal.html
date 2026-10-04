@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="{{lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{legal_title}} · Pipedeck</title>
+<meta name="color-scheme" content="light dark">
+<link rel="canonical" href="{{url}}">
+{{alternates}}
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="preload" href="/fonts/nunito-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="{{home}}"><img src="/assets/icon.svg" alt="">Pipedeck</a>
+    <nav>
+      <a class="keep" href="{{home}}#install">{{nav_install}}</a>
+      <a class="keep" href="https://github.com/2c2t-dev/PipeDeck">GitHub</a>
+      <details class="langs">
+        <summary aria-label="{{language_label}}">{{lang}}</summary>
+        <ul>
+{{languages}}
+        </ul>
+      </details>
+    </nav>
+  </div>
+</header>
+
+<main class="legal">
+  <div class="wrap">
+    <h1>{{legal_title}}</h1>
+
+    <h2>{{legal_publisher_h}}</h2>
+    <p>{{legal_publisher_p}}</p>
+    <p>{{legal_contact}} <a href="mailto:contact@2c2t.dev">contact@2c2t.dev</a></p>
+
+    <h2>{{legal_host_h}}</h2>
+    <p>Cloudflare, Inc.<br>101 Townsend St<br>San Francisco, CA 94107<br>{{legal_host_country}}<br>+1 650 319 8930 · <a href="https://www.cloudflare.com/">cloudflare.com</a></p>
+
+    <h2>{{legal_privacy_h}}</h2>
+    <p>{{legal_privacy_p1}}</p>
+    <p>{{legal_privacy_p2}}</p>
+    <p>{{legal_privacy_p3}}</p>
+
+    <h2>{{legal_ip_h}}</h2>
+    <p>{{legal_ip_p1}}</p>
+    <p>{{legal_ip_p2}}</p>
+
+    <h2>{{legal_links_h}}</h2>
+    <p>{{legal_links_p}}</p>
+
+    <p class="note">{{legal_updated}}</p>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>{{footer_trademarks}}</p>
+  </div>
+</footer>
+
+</body>
+</html>
