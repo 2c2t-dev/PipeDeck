@@ -32,10 +32,14 @@
 //! {"do": {"what": "mix", "id": 1, "volume": 0.8}}
 //! {"do": {"what": "cell", "channel": 2, "mix": 1, "nudge": -0.05}}
 //! {"do": {"what": "voice", "channel": 3, "user": "2350…", "mute": true}}
+//! {"do": {"what": "hear", "mix": 2, "listening": "toggle"}}
+//! {"do": {"what": "hear", "mix": 2, "only": true}}
 //! {"do": {"what": "listen", "device": "alsa_output.usb-…"}}
 //! ```
 //!
-//! `mute` takes true, false or "toggle"; `volume` sets a fader, `nudge`
+//! A mix is heard, or not, on the device listened on; `only` hears that
+//! one mix there and none of the others.
+//! `mute` and `listening` take true, false or "toggle"; `volume` sets a fader, `nudge`
 //! moves it by so much. Several nudges in a row add up, each counted from
 //! where the last one left the fader, whatever the engine has said back yet.
 //!
@@ -77,10 +81,10 @@ struct Answer {
     labels: HashMap<String, String>,
 }
 
-/// Mute on, off, or the other way from how it is.
+/// On, off, or the other way from how it is.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(untagged)]
-enum Mute {
+enum Switch {
     Set(bool),
     Toggle(Toggle),
 }
@@ -94,7 +98,7 @@ enum Toggle {
 /// What a level is to do: be muted or not, be set, or be moved.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
 struct Change {
-    mute: Option<Mute>,
+    mute: Option<Switch>,
     volume: Option<f32>,
     nudge: Option<f32>,
 }
@@ -125,16 +129,31 @@ enum Action {
         #[serde(flatten)]
         change: Change,
     },
+    Hear {
+        mix: u32,
+        listening: Option<Switch>,
+        #[serde(default)]
+        only: bool,
+    },
     Listen {
         device: String,
     },
+}
+
+impl Switch {
+    fn turn(self, on: bool) -> bool {
+        match self {
+            Switch::Set(on) => on,
+            Switch::Toggle(_) => !on,
+        }
+    }
 }
 
 /// Where things stand, as a remote control is told.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct View {
     pub channels: Vec<ChannelView>,
-    pub mixes: Vec<LevelView>,
+    pub mixes: Vec<MixView>,
     pub cells: Vec<CellView>,
     /// The device listened on, and the ones that could be.
     pub listen: Option<String>,
@@ -154,11 +173,13 @@ pub struct ChannelView {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct LevelView {
+pub struct MixView {
     pub id: u32,
     pub name: String,
     pub volume: f32,
     pub muted: bool,
+    /// Heard on the device listened on.
+    pub listening: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -270,11 +291,12 @@ impl Model {
             mixes: state
                 .mixes
                 .iter()
-                .map(|mix| LevelView {
+                .map(|mix| MixView {
                     id: mix.id.0,
                     name: mix.name.clone(),
                     volume: mix.gain,
                     muted: mix.muted,
+                    listening: heard(mix, state.listen_device.as_deref()),
                 })
                 .collect(),
             cells: state
@@ -387,6 +409,46 @@ impl Model {
                     commands.push(Command::SetVoiceMute { id, user, muted });
                 }
             }
+            Action::Hear {
+                mix,
+                listening,
+                only,
+            } => {
+                if !state.mixes.iter().any(|m| m.id.0 == mix) {
+                    return Err(format!("no mix {mix}"));
+                }
+                // Where the engine will hear it: see `Graph::set_listening`.
+                let device = state
+                    .listen_device
+                    .clone()
+                    .or_else(|| self.outputs.first().map(|d| d.name.clone()))
+                    .ok_or("there is no device to listen on")?;
+                state.listen_device = Some(device.clone());
+                for cfg in &mut state.mixes {
+                    let now = heard(cfg, Some(&device));
+                    let wanted = if cfg.id.0 == mix {
+                        match listening {
+                            Some(switch) => switch.turn(now),
+                            None => only || now,
+                        }
+                    } else {
+                        now && !only
+                    };
+                    if wanted == now {
+                        continue;
+                    }
+                    match cfg.outputs.iter_mut().find(|o| o.device == device) {
+                        Some(output) => output.enabled = wanted,
+                        None => cfg
+                            .outputs
+                            .push(crate::types::MixOutput::new(device.clone())),
+                    }
+                    commands.push(Command::SetListening {
+                        id: cfg.id,
+                        listening: wanted,
+                    });
+                }
+            }
             Action::Listen { device } => {
                 state.listen_device = Some(device.clone());
                 commands.push(Command::SetListenDevice(device));
@@ -406,12 +468,15 @@ fn apply(change: Change, gain: f32, muted: bool) -> (f32, bool) {
     if let Some(nudge) = change.nudge {
         gain += nudge;
     }
-    let muted = match change.mute {
-        Some(Mute::Set(muted)) => muted,
-        Some(Mute::Toggle(_)) => !muted,
-        None => muted,
-    };
+    let muted = change.mute.map_or(muted, |switch| switch.turn(muted));
     (gain.clamp(0.0, 1.0), muted)
+}
+
+/// Whether a mix is heard on a device.
+fn heard(mix: &crate::types::MixConfig, device: Option<&str>) -> bool {
+    mix.outputs
+        .iter()
+        .any(|output| output.enabled && Some(output.device.as_str()) == device)
 }
 
 /// Listen on the socket, on a thread of its own, handing what comes in to
@@ -758,6 +823,48 @@ mod tests {
         .unwrap_err()
         .contains("does not feed"));
         assert!(act(&mut model, r#"{"do":{"what":"mix","id":7,"mute":true}}"#).is_err());
+    }
+
+    #[test]
+    fn one_mix_is_heard_in_place_of_the_others() {
+        let mut model = model();
+        let state = model.state.as_mut().unwrap();
+        state.listen_device = Some("phones".into());
+        state.mixes.push(MixConfig::new(MixId(2), "Chat"));
+        state.mixes[0]
+            .outputs
+            .push(crate::types::MixOutput::new("phones"));
+        assert_eq!(
+            act(&mut model, r#"{"do":{"what":"hear","mix":2,"only":true}}"#),
+            Ok(vec![
+                Command::SetListening {
+                    id: MixId(1),
+                    listening: false
+                },
+                Command::SetListening {
+                    id: MixId(2),
+                    listening: true
+                },
+            ])
+        );
+        let heard: Vec<bool> = model
+            .view()
+            .unwrap()
+            .mixes
+            .iter()
+            .map(|m| m.listening)
+            .collect();
+        assert_eq!(heard, [false, true]);
+        assert_eq!(
+            act(
+                &mut model,
+                r#"{"do":{"what":"hear","mix":1,"listening":"toggle"}}"#
+            ),
+            Ok(vec![Command::SetListening {
+                id: MixId(1),
+                listening: true
+            }])
+        );
     }
 
     #[test]
