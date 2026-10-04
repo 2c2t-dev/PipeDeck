@@ -31,13 +31,31 @@ impl Theme {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub theme: Theme,
     /// Whether a desktop entry starts the mixer with the session.
     #[serde(default)]
     pub start_at_login: bool,
+    /// Whether OpenDeck's Pipedeck profiles are laid out again when a
+    /// channel, a mix or a device comes or goes.
+    #[serde(default = "yes")]
+    pub stream_deck_profiles: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            theme: Theme::default(),
+            start_at_login: false,
+            stream_deck_profiles: true,
+        }
+    }
 }
 
 impl Settings {

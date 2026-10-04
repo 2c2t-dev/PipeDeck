@@ -13,6 +13,7 @@ use pipedeck_engine::Command;
 
 use crate::engine_link::EngineLink;
 use crate::settings::{self, Settings, Theme};
+use crate::streamdeck::{self, App};
 use crate::vesktop;
 
 /// What the Plug-ins page has to show: how many VST3 effects were found,
@@ -224,7 +225,185 @@ fn plugins_page(
     if vesktop::state() != vesktop::State::Missing {
         page.add(&vesktop_group());
     }
+    if [App::OpenDeck, App::StreamController]
+        .iter()
+        .any(|app| streamdeck::state(*app) != streamdeck::State::Missing)
+    {
+        page.add(&stream_deck_group());
+    }
     page
+}
+
+/// Run something that takes a while on a thread of its own, and tell the
+/// window how it ended.
+fn in_background(
+    work: impl FnOnce() -> Result<String, String> + Send + 'static,
+    done: impl Fn(Result<String, String>) + 'static,
+) {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = tx.send_blocking(work());
+    });
+    gtk::glib::spawn_future_local(async move {
+        if let Ok(result) = rx.recv().await {
+            done(result);
+        }
+    });
+}
+
+/// Pipedeck's plugins for the Stream Deck applications that are here,
+/// installed, updated and removed from here, and OpenDeck's profiles laid
+/// out from the mixer.
+fn stream_deck_group() -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Stream Deck");
+    group.set_description(Some(
+        "Pipedeck's plugin puts channel and mix levels with their meters, the mix in your \
+         headphones and the device it is heard on under a Stream Deck's keys and dials, as \
+         Elgato's Wave Link plugin does. OpenDeck and StreamController each have one.",
+    ));
+
+    let status = gtk::Label::new(None);
+    status.add_css_class("caption");
+    status.set_wrap(true);
+    status.set_xalign(0.0);
+    status.set_visible(false);
+
+    let spinner = adw::Spinner::new();
+    spinner.set_visible(false);
+    // Every button here waits while one of them runs.
+    let buttons: Rc<RefCell<Vec<gtk::Button>>> = Rc::default();
+    let saved = Rc::new(RefCell::new(Settings::load()));
+
+    let profiles = adw::SwitchRow::new();
+    profiles.set_title("Keep the Pipedeck profiles laid out from the mixer");
+    profiles.set_subtitle(
+        "A Pipedeck profile for each deck in OpenDeck, laid out again when a channel, a mix \
+         or a device comes or goes. OpenDeck is restarted for it, and what was changed on \
+         those profiles is replaced: keep your own in another profile.",
+    );
+    profiles.set_active(saved.borrow().stream_deck_profiles);
+    profiles.connect_active_notify({
+        let saved = saved.clone();
+        move |row| {
+            saved.borrow_mut().stream_deck_profiles = row.is_active();
+            saved.borrow().save();
+        }
+    });
+    let lay_out = gtk::Button::with_label("Lay out now");
+    lay_out.set_valign(gtk::Align::Center);
+    profiles.add_suffix(&lay_out);
+    buttons.borrow_mut().push(lay_out.clone());
+
+    // Start something, with every button waiting until it ends, and say
+    // how it went.
+    let start = {
+        let (status, spinner, buttons) = (status.clone(), spinner.clone(), buttons.clone());
+        move |work: Box<dyn FnOnce() -> Result<String, String> + Send>, then: Rc<dyn Fn()>| {
+            for button in buttons.borrow().iter() {
+                button.set_sensitive(false);
+            }
+            spinner.set_visible(true);
+            status.set_visible(false);
+            let (status, spinner, buttons) = (status.clone(), spinner.clone(), buttons.clone());
+            in_background(work, move |result| {
+                for button in buttons.borrow().iter() {
+                    button.set_sensitive(true);
+                }
+                spinner.set_visible(false);
+                status.remove_css_class("error");
+                match result {
+                    Ok(said) => status.set_label(&said),
+                    Err(e) => {
+                        status.add_css_class("error");
+                        status.set_label(&format!("It did not work: {e}"));
+                    }
+                }
+                status.set_visible(true);
+                then();
+            });
+        }
+    };
+
+    let mut shows: Vec<Rc<dyn Fn()>> = Vec::new();
+    for app in [App::OpenDeck, App::StreamController] {
+        if streamdeck::state(app) == streamdeck::State::Missing {
+            continue;
+        }
+        let row = adw::ActionRow::new();
+        row.set_title(app.name());
+        let install = gtk::Button::new();
+        install.set_valign(gtk::Align::Center);
+        install.add_css_class("suggested-action");
+        row.add_suffix(&install);
+        let remove = gtk::Button::with_label("Remove");
+        remove.set_valign(gtk::Align::Center);
+        row.add_suffix(&remove);
+        buttons.borrow_mut().push(install.clone());
+        buttons.borrow_mut().push(remove.clone());
+        group.add(&row);
+
+        let show: Rc<dyn Fn()> = Rc::new({
+            let (row, install, remove, profiles) = (
+                row.clone(),
+                install.clone(),
+                remove.clone(),
+                profiles.clone(),
+            );
+            move || {
+                let state = streamdeck::state(app);
+                let installed = matches!(state, streamdeck::State::Installed { .. });
+                match (&state, streamdeck::can_install(app)) {
+                    (streamdeck::State::Installed { current: true }, _) => {
+                        row.set_subtitle("Installed, up to date with this Pipedeck");
+                    }
+                    (streamdeck::State::Installed { .. }, Err(e)) => {
+                        row.set_subtitle(&format!("Installed. {e}"))
+                    }
+                    (streamdeck::State::Installed { .. }, Ok(())) => {
+                        row.set_subtitle("Installed, from another Pipedeck: update it");
+                    }
+                    (_, Err(e)) => row.set_subtitle(&e),
+                    _ => row.set_subtitle("Not installed"),
+                }
+                install.set_label(if installed { "Update" } else { "Install" });
+                install.set_visible(streamdeck::can_install(app).is_ok());
+                remove.set_visible(installed);
+                if app == App::OpenDeck {
+                    profiles.set_visible(installed);
+                }
+            }
+        });
+        show();
+        shows.push(show.clone());
+
+        install.connect_clicked({
+            let (start, saved, show) = (start.clone(), saved.clone(), show.clone());
+            move |_| {
+                let lay_out = saved.borrow().stream_deck_profiles;
+                start(
+                    Box::new(move || streamdeck::install(app, lay_out)),
+                    show.clone(),
+                );
+            }
+        });
+        remove.connect_clicked({
+            let (start, show) = (start.clone(), show.clone());
+            move |_| start(Box::new(move || streamdeck::remove(app)), show.clone())
+        });
+        if app == App::OpenDeck {
+            group.add(&profiles);
+        }
+    }
+    let show_all: Rc<dyn Fn()> = Rc::new(move || shows.iter().for_each(|show| show()));
+    lay_out
+        .connect_clicked(move |_| start(Box::new(streamdeck::lay_out_profiles), show_all.clone()));
+
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    footer.append(&spinner);
+    footer.append(&status);
+    group.add(&footer);
+    group
 }
 
 /// What the plugin for Vesktop is doing, from the thread doing it.

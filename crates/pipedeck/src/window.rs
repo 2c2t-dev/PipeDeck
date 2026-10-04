@@ -211,10 +211,21 @@ impl Window {
         self.window.present();
     }
 
+    /// Lay OpenDeck's Pipedeck profiles out again if what they are laid
+    /// out from changed, and the user wants that. See [`streamdeck`].
+    fn lay_out_stream_decks(&self) {
+        crate::streamdeck::mixer_changed(
+            &self.state.borrow(),
+            &self.outputs.borrow(),
+            crate::settings::Settings::load().stream_deck_profiles,
+        );
+    }
+
     pub fn handle_event(self: &Rc<Self>, event: Event) {
         match event {
             Event::State(state) => {
                 *self.state.borrow_mut() = state;
+                self.lay_out_stream_decks();
                 self.listen
                     .refresh(&self.state.borrow(), &self.outputs.borrow());
                 self.rebuild();
@@ -238,6 +249,7 @@ impl Window {
             Event::Devices { outputs, inputs } => {
                 *self.outputs.borrow_mut() = outputs;
                 *self.inputs.borrow_mut() = inputs;
+                self.lay_out_stream_decks();
                 self.listen
                     .refresh(&self.state.borrow(), &self.outputs.borrow());
                 self.refresh_dialogs();

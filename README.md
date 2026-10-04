@@ -85,7 +85,10 @@ each voice is heard once.
 The [StreamController plugin](integrations/streamcontroller/README.md) and
 the [OpenDeck plugin](integrations/opendeck/README.md) put mutes, levels, the
 mix heard in the headphones and the device it is heard on under keys and
-dials, each showing what it controls as Pipedeck draws it.
+dials, each showing what it controls as Pipedeck draws it, meters and all,
+the way Elgato's Wave Link plugin does. Both are installed from Settings,
+Plug-ins, Stream Deck, which also keeps OpenDeck's ready-made Pipedeck
+profiles laid out from the mixer.
 
 ## Effects
 

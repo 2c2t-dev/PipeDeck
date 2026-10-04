@@ -23,15 +23,16 @@ so, and come back when it does.
 
 ## Install
 
-```sh
-integrations/streamcontroller/install.sh
-```
+In Pipedeck: **Settings**, **Plug-ins**, **Stream Deck**, **Install** next
+to StreamController, which puts the plugin and Pipedeck's icons in
+StreamController's plugins folder
+(`~/.var/app/com.core447.StreamController/data/plugins`). StreamController
+loads plugins when it starts, so restart it; the actions are then under
+**Pipedeck**. Drop one on a key or a dial, and pick what it controls in its
+settings.
 
-copies the plugin and Pipedeck's icons into StreamController's plugins
-folder (`~/.var/app/com.core447.StreamController/data/plugins`, or
-`$STREAMCONTROLLER_DATA/plugins`). StreamController loads plugins when it
-starts, so restart it; the actions are then under **Pipedeck**. Drop one
-on a key or a dial, and pick what it controls in its settings.
+Or by hand, from a checkout: `integrations/streamcontroller/install.sh`
+(or with `$STREAMCONTROLLER_DATA` for another data folder).
 
 ## How it talks to Pipedeck
 

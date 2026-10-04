@@ -29,6 +29,22 @@ pub fn block_termination_signals() {
     }
 }
 
+/// Let a program started from here be stopped as any other: the mask is
+/// passed on to what a thread starts, and a program left with SIGTERM
+/// blocked can only be killed.
+pub fn unblocked_in(command: &mut std::process::Command) -> &mut std::process::Command {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: between fork and exec only async-signal-safe calls are made:
+    // pthread_sigmask on a set built before the fork.
+    let set = termination_set();
+    unsafe {
+        command.pre_exec(move || {
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+            Ok(())
+        })
+    }
+}
+
 /// Spawn the thread that waits for SIGINT/SIGTERM. `on_signal` is called
 /// once, from that thread, on the first signal.
 pub fn spawn_watcher<F: FnOnce() + Send + 'static>(on_signal: F) {

@@ -23,15 +23,19 @@ the keys say so, and come back when it does.
 
 ## Install
 
+In Pipedeck: **Settings**, **Plug-ins**, **Stream Deck**, **Install** next
+to OpenDeck. It puts the plugin in OpenDeck's plugins folder
+(`~/.config/opendeck/plugins`), lays out a Pipedeck profile for each deck,
+and restarts OpenDeck if it was running, since it reads its plugins when it
+starts; **Update** does the same when Pipedeck has a newer one.
+
+Or by hand, from a checkout:
+
 ```sh
 integrations/opendeck/install.sh
 ```
 
-builds the plugin and copies it into OpenDeck's plugins folder
-(`~/.config/opendeck/plugins`, or `$OPENDECK_CONFIG/plugins`). OpenDeck
-loads plugins when it starts, so restart it; the actions are then under
-**Pipedeck**. Drop one on a key or a dial, and pick what it controls in the
-settings under it.
+builds the plugin and copies it there; restart OpenDeck.
 
 OpenDeck and StreamController cannot both hold a Stream Deck: use one.
 StreamController reaches the decks through libusb and takes them from the
@@ -45,15 +49,22 @@ echo 1-2.4.2:1.0 | sudo tee /sys/bus/usb/drivers/usbhid/bind
 
 ## Ready-made profiles
 
+Pipedeck lays out a profile called **Pipedeck** for each Stream Deck
+OpenDeck knows, from the mixer as it is, next to the profiles already
+there; pick it in OpenDeck's profile menu. With **Keep the Pipedeck
+profiles laid out from the mixer** on, as it is unless turned off in the
+same settings, it lays them out again a few seconds after a channel, a
+mix, a cell or a device comes or goes, closing OpenDeck meanwhile: OpenDeck
+holds a profile it has read and writes it back over the disk. A name or a
+level changing does not call for it. What was changed by hand on those
+profiles is replaced, so keep your own in another. **Lay out now** does it
+at once; so does
+
 ```sh
 ~/.config/opendeck/plugins/com.fabienmillet.pipedeck.sdPlugin/x86_64-unknown-linux-gnu/bin/pipedeck-opendeck --profiles
 ```
 
-writes a profile called **Pipedeck** for each Stream Deck OpenDeck knows,
-laid out from the mixer as it is, next to the profiles already there; pick
-it in OpenDeck's profile menu. Run it again after adding channels or
-mixes, or after plugging in another deck; it replaces only the Pipedeck
-profiles, and is best run with OpenDeck closed.
+with OpenDeck closed.
 
 - **Stream Deck** (15 keys): the channels on the top row, the mixes to hear
   in the headphones on the middle one with the output device at its end,
@@ -65,7 +76,7 @@ profiles, and is best run with OpenDeck closed.
   column of mixes and a column of mixes to hear, the output device last.
 
 Every key on them is an ordinary action: change it in its settings, move it
-or replace it as any other.
+or replace it as any other, in a profile of your own.
 
 ## How it works
 
