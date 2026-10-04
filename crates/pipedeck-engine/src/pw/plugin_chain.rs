@@ -442,6 +442,9 @@ impl PluginChain {
             format!("Pipedeck: {owner} plug-ins out"),
         );
         playback_props.insert(*pipewire::keys::MEDIA_CATEGORY, "Playback");
+        // Like the loopbacks' own: a stream inside the mixer, which the
+        // desktop's volume controls leave out.
+        playback_props.insert(*pipewire::keys::NODE_VIRTUAL, "true");
 
         let capture = StreamRc::new(core.clone(), "pipedeck-plugins-in", capture_props)?;
         let playback = StreamRc::new(core.clone(), "pipedeck-plugins-out", playback_props)?;

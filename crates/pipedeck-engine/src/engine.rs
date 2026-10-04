@@ -565,7 +565,13 @@ fn serve(
             return (rx, Ending::Unreachable, config);
         }
     };
-    let connected = ContextRc::new(&mainloop, None).and_then(|context| {
+    // What the desktop shows for Pipedeck's streams: its name and its icon,
+    // not those of the program's file.
+    let identity = pw::properties::properties! {
+        *pw::keys::APP_NAME => "Pipedeck",
+        *pw::keys::APP_ICON_NAME => "dev._2c2t.Pipedeck",
+    };
+    let connected = ContextRc::new(&mainloop, Some(identity)).and_then(|context| {
         let core = context.connect_rc(None)?;
         let registry = core.get_registry_rc()?;
         Ok((context, core, registry))
