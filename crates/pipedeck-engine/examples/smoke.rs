@@ -1252,24 +1252,54 @@ fn main() -> ExitCode {
         // Vesktop sends each person to their sink by name, and its own mix
         // wherever the user put Vesktop: a stream of Vesktop's aimed at a voice
         // sink is left there, not moved to the channel with the rest of it.
-        let mut aimed = Process::new("pw-play")
+        // A player passes for Vesktop by the name it runs under, which is
+        // what the server takes an application's binary to be: a link to
+        // pw-cat called as this test's Vesktop, told to play since its name
+        // no longer says so.
+        let player_path = std::env::var_os("PATH")
+            .and_then(|path| {
+                std::env::split_paths(&path)
+                    .map(|dir| dir.join("pw-cat"))
+                    .find(|candidate| candidate.is_file())
+            })
+            .expect("pw-cat must be installed");
+        let disguised = dir.join(VOICE_APP);
+        let _ = std::fs::remove_file(&disguised);
+        std::os::unix::fs::symlink(&player_path, &disguised).expect("a link to pw-play");
+        let mut aimed = Process::new(&disguised)
+            .arg("--playback")
             .arg(format!("--target={}", voice("111")))
             .arg("-P")
-            .arg(format!(r#"{{ "application.process.binary": "{VOICE_APP}", "application.name": "{VOICE_APP}", "node.name": "smoke-voice-player" }}"#))
+            .arg(r#"{ "node.name": "smoke-voice-player" }"#)
             .arg(&tone)
             .spawn()
-            .expect("pw-play must be installed");
+            .expect("the disguised player starts");
         std::thread::sleep(Duration::from_secs(3));
         let dump = pw_dump();
         let player = any_node_id(&dump, "smoke-voice-player");
+        let passes = dump
+            .iter()
+            .find(|o| props(o)["node.name"].as_str() == Some("smoke-voice-player"))
+            .and_then(|o| {
+                // What the mixer matches an application by: its binary, or
+                // its name when the server does not say the binary.
+                let props = props(o);
+                props["application.process.binary"]
+                    .as_str()
+                    .or_else(|| props["application.name"].as_str())
+            })
+            == Some(VOICE_APP);
         let alice = node_id(&dump, &voice("111"));
         let stayed =
             matches!((player, alice), (Some(p), Some(a)) if links(&dump).contains(&(p, a)));
         let _ = aimed.kill();
         let _ = aimed.wait();
         check(
-            stayed,
-            &format!("Vesktop's stream for Alice stays on her sink: {player:?} -> {alice:?}"),
+            passes && stayed,
+            &format!(
+                "Vesktop's stream for Alice stays on her sink: passes for Vesktop {passes}, \
+                 {player:?} -> {alice:?}"
+            ),
             &mut failures,
         );
 
