@@ -10,9 +10,9 @@
 //! crosses: the plug-ins themselves live with the capture side and are only
 //! ever touched there.
 
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::RefCell;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use libspa::param::audio::{AudioFormat, AudioInfoRaw};
@@ -40,24 +40,24 @@ const MAX_BLOCK: usize = 2048;
 
 /// A ring between the two streams.
 ///
-/// One writer, one reader, both on the real-time thread, so the indices are
-/// atomic and the data is left unguarded on purpose: a lock here would be
-/// the one thing that must not happen in that callback.
+/// One writer, one reader, with nothing to wait on between them: a lock
+/// here would be the one thing that must not happen in those callbacks.
+/// The two may run on different threads — PipeWire can give each stream a
+/// data loop of its own — so every sample is an atomic, as plain to read and
+/// write as a float, and the indices say which ones are ready.
 struct Ring {
-    samples: UnsafeCell<Vec<f32>>,
+    /// Interleaved samples, as f32 bits.
+    samples: Box<[AtomicU32]>,
     write: AtomicUsize,
     read: AtomicUsize,
 }
 
-// SAFETY: the two streams touch it from the same real-time thread, one
-// writing and one reading, and the indices order every access.
-unsafe impl Send for Ring {}
-unsafe impl Sync for Ring {}
-
 impl Ring {
     fn new() -> Self {
         Self {
-            samples: UnsafeCell::new(vec![0.0; RING_FRAMES * CHANNELS]),
+            samples: (0..RING_FRAMES * CHANNELS)
+                .map(|_| AtomicU32::new(0))
+                .collect(),
             write: AtomicUsize::new(0),
             read: AtomicUsize::new(0),
         }
@@ -71,13 +71,12 @@ impl Ring {
         if write.wrapping_sub(read) + frames > RING_FRAMES {
             return;
         }
-        // SAFETY: only this side writes, and only inside the span the reader
-        // has already passed.
-        let samples = unsafe { &mut *self.samples.get() };
+        // Only inside the span the reader has already passed, and published
+        // by the release below.
         for frame in 0..frames {
             let slot = ((write + frame) % RING_FRAMES) * CHANNELS;
             for (channel, buffer) in channels.iter().enumerate().take(CHANNELS) {
-                samples[slot + channel] = buffer[frame];
+                self.samples[slot + channel].store(buffer[frame].to_bits(), Ordering::Relaxed);
             }
         }
         self.write.store(write + frames, Ordering::Release);
@@ -89,13 +88,14 @@ impl Ring {
         let read = self.read.load(Ordering::Relaxed);
         let available = self.write.load(Ordering::Acquire).wrapping_sub(read);
         let taken = frames.min(available);
-        // SAFETY: only this side reads, and only what the writer has
-        // published.
-        let samples = unsafe { &*self.samples.get() };
+        // Only what the writer has published, by the acquire above.
         for frame in 0..frames {
             for (channel, buffer) in channels.iter_mut().enumerate().take(CHANNELS) {
                 buffer[frame] = if frame < taken {
-                    samples[((read + frame) % RING_FRAMES) * CHANNELS + channel]
+                    f32::from_bits(
+                        self.samples[((read + frame) % RING_FRAMES) * CHANNELS + channel]
+                            .load(Ordering::Relaxed),
+                    )
                 } else {
                     0.0
                 };
@@ -438,36 +438,40 @@ impl PluginChain {
                 if datas.len() < CHANNELS {
                     return;
                 }
-                let frames = datas[0].chunk().size() as usize / std::mem::size_of::<f32>();
-                let frames = frames.min(MAX_BLOCK);
+                let stride = std::mem::size_of::<f32>();
+                let total = datas[0].chunk().size() as usize / stride;
 
-                if frames == 0 {
-                    return;
-                }
+                // A quantum longer than the plug-ins were opened for is run
+                // through them a block at a time, rather than cut short.
+                let mut done = 0;
+                while done < total {
+                    let frames = (total - done).min(MAX_BLOCK);
+                    for (channel, data) in datas.iter_mut().enumerate().take(CHANNELS) {
+                        let offset = data.chunk().offset() as usize;
+                        let Some(bytes) = data.data() else {
+                            return;
+                        };
+                        let plane = &mut state.scratch[channel];
+                        for (frame, sample) in plane.iter_mut().take(frames).enumerate() {
+                            let start = offset + (done + frame) * stride;
+                            *sample = bytes
+                                .get(start..start + stride)
+                                .and_then(|bytes| bytes.try_into().ok())
+                                .map_or(0.0, f32::from_le_bytes);
+                        }
+                    }
 
-                for (channel, data) in datas.iter_mut().enumerate().take(CHANNELS) {
-                    let Some(bytes) = data.data() else {
+                    let Some(mut block) = block(&mut state.scratch, frames) else {
                         return;
                     };
-                    let plane = &mut state.scratch[channel];
-                    for (frame, sample) in plane.iter_mut().take(frames).enumerate() {
-                        let start = frame * std::mem::size_of::<f32>();
-                        *sample = match bytes[start..start + 4].try_into() {
-                            Ok(bytes) => f32::from_le_bytes(bytes),
-                            Err(_) => 0.0,
-                        };
+                    for plugin in &mut state.plugins {
+                        if plugin.process(&mut block).is_err() {
+                            return;
+                        }
                     }
+                    state.ring.write(&block, frames);
+                    done += frames;
                 }
-
-                let Some(mut block) = block(&mut state.scratch, frames) else {
-                    return;
-                };
-                for plugin in &mut state.plugins {
-                    if plugin.process(&mut block).is_err() {
-                        return;
-                    }
-                }
-                state.ring.write(&block, frames);
             })
             .register()?;
 
@@ -486,29 +490,43 @@ impl PluginChain {
                 if datas.len() < CHANNELS {
                     return;
                 }
-                let frames = requested.min(MAX_BLOCK);
-                if frames == 0 {
+                let stride = std::mem::size_of::<f32>();
+                // As much as was asked for, as far as the buffers hold, a
+                // block at a time.
+                let room = datas
+                    .iter_mut()
+                    .take(CHANNELS)
+                    .map(|data| data.data().map_or(0, |bytes| bytes.len() / stride))
+                    .min()
+                    .unwrap_or(0);
+                let total = requested.min(room);
+                if total == 0 {
                     return;
                 }
 
-                let Some(mut block) = block(&mut state.scratch, frames) else {
-                    return;
-                };
-                state.ring.read(&mut block, frames);
-                let planes = &state.scratch;
-                for (channel, data) in datas.iter_mut().enumerate().take(CHANNELS) {
-                    let stride = std::mem::size_of::<f32>();
-                    let wrote = frames * stride;
-                    if let Some(bytes) = data.data() {
-                        for frame in 0..frames {
-                            let sample = planes[channel][frame].to_le_bytes();
-                            bytes[frame * stride..frame * stride + stride].copy_from_slice(&sample);
+                let mut done = 0;
+                while done < total {
+                    let frames = (total - done).min(MAX_BLOCK);
+                    let Some(mut block) = block(&mut state.scratch, frames) else {
+                        return;
+                    };
+                    state.ring.read(&mut block, frames);
+                    for (channel, data) in datas.iter_mut().enumerate().take(CHANNELS) {
+                        if let Some(bytes) = data.data() {
+                            for frame in 0..frames {
+                                let at = (done + frame) * stride;
+                                let sample = state.scratch[channel][frame].to_le_bytes();
+                                bytes[at..at + stride].copy_from_slice(&sample);
+                            }
                         }
                     }
+                    done += frames;
+                }
+                for data in datas.iter_mut().take(CHANNELS) {
                     let chunk = data.chunk_mut();
                     *chunk.offset_mut() = 0;
                     *chunk.stride_mut() = stride as i32;
-                    *chunk.size_mut() = wrote as u32;
+                    *chunk.size_mut() = (total * stride) as u32;
                 }
             })
             .register()?;
