@@ -141,9 +141,23 @@ pub struct VoiceConfig {
     pub gain: f32,
     #[serde(default)]
     pub muted: bool,
+    /// The day they were last in a call, counted from 1970: someone not
+    /// seen for [`FORGET_AFTER_DAYS`] is forgotten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen: Option<u64>,
     /// Whether they are in the call right now. Never saved.
     #[serde(skip)]
     pub present: bool,
+}
+
+/// How long someone not seen in a call is remembered, in days.
+pub const FORGET_AFTER_DAYS: u64 = 90;
+
+/// Today, counted in days from 1970.
+pub fn today() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() / 86_400)
 }
 
 impl VoiceConfig {

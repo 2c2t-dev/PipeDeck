@@ -142,6 +142,11 @@ pub enum Command {
         index: usize,
         controls: Vec<crate::types::Control>,
     },
+    /// Forget someone of the calls a row carried, who is not in one now.
+    ForgetVoice {
+        id: SourceId,
+        user: String,
+    },
     /// Which window has the focus: the process owning it and its class, as
     /// the desktop says. See [`Event::Focused`].
     SetFocus {
@@ -923,6 +928,7 @@ fn handle_command(
             structural = false;
             g.set_effect_params(id, index, controls)
         }
+        Command::ForgetVoice { id, user } => g.forget_voice(id, &user),
         Command::SetFocus { pid, class } => {
             structural = false;
             g.set_focus(pid, class);

@@ -20,8 +20,8 @@ use super::meter::Meter;
 use super::{apply_props, Graph};
 use crate::error::EngineError;
 use crate::types::{
-    node_prefix, voice_app, voice_labels, voice_node_prefix, CallMember, ChainState, SourceId,
-    VoiceConfig,
+    node_prefix, today, voice_app, voice_labels, voice_node_prefix, CallMember, ChainState,
+    SourceId, VoiceConfig, FORGET_AFTER_DAYS,
 };
 
 /// Streams whose target was just read, and that target. See
@@ -44,6 +44,28 @@ pub(super) struct Voice {
     /// back within a second, and a sink made again under a stream leaves
     /// that stream playing nowhere.
     pub(super) gone_since: Option<std::time::Instant>,
+}
+
+/// Forget the people not seen in a call for [`FORGET_AFTER_DAYS`], and
+/// count the days of anyone known from before they were counted from
+/// today; everyone is taken as absent until the call says otherwise. Says
+/// whether anything is to be saved.
+fn remember(voices: &mut Vec<VoiceConfig>, today: u64) -> bool {
+    let before = voices.len();
+    voices.retain(|voice| {
+        voice
+            .seen
+            .map_or(true, |seen| today.saturating_sub(seen) <= FORGET_AFTER_DAYS)
+    });
+    let mut changed = voices.len() != before;
+    for voice in voices.iter_mut() {
+        voice.present = false;
+        if voice.seen.is_none() {
+            voice.seen = Some(today);
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// How long a person's sink outlives their leaving the call.
@@ -160,10 +182,12 @@ impl Graph {
         let labels = voice_labels(&self.call);
 
         // Who is present, in the config: the level a person had last time
-        // is theirs again.
+        // is theirs again. Someone not seen for long is forgotten, and
+        // someone known from before days were counted is counted from now.
+        let today = today();
         for source in &mut self.config.sources {
-            for voice in &mut source.voices {
-                voice.present = false;
+            if remember(&mut source.voices, today) {
+                self.dirty = true;
             }
         }
         if let Some(cfg) = row.and_then(|id| self.config.source_mut(id)) {
@@ -171,6 +195,10 @@ impl Graph {
                 match cfg.voices.iter_mut().find(|voice| voice.id == member.id) {
                     Some(voice) => {
                         voice.present = true;
+                        if voice.seen != Some(today) {
+                            voice.seen = Some(today);
+                            self.dirty = true;
+                        }
                         if voice.name != member.name {
                             voice.name = member.name.clone();
                             self.dirty = true;
@@ -187,6 +215,7 @@ impl Graph {
                             avatar: member.avatar.clone(),
                             gain: 1.0,
                             muted: false,
+                            seen: Some(today),
                             present: true,
                         });
                         self.dirty = true;
@@ -352,6 +381,22 @@ impl Graph {
         Ok(())
     }
 
+    /// Forget someone of the calls a row carried: their level and their
+    /// picture. Not while they are in the call, where they would be met
+    /// again at once.
+    pub fn forget_voice(&mut self, id: SourceId, user: &str) -> Result<(), EngineError> {
+        let cfg = self
+            .config
+            .source_mut(id)
+            .ok_or(EngineError::UnknownSource(id))?;
+        let before = cfg.voices.len();
+        cfg.voices.retain(|voice| voice.present || voice.id != user);
+        if cfg.voices.len() != before {
+            self.dirty = true;
+        }
+        Ok(())
+    }
+
     /// Take the sinks of the people who left a while ago off the graph.
     pub(super) fn expire_voices(&mut self) {
         if self.voices.values().any(|voice| {
@@ -361,5 +406,46 @@ impl Graph {
         }) {
             self.sync_voices();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn voice(id: &str, seen: Option<u64>) -> VoiceConfig {
+        VoiceConfig {
+            id: id.into(),
+            name: id.into(),
+            avatar: None,
+            gain: 0.5,
+            muted: false,
+            seen,
+            present: true,
+        }
+    }
+
+    #[test]
+    fn someone_not_seen_for_months_is_forgotten() {
+        let today = 20_000;
+        let mut voices = vec![
+            voice("recent", Some(today - 10)),
+            voice("gone", Some(today - FORGET_AFTER_DAYS - 1)),
+            voice("before", None),
+        ];
+        assert!(remember(&mut voices, today));
+        let kept: Vec<_> = voices
+            .iter()
+            .map(|v| (v.id.as_str(), v.seen, v.present))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                ("recent", Some(today - 10), false),
+                ("before", Some(today), false)
+            ]
+        );
+        // Nothing more to save the second time.
+        assert!(!remember(&mut voices, today));
     }
 }

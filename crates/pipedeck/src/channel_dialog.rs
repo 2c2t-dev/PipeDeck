@@ -55,6 +55,10 @@ pub struct ChannelDialog {
     /// The applications drawn, and the ones playing the picker was made
     /// with: drawn again only when these change, not under the pointer.
     drawn_apps: RefCell<Option<(Vec<String>, Vec<String>)>>,
+    /// The people of past calls on the row carrying them, each with a way
+    /// to forget them, and who was drawn there.
+    past: gtk::Box,
+    drawn_past: RefCell<Option<Vec<(String, String)>>>,
 }
 
 impl ChannelDialog {
@@ -120,6 +124,8 @@ impl ChannelDialog {
             closed: Rc::new(StdCell::new(false)),
             gone: Rc::new(StdCell::new(false)),
             drawn_apps: RefCell::new(None),
+            past: gtk::Box::new(gtk::Orientation::Vertical, 6),
+            drawn_past: RefCell::new(None),
         });
 
         dialog.set_child(Some(&this.build(source)));
@@ -262,6 +268,7 @@ impl ChannelDialog {
 
         self.add_app.set_halign(gtk::Align::Center);
         page.append(&self.add_app);
+        page.append(&self.past);
         page.upcast()
     }
 
@@ -422,6 +429,8 @@ impl ChannelDialog {
             return;
         }
 
+        self.draw_past(source);
+
         // Drawn again only when what is assigned or what plays changed: an
         // application starting anywhere says so, and the list and its
         // picker made again each time would close the picker as it is used.
@@ -457,6 +466,53 @@ impl ChannelDialog {
             self.add_app.set_popover(Some(&popover));
         }
         self.syncing.set(false);
+    }
+
+    /// The people of past calls this row remembers the levels of, and a way
+    /// to forget each. Hidden when there is nobody to forget.
+    fn draw_past(self: &Rc<Self>, source: &SourceConfig) {
+        let absent: Vec<(String, String)> = source
+            .voices
+            .iter()
+            .filter(|voice| !voice.present)
+            .map(|voice| (voice.id.clone(), voice.name.clone()))
+            .collect();
+        if self.drawn_past.borrow().as_ref() == Some(&absent) {
+            return;
+        }
+        *self.drawn_past.borrow_mut() = Some(absent.clone());
+        while let Some(child) = self.past.first_child() {
+            self.past.remove(&child);
+        }
+        self.past.set_visible(!absent.is_empty());
+        if absent.is_empty() {
+            return;
+        }
+        self.past.append(&section("Past calls"));
+        for (user, name) in absent {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let label = gtk::Label::new(Some(&name));
+            label.set_xalign(0.0);
+            label.set_hexpand(true);
+            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            row.append(&label);
+            let forget = gtk::Button::with_label("Forget");
+            forget.add_css_class("flat");
+            forget.set_tooltip_text(Some("Forget their level"));
+            forget.connect_clicked({
+                let this = Rc::downgrade(self);
+                move |_| {
+                    if let Some(this) = this.upgrade() {
+                        this.engine.send(Command::ForgetVoice {
+                            id: this.id,
+                            user: user.clone(),
+                        });
+                    }
+                }
+            });
+            row.append(&forget);
+            self.past.append(&row);
+        }
     }
 
     fn app_row(self: &Rc<Self>, key: &str, running: Option<&App>) -> gtk::Widget {
