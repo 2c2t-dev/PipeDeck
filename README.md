@@ -20,6 +20,13 @@ call are separate balances.
 - **Discord calls** split into one track per person, with Vesktop.
 - Lives through PipeWire and WirePlumber restarts.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/mixer-dark.png">
+    <img src=".github/mixer-light.png" alt="The mixer: five channels in rows, three mixes in columns, a fader in each cell that links them" width="800">
+  </picture>
+</p>
+
 ## Building
 
 Requirements: PipeWire ≥ 1.2 (with headers), GTK ≥ 4.18, libadwaita ≥ 1.7,
@@ -67,6 +74,13 @@ a microphone runs them too. Mixes have no effects.
 | Equaliser | Five bands shaped for a voice, set by dragging them on a curve, with presets. |
 | De-esser | Turns down harsh s and sh sounds. *Learn from my voice* sets it for you. |
 | Compressor | Evens out loud and quiet moments. *Learn from my voice* sets it for you. |
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/equaliser-dark.png">
+    <img src=".github/equaliser-light.png" alt="The equaliser's window: five bands on a curve, over the zones a voice is talked about in" width="560">
+  </picture>
+</p>
 
 Each effect can be switched off without removing it. Changing a setting is
 heard at once; adding or removing an effect stops the audio for a moment.
@@ -143,6 +157,11 @@ Checks against the live PipeWire server, all run with
 | `reconnect_check` | The mixer comes back after PipeWire restarts. Point `PIPEWIRE_REMOTE` at a private server, since restarting your own cuts all audio. |
 | `plugins`, `plugin_check [name]` | Lists the VST3 plug-ins, runs a tone through one. |
 | `stereotool_check [preset.sts]` | Runs a tone through Stereo Tool; `--window` also shows its window. |
+
+`cargo run -p pipedeck --example screenshot .github [--light]` draws the
+README's pictures from a made-up mixer, without touching yours. Run it on
+GTK's Broadway backend (`gtk4-broadwayd :5 &`, then
+`GDK_BACKEND=broadway BROADWAY_DISPLAY=:5`) so nothing shows on screen.
 
 ### PipeWire nodes
 
