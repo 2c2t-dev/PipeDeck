@@ -46,6 +46,10 @@ pub struct Settings {
     /// Pipedeck starts.
     #[serde(default)]
     pub software_rendering: bool,
+    /// Whether closing the window leaves the mixer running, and starting
+    /// with the session leaves the window closed.
+    #[serde(default)]
+    pub keep_running: bool,
 }
 
 fn yes() -> bool {
@@ -59,6 +63,7 @@ impl Default for Settings {
             start_at_login: false,
             stream_deck_profiles: true,
             software_rendering: false,
+            keep_running: false,
         }
     }
 }
@@ -128,7 +133,9 @@ pub fn starts_at_login() -> bool {
 ///
 /// It points at the running binary rather than at an installed name, so it
 /// works for a build that was never installed.
-pub fn set_start_at_login(enabled: bool) -> std::io::Result<()> {
+/// Write or remove the desktop entry starting the mixer with the session:
+/// in the background, its window closed, when `background`.
+pub fn set_start_at_login(enabled: bool, background: bool) -> std::io::Result<()> {
     let Some(path) = autostart_path() else {
         return Ok(());
     };
@@ -145,10 +152,11 @@ pub fn set_start_at_login(enabled: bool) -> std::io::Result<()> {
          Type=Application\n\
          Name=Pipedeck\n\
          Comment=PipeWire mixer\n\
-         Exec={}\n\
+         Exec={}{}\n\
          Terminal=false\n\
          X-GNOME-Autostart-enabled=true\n",
-        binary.display()
+        binary.display(),
+        if background { " --background" } else { "" }
     );
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

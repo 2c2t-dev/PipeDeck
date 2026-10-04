@@ -207,6 +207,11 @@ impl Window {
         });
     }
 
+    /// Have closing the window hide it, the mixer running on, or close it.
+    pub fn set_keep_running(&self, on: bool) {
+        self.window.set_hide_on_close(on);
+    }
+
     pub fn present(&self) {
         self.window.present();
     }

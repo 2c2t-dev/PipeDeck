@@ -39,6 +39,12 @@ use window::Window;
 /// the GSettings path and the Flatpak sandbox, so it is meant to be stable.
 const APP_ID: &str = "dev._2c2t.Pipedeck";
 
+thread_local! {
+    /// Asked to start with the window closed: honoured once, when the
+    /// mixer keeps running without it.
+    static START_HIDDEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 enum Msg {
     Engine(Event),
     Quit,
@@ -55,7 +61,23 @@ fn main() -> glib::ExitCode {
 
     let app_id = std::env::var("PIPEDECK_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
     let app = adw::Application::builder().application_id(app_id).build();
+    app.add_main_option(
+        "background",
+        glib::Char::from(b'b'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Start with the window closed, when Pipedeck keeps running without it",
+        None,
+    );
+    app.connect_handle_local_options(|_, options| {
+        if options.contains("background") {
+            START_HIDDEN.set(true);
+        }
+        // Carry on as usual.
+        std::ops::ControlFlow::Continue(())
+    });
     app.connect_activate(activate);
+    app.set_accels_for_action("app.quit", &["<Control>q"]);
     app.run()
 }
 
@@ -146,6 +168,17 @@ fn activate(app: &adw::Application) {
     // never shows in the wrong one for a frame.
     preferences::apply_theme(settings::Settings::load().theme);
     let window = Window::new(app, engine.clone());
+    let keep_running = settings::Settings::load().keep_running;
+    window.set_keep_running(keep_running);
+
+    // Quitting for good, mixer and all, which closing the window no longer
+    // does when it keeps running.
+    let quit = gtk::gio::SimpleAction::new("quit", None);
+    quit.connect_activate({
+        let app = app.clone();
+        move |_, _| app.quit()
+    });
+    app.add_action(&quit);
 
     // Stop the engine (and wait for the graph teardown) when the app exits.
     app.connect_shutdown(move |_| engine.shutdown());
@@ -163,5 +196,9 @@ fn activate(app: &adw::Application) {
         }
     });
 
-    window.present();
+    // Started with the session in the background: the mixer runs, and the
+    // window waits to be asked for, by starting Pipedeck again.
+    if !(keep_running && START_HIDDEN.take()) {
+        window.present();
+    }
 }

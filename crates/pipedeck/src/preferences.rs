@@ -847,7 +847,9 @@ fn general_page() -> adw::PreferencesPage {
     autostart.connect_active_notify({
         let saved = saved.clone();
         move |row| {
-            if let Err(e) = settings::set_start_at_login(row.is_active()) {
+            if let Err(e) =
+                settings::set_start_at_login(row.is_active(), saved.borrow().keep_running)
+            {
                 log::error!("cannot change the autostart entry: {e}");
                 row.set_active(settings::starts_at_login());
                 return;
@@ -857,6 +859,31 @@ fn general_page() -> adw::PreferencesPage {
         }
     });
     session.add(&autostart);
+
+    let keep = adw::SwitchRow::new();
+    keep.set_title("Keep running when the window is closed");
+    keep.set_subtitle("The mixer and the Stream Decks carry on; Ctrl+Q quits");
+    keep.set_active(saved.borrow().keep_running);
+    keep.connect_active_notify({
+        let saved = saved.clone();
+        move |row| {
+            let on = row.is_active();
+            saved.borrow_mut().keep_running = on;
+            saved.borrow().save();
+            // The window open now, and the session's next start.
+            if let Some(app) = gtk::gio::Application::default().and_downcast::<gtk::Application>() {
+                for window in app.windows() {
+                    window.set_hide_on_close(on);
+                }
+            }
+            if settings::starts_at_login() {
+                if let Err(e) = settings::set_start_at_login(true, on) {
+                    log::error!("cannot change the autostart entry: {e}");
+                }
+            }
+        }
+    });
+    session.add(&keep);
 
     let software = adw::SwitchRow::new();
     software.set_title("Draw without the graphics card");
