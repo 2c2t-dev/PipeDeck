@@ -188,19 +188,29 @@ pub fn import_plugin_into(source: &Path, directory: &Path) -> Result<PathBuf, St
         return Err(format!("{name} is already installed"));
     }
 
-    if source.is_dir() {
-        if source.extension().and_then(|e| e.to_str()) != Some("vst3") {
-            return Err("a bundle directory has to be named something.vst3".into());
-        }
-        copy_tree(source, &bundle).map_err(|e| format!("cannot copy the bundle: {e}"))?;
+    if source.is_dir() && source.extension().and_then(|e| e.to_str()) != Some("vst3") {
+        return Err("a bundle directory has to be named something.vst3".into());
+    }
+    if !source.is_dir() && source.extension().and_then(|e| e.to_str()) != Some("so") {
+        return Err("that is neither a .vst3 bundle nor a .so".into());
+    }
+    let copied = if source.is_dir() {
+        copy_tree(source, &bundle).map_err(|e| format!("cannot copy the bundle: {e}"))
     } else {
-        if source.extension().and_then(|e| e.to_str()) != Some("so") {
-            return Err("that is neither a .vst3 bundle nor a .so".into());
-        }
         let inside = bundle.join("Contents").join(architecture());
-        std::fs::create_dir_all(&inside).map_err(|e| format!("cannot make the bundle: {e}"))?;
-        std::fs::copy(source, inside.join(format!("{name}.so")))
-            .map_err(|e| format!("cannot copy the plug-in: {e}"))?;
+        std::fs::create_dir_all(&inside)
+            .map_err(|e| format!("cannot make the bundle: {e}"))
+            .and_then(|()| {
+                std::fs::copy(source, inside.join(format!("{name}.so")))
+                    .map(|_| ())
+                    .map_err(|e| format!("cannot copy the plug-in: {e}"))
+            })
+    };
+    // Half a bundle left behind would be found broken on every scan, and
+    // would have the next try told it is already installed.
+    if let Err(e) = copied {
+        let _ = std::fs::remove_dir_all(&bundle);
+        return Err(e);
     }
 
     // A bundle with no binary for this machine would be found and refused
