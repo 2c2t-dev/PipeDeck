@@ -329,7 +329,7 @@ impl PluginChain {
     /// of its own.
     pub fn poll_windows(&self) {
         for slot in self.open.borrow_mut().iter_mut() {
-            if slot.as_ref().is_some_and(|window| window.close_requested()) {
+            if slot.as_mut().is_some_and(|window| window.close_requested()) {
                 *slot = None;
             }
         }

@@ -97,7 +97,7 @@ fn main() -> ExitCode {
     // alone: only the X11 builds carry it, and it wants a display.
     if std::env::args().any(|arg| arg == "--window") {
         match stereotool::Window::open(instance.handle()) {
-            Ok(window) => {
+            Ok(mut window) => {
                 println!("[ ok ] its window is up; closing in 10 seconds");
                 // Read its events as the engine does on its tick: that is
                 // where the window is kept in place and its close button

@@ -492,6 +492,22 @@ struct X11 {
     pending: unsafe extern "C" fn(*mut c_void) -> c_int,
     next_event: unsafe extern "C" fn(*mut c_void, *mut XEvent) -> c_int,
     flush: unsafe extern "C" fn(*mut c_void) -> c_int,
+    set_error_handler: unsafe extern "C" fn(Option<XErrorHandler>) -> Option<XErrorHandler>,
+}
+
+/// Xlib's error handler: the display and the error event.
+type XErrorHandler = unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int;
+
+/// Say an X error and carry on.
+///
+/// Xlib's own handler ends the process on any error, and Stereo Tool's
+/// window lives on two connections at once, the library's and ours: one
+/// of them asking after a window the other has just destroyed is enough
+/// for a `BadWindow`, and the whole mixer would go with it. The handler is
+/// the process's, so it covers the library's connection too.
+unsafe extern "C" fn carry_on(_display: *mut c_void, _event: *mut c_void) -> c_int {
+    log::debug!("an X request about a window that is gone was ignored");
+    0
 }
 
 /// Xlib's `XSizeHints`, as far as the window manager reads it.
@@ -629,10 +645,12 @@ fn x11() -> Option<&'static X11> {
                 pending: symbol!(b"XPending\0"),
                 next_event: symbol!(b"XNextEvent\0"),
                 flush: symbol!(b"XFlush\0"),
+                set_error_handler: symbol!(b"XSetErrorHandler\0"),
             };
             // Stereo Tool draws from threads of its own. Xlib wants to be
             // told before that happens.
             (x11.init_threads)();
+            (x11.set_error_handler)(Some(carry_on));
             std::mem::forget(library);
             Some(x11)
         }?;
@@ -662,7 +680,13 @@ struct Host {
     /// Stereo Tool's own, once adopted.
     child: Option<c_ulong>,
     wm_delete: c_ulong,
+    /// While its window is still looked for: the windows of its title
+    /// there were before, which are another instance's, and since when.
+    looking: Option<(Vec<c_ulong>, std::time::Instant)>,
 }
+
+/// How long Stereo Tool's window is looked for, a tick at a time.
+const LOOK_FOR: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl Host {
     fn new() -> Result<Self, String> {
@@ -693,12 +717,13 @@ impl Host {
                 window,
                 child: None,
                 wm_delete,
+                looking: None,
             })
         }
     }
 
-    /// Every toplevel there is right now.
-    fn toplevels(&self) -> Vec<c_ulong> {
+    /// The windows directly under `window`.
+    fn children(&self, window: c_ulong) -> Vec<c_ulong> {
         let mut root = 0;
         let mut parent = 0;
         let mut children: *mut c_ulong = std::ptr::null_mut();
@@ -706,10 +731,9 @@ impl Host {
         // SAFETY: the out-pointers are ours, and what Xlib hands back is
         // freed with its own `free` once copied.
         unsafe {
-            let screen_root = (self.x11.default_root)(self.display);
             if (self.x11.query_tree)(
                 self.display,
-                screen_root,
+                window,
                 &mut root,
                 &mut parent,
                 &mut children,
@@ -740,30 +764,69 @@ impl Host {
         }
     }
 
-    /// Take in the window Stereo Tool has just opened.
-    ///
-    /// `before` is what was on the screen before it was asked to: another
-    /// instance's window carries the same title, and must be left alone.
-    /// The library opens its window a moment after `GUI_Show` returns, so
-    /// this looks for it a little while.
-    fn adopt(&mut self, before: &[c_ulong]) -> Result<(), String> {
-        let mut found = None;
-        for _ in 0..100 {
-            found = self
-                .toplevels()
-                .into_iter()
-                .filter(|window| *window != self.window && !before.contains(window))
-                .find(|window| {
-                    self.name(*window)
-                        .is_some_and(|name| name.contains(WINDOW_TITLE))
-                });
-            if found.is_some() {
-                break;
+    /// Every window called as Stereo Tool's are, on the screen or one
+    /// level into a toplevel: a window manager that frames its windows puts
+    /// the frame at the top and the window inside it.
+    fn titled(&self) -> Vec<c_ulong> {
+        // SAFETY: the display is ours.
+        let root = unsafe { (self.x11.default_root)(self.display) };
+        let is_titled = |window: c_ulong| {
+            window != self.window
+                && self
+                    .name(window)
+                    .is_some_and(|name| name.contains(WINDOW_TITLE))
+        };
+        let mut found = Vec::new();
+        for top in self.children(root) {
+            if is_titled(top) {
+                found.push(top);
+                continue;
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            found.extend(self.children(top).into_iter().filter(|w| is_titled(*w)));
         }
-        let child = found.ok_or("Stereo Tool opened no window to take in")?;
+        found
+    }
 
+    /// Start looking for the window the library is about to open; `before`
+    /// is the windows of its title already there.
+    fn look_for(&mut self, before: Vec<c_ulong>) {
+        self.looking = Some((before, std::time::Instant::now()));
+        self.look();
+    }
+
+    /// Look once for Stereo Tool's window, and take it in if it is there.
+    ///
+    /// The library opens it a moment after `GUI_Show` returns. Rather than
+    /// wait for it on the engine's thread, which runs the whole mixer, this
+    /// looks again on every tick, a few seconds at most.
+    fn look(&mut self) {
+        let Some((before, since)) = &self.looking else {
+            return;
+        };
+        let found = self
+            .titled()
+            .into_iter()
+            .find(|window| !before.contains(window));
+        let since = *since;
+        match found {
+            Some(child) => {
+                self.looking = None;
+                if let Err(e) = self.adopt(child) {
+                    log::warn!("{e}; the window is on its own");
+                }
+            }
+            None if since.elapsed() >= LOOK_FOR => {
+                self.looking = None;
+                // It is up, on its own, with a close button that does
+                // nothing; the button in the mixer still closes it.
+                log::warn!("Stereo Tool opened no window to take in; it is on its own");
+            }
+            None => {}
+        }
+    }
+
+    /// Take in the window Stereo Tool has opened.
+    fn adopt(&mut self, child: c_ulong) -> Result<(), String> {
         // The window keeps the size the library gave it, and so does ours:
         // whether the library lays itself out again at another size is not
         // something to find out on the user.
@@ -852,7 +915,8 @@ impl Host {
     /// own; a close button that answers within a tick is answered. Stereo
     /// Tool's window having moved inside ours is among them, and it is put
     /// back on the way.
-    fn close_requested(&self) -> bool {
+    fn close_requested(&mut self) -> bool {
+        self.look();
         let mut asked = false;
         let mut moved = false;
         // SAFETY: the display is ours; `pending` says whether `next_event`
@@ -892,10 +956,18 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
-        // SAFETY: both came from the calls above and are released once. The
-        // child, if any, is the library's and already gone by now.
+        // SAFETY: both came from the calls above and are released once.
         unsafe {
+            // Stereo Tool's window is put back on the screen before ours goes:
+            // destroying ours would destroy it with it, under a library that
+            // may still be drawing into it from a thread of its own. Gone
+            // already, the request is an error the handler lets pass.
+            if let Some(child) = self.child {
+                let root = (self.x11.default_root)(self.display);
+                (self.x11.reparent_window)(self.display, child, root, 0, 0);
+            }
             (self.x11.destroy_window)(self.display, self.window);
+            (self.x11.flush)(self.display);
             (self.x11.close_display)(self.display);
         }
     }
@@ -925,20 +997,21 @@ impl Window {
             .as_ref()
             .ok_or("this build of Stereo Tool has no window; install the X11 one")?;
         let mut host = Host::new()?;
-        let before = host.toplevels();
-        let _quiet = Hushed::new();
-        // SAFETY: the processor is alive, this handle holds it.
-        let ptr = unsafe { (gui.create)(handle.ptr) };
-        if ptr.is_null() {
-            return Err("Stereo Tool would not make its window".into());
-        }
-        // SAFETY: the interface is ours, and the host window outlives it.
-        unsafe { (gui.show)(ptr, host.window as *mut c_void) };
-        if let Err(e) = host.adopt(&before) {
-            // It is up, on its own, with a close button that does nothing;
-            // the button in the mixer still closes it.
-            log::warn!("{e}; the window is on its own");
-        }
+        let before = host.titled();
+        let ptr = {
+            // Quiet for the library's own calls only: the rest of the
+            // mixer's words still reach the terminal.
+            let _quiet = Hushed::new();
+            // SAFETY: the processor is alive, this handle holds it.
+            let ptr = unsafe { (gui.create)(handle.ptr) };
+            if ptr.is_null() {
+                return Err("Stereo Tool would not make its window".into());
+            }
+            // SAFETY: the interface is ours, and the host window outlives it.
+            unsafe { (gui.show)(ptr, host.window as *mut c_void) };
+            ptr
+        };
+        host.look_for(before);
         Ok(Self { ptr, host, handle })
     }
 
@@ -947,8 +1020,9 @@ impl Window {
         self.host.raise();
     }
 
-    /// Has the user asked the window manager to close it?
-    pub fn close_requested(&self) -> bool {
+    /// Has the user asked the window manager to close it? Asked on every
+    /// tick, which is also when its window is looked for and kept in place.
+    pub fn close_requested(&mut self) -> bool {
         self.host.close_requested()
     }
 }
@@ -1059,21 +1133,22 @@ impl Instance {
     /// The features running without a licence, as the library names them.
     pub fn unlicensed_features(&self) -> Option<String> {
         let mut buffer = vec![0 as c_char; 1024];
-        // SAFETY: the buffer is ours, and its length is what the call is
-        // told; the library writes a zero-terminated string into it.
+        // SAFETY: the buffer is ours, and the call is told one byte less
+        // than it holds: the last stays zero whatever the library writes.
         let written = unsafe {
             (self.handle.api.unlicensed)(
                 self.handle.ptr,
                 buffer.as_mut_ptr(),
-                buffer.len() as c_int,
+                (buffer.len() - 1) as c_int,
             )
         };
         if !written {
             return None;
         }
-        // SAFETY: the buffer was zeroed, so there is a terminator whatever
-        // the library wrote.
-        let text = unsafe { CStr::from_ptr(buffer.as_ptr()) }
+        // Read up to the first zero within the buffer, never past it.
+        let bytes: Vec<u8> = buffer.iter().map(|&c| c as u8).collect();
+        let text = CStr::from_bytes_until_nul(&bytes)
+            .ok()?
             .to_string_lossy()
             .into_owned();
         (!text.is_empty()).then_some(text)
