@@ -120,14 +120,32 @@ fn badge(svg: &mut String, icon: &str, color: &str, x: f32, y: f32, side: f32, s
 /// An arc around `cx, cy`, from the bottom left round to `part` of the way
 /// to the bottom right, like a knob's travel.
 fn arc(cx: f32, cy: f32, r: f32, part: f32) -> String {
-    let start = 135.0_f32.to_radians();
-    let sweep = 270.0 * part.clamp(0.0, 1.0);
-    let end = start + sweep.to_radians();
+    arc_between(cx, cy, r, 0.0, part)
+}
+
+/// The part of that travel from `from` to `to`.
+fn arc_between(cx: f32, cy: f32, r: f32, from: f32, to: f32) -> String {
+    let at = |part: f32| (135.0 + 270.0 * part.clamp(0.0, 1.0)).to_radians();
+    let (start, end) = (at(from), at(to));
     let point = |a: f32| (cx + r * a.cos(), cy + r * a.sin());
     let (x0, y0) = point(start);
     let (x1, y1) = point(end.min(start + 2.0 * PI - 0.001));
-    let large = u8::from(sweep > 180.0);
+    let large = u8::from(end - start > PI);
     format!("M {x0:.2} {y0:.2} A {r} {r} 0 {large} 1 {x1:.2} {y1:.2}")
+}
+
+/// A meter's colours, by where it reads: green, then yellow from 6 dB
+/// under full scale, red from 1 dB under it.
+const METER: [(f32, f32, &str); 3] = [
+    (0.0, 0.794, "#57e389"),
+    (0.794, 0.962, "#f6d32d"),
+    (0.962, 1.0, "#ed333b"),
+];
+
+/// Where a peak sits on a meter, as the mixer's own meters put it: the
+/// cube root spreads it as the faders are spread.
+pub fn meter_position(peak: f32) -> f32 {
+    peak.clamp(0.0, 1.0).cbrt()
 }
 
 fn text(svg: &mut String, x: f32, y: f32, size: f32, anchor: &str, color: &str, words: &str) {
@@ -148,6 +166,8 @@ pub struct Picture<'a> {
     /// badge's corner, as Wave Link marks a level by its mix.
     pub corner: Option<&'a str>,
     pub level: Option<f32>,
+    /// What the meter reads, as a position from 0 to 1, when it is shown.
+    pub meter: Option<f32>,
     pub state: State,
     /// What it is doing, and in what colour.
     pub below: (&'a str, &'a str),
@@ -215,6 +235,17 @@ pub fn key(picture: &Picture) -> String {
                 arc(cx, cy, r, level)
             );
         }
+        if let Some(meter) = picture.meter {
+            for (from, to, color) in METER {
+                if meter > from {
+                    let _ = write!(
+                        svg,
+                        r#"<path d="{}" fill="none" stroke="{color}" stroke-width="3"/>"#,
+                        arc_between(cx, cy, r - 7.0, from, meter.min(to))
+                    );
+                }
+            }
+        }
     }
     badges(&mut svg, picture, cx - side / 2.0, cy - side / 2.0, side);
     let (words, color) = picture.below;
@@ -241,12 +272,34 @@ pub fn strip(picture: &Picture) -> String {
                 r#"<rect x="{left}" y="48" width="118" height="8" rx="4" fill="{TRACK}"/>"#
             );
             let filled = 118.0 * level.clamp(0.0, 1.0);
-            if filled > 0.0 {
-                let fill = if picture.state.muted { RED } else { LEVEL };
-                let _ = write!(
-                    svg,
-                    r#"<rect x="{left}" y="48" width="{filled:.1}" height="8" rx="4" fill="{fill}"/>"#
-                );
+            match picture.meter {
+                // The meter in the track, and the level as a handle on it.
+                Some(meter) => {
+                    for (from, to, color) in METER {
+                        if meter > from {
+                            let _ = write!(
+                                svg,
+                                r#"<rect x="{x:.1}" y="48" width="{w:.1}" height="8" fill="{color}"/>"#,
+                                x = left + 118.0 * from,
+                                w = 118.0 * (meter.min(to) - from),
+                            );
+                        }
+                    }
+                    let fill = if picture.state.muted { RED } else { TEXT };
+                    let _ = write!(
+                        svg,
+                        r##"<rect x="{x:.1}" y="43" width="5" height="18" rx="2.5" fill="{fill}" stroke="#000000" stroke-width="1.5"/>"##,
+                        x = left + filled - 2.5,
+                    );
+                }
+                None if filled > 0.0 => {
+                    let fill = if picture.state.muted { RED } else { LEVEL };
+                    let _ = write!(
+                        svg,
+                        r#"<rect x="{left}" y="48" width="{filled:.1}" height="8" rx="4" fill="{fill}"/>"#
+                    );
+                }
+                None => {}
             }
             text(&mut svg, left, 78.0, 15.0, "start", color, words);
         }
@@ -266,6 +319,7 @@ pub fn waiting(name: &str, why: &str, strip_sized: bool) -> String {
         look: ("pd-speaker-symbolic", GREY),
         corner: None,
         level: None,
+        meter: None,
         state: State {
             muted: false,
             dim: true,
@@ -379,6 +433,7 @@ mod tests {
             look: ("pd-music-symbolic", "#e35db5"),
             corner: Some("pd-stream-symbolic"),
             level: Some(0.5),
+            meter: Some(0.9),
             state: State::default(),
             below: ("50%", TEXT),
         });

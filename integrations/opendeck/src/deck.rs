@@ -22,7 +22,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::draw::{self, Picture, State};
-use crate::mixer::{order, Mixer, Target, View};
+use crate::mixer::{order, Mixer, Peaks, Target, View};
 
 /// The plugin's identifier, which its actions' start with.
 pub const PLUGIN: &str = "com.fabienmillet.pipedeck";
@@ -83,6 +83,8 @@ struct Settings {
     fade: Option<u64>,
     /// How far a key, or a notch of a dial, moves the level, in percent.
     step: Option<f32>,
+    /// "volume" for the level alone; the meter is shown with it otherwise.
+    display: Option<String>,
     /// What it was called, shown while Pipedeck is away.
     label: String,
 }
@@ -146,6 +148,8 @@ pub enum Press {
 pub struct Deck {
     instances: HashMap<String, Instance>,
     view: Option<View>,
+    /// What the meters last read.
+    levels: Peaks,
     mixer: Mixer,
     fades: Vec<Fade>,
     /// The action whose settings page is open, which is told when what
@@ -158,6 +162,7 @@ impl Deck {
         Deck {
             instances: HashMap::new(),
             view: None,
+            levels: Peaks::default(),
             mixer,
             fades: Vec::new(),
             open_page: None,
@@ -232,6 +237,22 @@ impl Deck {
             messages.extend(self.tell_settings_page(&open));
         }
         messages
+    }
+
+    /// Take in what the meters read, and redraw the meters it moved.
+    pub fn levels_changed(&mut self, levels: Peaks) -> Vec<Value> {
+        self.levels = levels;
+        let metered: Vec<String> = self
+            .instances
+            .iter()
+            .filter(|(_, i)| matches!(i.action, Action::ChannelLevel | Action::MixLevel))
+            .filter(|(_, i)| i.settings.display.as_deref() != Some("volume"))
+            .map(|(context, _)| context.clone())
+            .collect();
+        metered
+            .iter()
+            .flat_map(|context| self.draw(context))
+            .collect()
     }
 
     /// Move every fade on.
@@ -345,7 +366,12 @@ impl Deck {
         let Some(instance) = self.instances.get_mut(context) else {
             return Vec::new();
         };
-        let (key, strip) = match picture(instance.action, &instance.settings, self.view.as_ref()) {
+        let (key, strip) = match picture(
+            instance.action,
+            &instance.settings,
+            self.view.as_ref(),
+            &self.levels,
+        ) {
             Ok(picture) => (
                 draw::key(&picture.as_picture()),
                 draw::strip(&picture.as_picture()),
@@ -417,6 +443,7 @@ struct Drawn {
     look: (&'static str, &'static str),
     corner: Option<&'static str>,
     level: Option<f32>,
+    meter: Option<f32>,
     state: State,
     below: (String, &'static str),
 }
@@ -428,6 +455,7 @@ impl Drawn {
             look: self.look,
             corner: self.corner,
             level: self.level,
+            meter: self.meter,
             state: self.state,
             below: (&self.below.0, self.below.1),
         }
@@ -439,6 +467,7 @@ fn picture(
     action: Action,
     settings: &Settings,
     view: Option<&View>,
+    levels: &Peaks,
 ) -> Result<Drawn, &'static str> {
     let view = view.ok_or("Offline")?;
     let unset = "Pick one";
@@ -459,6 +488,12 @@ fn picture(
                     .as_ref()
                     .map(|mix| draw::look(mix.icon.as_deref(), false, true).0),
                 level: Some(found.volume),
+                // In steps a key can show, so a meter that barely moved is
+                // not drawn again.
+                meter: (settings.display.as_deref() != Some("volume")).then(|| {
+                    let at = draw::meter_position(levels.of(&target).unwrap_or(0.0));
+                    (at * 40.0).round() / 40.0
+                }),
                 state: State {
                     muted: found.muted,
                     dim: false,
@@ -484,6 +519,7 @@ fn picture(
                 look: draw::look(mix.icon.as_deref(), false, true),
                 corner: None,
                 level: None,
+                meter: None,
                 state: State {
                     muted: false,
                     dim: !mix.listening,
@@ -511,6 +547,7 @@ fn picture(
                 look: draw::look(Some("headset"), false, false),
                 corner: None,
                 level: None,
+                meter: None,
                 state: State {
                     muted: false,
                     dim: !found.listening,
@@ -590,13 +627,43 @@ mod tests {
     }
 
     #[test]
+    fn a_meter_is_drawn_again_only_when_it_moves_enough_to_show() {
+        let mut deck = Deck::new(Mixer::default());
+        deck.mixer_changed(Some(view()));
+        appear(&mut deck, "channel", "Encoder", json!({"channel": 2}));
+        let peaks = |p: f32| Peaks {
+            channels: vec![(2, p)],
+            ..Peaks::default()
+        };
+        assert!(!deck.levels_changed(peaks(0.5)).is_empty());
+        assert!(deck.levels_changed(peaks(0.5001)).is_empty());
+        assert!(!deck.levels_changed(peaks(0.0)).is_empty());
+
+        let mut plain = Deck::new(Mixer::default());
+        plain.mixer_changed(Some(view()));
+        appear(
+            &mut plain,
+            "channel",
+            "Encoder",
+            json!({"channel": 2, "display": "volume"}),
+        );
+        assert!(plain.levels_changed(peaks(0.5)).is_empty());
+    }
+
+    #[test]
     fn a_channel_in_a_mix_is_its_cell() {
         let settings = Settings {
             channel: Some(2),
             mix: Some(3),
             ..Settings::default()
         };
-        let drawn = picture(Action::ChannelLevel, &settings, Some(&view())).unwrap();
+        let drawn = picture(
+            Action::ChannelLevel,
+            &settings,
+            Some(&view()),
+            &Peaks::default(),
+        )
+        .unwrap();
         assert_eq!(drawn.name, "Music");
         assert_eq!(drawn.corner, Some("pd-stream-symbolic"));
         assert_eq!(drawn.below.0, "Muted");
@@ -610,13 +677,25 @@ mod tests {
             mode: Mode::Toggle,
             ..Settings::default()
         };
-        let drawn = picture(Action::MonitorMix, &settings, Some(&view())).unwrap();
+        let drawn = picture(
+            Action::MonitorMix,
+            &settings,
+            Some(&view()),
+            &Peaks::default(),
+        )
+        .unwrap();
         assert_eq!((drawn.name.as_str(), drawn.state.dim), ("Personal", false));
 
         let mut stream = view();
         stream.mixes[0].listening = false;
         stream.mixes[1].listening = true;
-        let drawn = picture(Action::MonitorMix, &settings, Some(&stream)).unwrap();
+        let drawn = picture(
+            Action::MonitorMix,
+            &settings,
+            Some(&stream),
+            &Peaks::default(),
+        )
+        .unwrap();
         assert_eq!(drawn.name, "Stream");
     }
 

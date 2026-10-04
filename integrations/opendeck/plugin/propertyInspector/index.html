@@ -53,6 +53,13 @@
 		</div>
 
 		<div id="level-rows" hidden>
+			<label class="row">
+				Display
+				<select id="display">
+					<option value="meter">Level meter</option>
+					<option value="volume">Volume only</option>
+				</select>
+			</label>
 			<label class="row" id="mode-row">
 				Key press
 				<select id="mode">
@@ -179,6 +186,7 @@
 
 				if (level) {
 					const mode = settings.mode || "mute";
+					$("display").value = settings.display === "volume" ? "volume" : "meter";
 					$("mode-row").hidden = dial;
 					$("mode").value = mode;
 					$("volume-row").hidden = dial || mode !== "set";
@@ -236,6 +244,10 @@
 				if (!$("mix").value) return;
 				settings.mix = Number($("mix").value);
 				settings.label = $("mix").selectedOptions[0].text;
+				save();
+			};
+			$("display").onchange = () => {
+				settings.display = $("display").value;
 				save();
 			};
 			$("mode").onchange = () => {

@@ -101,11 +101,23 @@ fn run(port: &str, uuid: &str, register: &str) -> Result<(), Box<dyn std::error:
             Err(e) => return Err(e.into()),
         }
         deck.tick();
-        // Only the latest state matters.
-        if let Some(view) = news.try_iter().last() {
-            for message in deck.mixer_changed(view) {
-                send(&mut socket, &message)?;
+        // Only the latest state, and the latest reading, matter.
+        let (mut state, mut levels) = (None, None);
+        for told in news.try_iter() {
+            match told {
+                mixer::News::State(view) => state = Some(view),
+                mixer::News::Levels(peaks) => levels = Some(peaks),
             }
+        }
+        let mut messages = Vec::new();
+        if let Some(view) = state {
+            messages.extend(deck.mixer_changed(view));
+        }
+        if let Some(peaks) = levels {
+            messages.extend(deck.levels_changed(peaks));
+        }
+        for message in messages {
+            send(&mut socket, &message)?;
         }
     }
 }

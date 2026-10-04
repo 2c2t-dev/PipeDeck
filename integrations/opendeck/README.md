@@ -13,7 +13,10 @@ changed it.
 | **Monitor Mix** | one mix, or two to switch between | hears that mix in the headphones, alone | press, the same |
 | **Main Output Device** | one device, or two to switch between | listens on that device | press, the same |
 
-A channel's level in one mix is what the mixer calls a cell: the key wears
+A level shows its meter with it, as the mixer's do: inside the ring on a
+key, in the bar on the touch strip with the level as a handle on it; set
+**Display** to *Volume only* to leave it out. A channel's level in one mix
+is what the mixer calls a cell: the key wears
 the mix's badge in the corner of the channel's. Everything is kept by id,
 so renaming a channel does not lose its key; while Pipedeck is not running
 the keys say so, and come back when it does.

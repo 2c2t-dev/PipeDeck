@@ -181,6 +181,44 @@ pub fn order(target: &Target, change: Value) -> Value {
     order
 }
 
+/// What the mixer says.
+#[derive(Debug, Clone, PartialEq)]
+pub enum News {
+    /// Where things stand, or `None` while it is not running.
+    State(Option<View>),
+    /// What the meters read.
+    Levels(Peaks),
+}
+
+/// The loudest each channel, mix and person of a call got lately, as a
+/// linear amplitude.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Peaks {
+    pub channels: Vec<(u32, f32)>,
+    pub mixes: Vec<(u32, f32)>,
+    pub voices: Vec<(u32, String, f32)>,
+}
+
+impl Peaks {
+    /// What a target's meter reads: a channel's own, or its level in a
+    /// mix, which is measured before the mix; a person's; a mix's.
+    pub fn of(&self, target: &Target) -> Option<f32> {
+        match target {
+            Target::Channel { id } | Target::Cell { channel: id, .. } => {
+                self.channels.iter().find(|(c, _)| c == id).map(|(_, p)| *p)
+            }
+            Target::Mix { id } => self.mixes.iter().find(|(m, _)| m == id).map(|(_, p)| *p),
+            Target::Voice { channel, user } => self
+                .voices
+                .iter()
+                .find(|(c, u, _)| c == channel && u == user)
+                .map(|(_, _, p)| *p),
+            Target::Output { .. } => None,
+        }
+    }
+}
+
 /// The connection to Pipedeck, for sending orders on.
 #[derive(Clone, Default)]
 pub struct Mixer {
@@ -189,8 +227,9 @@ pub struct Mixer {
 
 impl Mixer {
     /// Follow the mixer on a thread of its own, telling `changed` its state
-    /// after every change, and `None` while it is not running.
-    pub fn start(changed: Sender<Option<View>>) -> Self {
+    /// after every change, and `None` while it is not running, and what its
+    /// meters read.
+    pub fn start(changed: Sender<News>) -> Self {
         let mixer = Mixer::default();
         let stream = mixer.stream.clone();
         std::thread::Builder::new()
@@ -206,7 +245,7 @@ impl Mixer {
                 if let Ok(mut stream) = stream.lock() {
                     *stream = None;
                 }
-                if changed.send(None).is_err() {
+                if changed.send(News::State(None)).is_err() {
                     return;
                 }
                 std::thread::sleep(RETRY);
@@ -229,12 +268,9 @@ impl Mixer {
     }
 }
 
-fn follow(
-    stream: &Arc<Mutex<Option<UnixStream>>>,
-    changed: &Sender<Option<View>>,
-) -> std::io::Result<()> {
+fn follow(stream: &Arc<Mutex<Option<UnixStream>>>, changed: &Sender<News>) -> std::io::Result<()> {
     let mut socket = UnixStream::connect(socket_path())?;
-    socket.write_all(b"{\"subscribe\": true}\n")?;
+    socket.write_all(b"{\"subscribe\": true}\n{\"meters\": true}\n")?;
     if let Ok(mut stream) = stream.lock() {
         *stream = Some(socket.try_clone()?);
     }
@@ -252,7 +288,14 @@ fn follow(
                     continue;
                 }
             };
-            if changed.send(view).is_err() {
+            if changed.send(News::State(view)).is_err() {
+                return Ok(());
+            }
+        } else if let Some(levels) = message.get("levels") {
+            let Ok(peaks) = serde_json::from_value::<Peaks>(levels.clone()) else {
+                continue;
+            };
+            if changed.send(News::Levels(peaks)).is_err() {
                 return Ok(());
             }
         } else if let Some(error) = message.get("error") {
