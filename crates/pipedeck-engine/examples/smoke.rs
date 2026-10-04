@@ -1695,8 +1695,47 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
+    // A row removed hands its applications back: none stays aimed at the
+    // name of a sink that is gone.
+    let mut player = Process::new("pw-play")
+        .arg("-P")
+        .arg(r#"{ "node.name": "smoke-removed-player" }"#)
+        .arg(&tone)
+        .spawn()
+        .expect("pw-play must be installed");
+    std::thread::sleep(Duration::from_secs(1));
+    engine
+        .send(Command::AssignApp {
+            id: source,
+            app: "pw-play".into(),
+        })
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    let player_id = any_node_id(&pw_dump(), "smoke-removed-player");
+    let aimed = |id: Option<i64>| {
+        let listed = Process::new("pw-metadata")
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+            .unwrap_or_default();
+        id.is_some_and(|id| {
+            listed.lines().any(|line| {
+                line.contains(&format!("id:{id} ")) && line.contains("pipedeck-smoke.src.")
+            })
+        })
+    };
+    let before = aimed(player_id);
+
     engine.send(Command::RemoveSource(source)).unwrap();
     wait_state(&rx, "source removed", |s| s.sources.is_empty());
+    settle();
+    let after = aimed(player_id);
+    let _ = player.kill();
+    let _ = player.wait();
+    check(
+        before && !after,
+        &format!("a row removed hands its applications back: aimed before {before}, after {after}"),
+        &mut failures,
+    );
     engine.send(Command::RemoveMix(mix)).unwrap();
     wait_state(&rx, "mix removed", |s| s.mixes.is_empty());
     settle();

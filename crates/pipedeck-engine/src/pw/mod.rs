@@ -1124,6 +1124,17 @@ impl Graph {
     }
 
     pub fn remove_source(&mut self, id: SourceId) -> Result<(), EngineError> {
+        // Its applications are handed back first: left aimed at a sink that
+        // is about to go, they would stay aimed at its name, which another
+        // mixer, or the next row given this id, answers to.
+        let apps: Vec<String> = self
+            .config
+            .source(id)
+            .map(|cfg| cfg.apps.clone())
+            .unwrap_or_default();
+        for key in &apps {
+            self.move_app(key, None);
+        }
         // The voices play into the row's sink, so they go before it.
         let voices: Vec<(SourceId, String)> = self
             .voices
