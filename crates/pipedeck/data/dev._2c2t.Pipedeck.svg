@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5e5c64"/>
+      <stop offset="1" stop-color="#3d3846"/>
+    </linearGradient>
+  </defs>
+  <!-- The console, its edge below it. -->
+  <rect x="12" y="22" width="104" height="94" rx="17" fill="#1e1a26"/>
+  <rect x="12" y="14" width="104" height="94" rx="17" fill="url(#front)"/>
+  <rect x="13" y="15" width="102" height="92" rx="16" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="2"/>
+  <!-- Its lights. -->
+  <circle cx="34" cy="27" r="3" fill="#57e389"/>
+  <circle cx="64" cy="27" r="3" fill="#57e389"/>
+  <circle cx="94" cy="27" r="3" fill="#f6d32d"/>
+  <!-- Three faders, in the colours of the channels' badges. -->
+  <rect x="29" y="36" width="10" height="62" rx="5" fill="#1e1a26"/>
+  <rect x="59" y="36" width="10" height="62" rx="5" fill="#1e1a26"/>
+  <rect x="89" y="36" width="10" height="62" rx="5" fill="#1e1a26"/>
+  <rect x="21" y="49" width="26" height="18" rx="6" fill="#a8307e"/>
+  <rect x="21" y="46" width="26" height="17" rx="6" fill="#e35db5"/>
+  <rect x="24" y="48" width="20" height="4" rx="2" fill="#ffffff" fill-opacity="0.35"/>
+  <rect x="51" y="73" width="26" height="18" rx="6" fill="#c88800"/>
+  <rect x="51" y="70" width="26" height="17" rx="6" fill="#f6d32d"/>
+  <rect x="54" y="72" width="20" height="4" rx="2" fill="#ffffff" fill-opacity="0.45"/>
+  <rect x="81" y="59" width="26" height="18" rx="6" fill="#1c71d8"/>
+  <rect x="81" y="56" width="26" height="17" rx="6" fill="#62a0ea"/>
+  <rect x="84" y="58" width="20" height="4" rx="2" fill="#ffffff" fill-opacity="0.35"/>
+</svg>

@@ -152,6 +152,7 @@ pub fn set_start_at_login(enabled: bool, background: bool) -> std::io::Result<()
          Type=Application\n\
          Name=Pipedeck\n\
          Comment=PipeWire mixer\n\
+         Icon=dev._2c2t.Pipedeck\n\
          Exec={}{}\n\
          Terminal=false\n\
          X-GNOME-Autostart-enabled=true\n",

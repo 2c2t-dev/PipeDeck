@@ -357,6 +357,12 @@ a name a theme lacks is drawn as a broken image, and the names that do exist
 come from different families, which shows when a row of them sits in a grid.
 Apache License 2.0, see that directory.
 
+Pipedeck's own icon, a console with three faders in the colours of the
+channels' badges, is in `crates/pipedeck/data`, with a symbolic one for the
+smallest sizes. A build run from where it was built puts it, and a desktop
+entry for itself, in `~/.local/share` when it starts, so it is in the
+launcher and under its icon in the task bar.
+
 ## Workspace
 
 - `crates/pipedeck-engine`: the PipeWire graph, config, command/event API.

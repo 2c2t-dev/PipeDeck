@@ -12,6 +12,7 @@ mod effects;
 mod engine_link;
 mod eq_graph;
 mod kwin;
+mod launcher;
 mod listen;
 mod meter_fader;
 mod mix_dialog;
@@ -60,6 +61,12 @@ fn main() -> glib::ExitCode {
     load_icons();
 
     let app_id = std::env::var("PIPEDECK_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
+    // In the launcher, and under its icon in the task bar; not for a test
+    // run under an id of its own.
+    if app_id == APP_ID {
+        launcher::install(&app_id);
+    }
+    gtk::Window::set_default_icon_name(&app_id);
     let app = adw::Application::builder().application_id(app_id).build();
     app.add_main_option(
         "background",
