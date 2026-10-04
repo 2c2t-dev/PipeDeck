@@ -4,6 +4,8 @@ Thanks for helping. A bug report with logs, a fix, or an idea talked over in
 [Discussions](https://github.com/2c2t-dev/PipeDeck/discussions) first are
 all welcome.
 
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
+
 ## Building and running
 
 You need PipeWire ≥ 1.2 (with headers), GTK ≥ 4.18, libadwaita ≥ 1.7,
