@@ -308,8 +308,20 @@ impl Window {
                     }
                 }
             }
-            Event::OutputChanged { .. } => {
-                // The window that moved it already shows the new value.
+            Event::OutputChanged { id, index, state } => {
+                // The window that moved it already shows the new value, but
+                // the windows are drawn again from this copy: left as it was,
+                // the next time would put the fader back where it had been.
+                if let Some(output) = self
+                    .state
+                    .borrow_mut()
+                    .mixes
+                    .iter_mut()
+                    .find(|m| m.id == id)
+                    .and_then(|mix| mix.outputs.get_mut(index))
+                {
+                    output.set_state(state);
+                }
             }
             Event::SourceEffects { id, effects } => {
                 // Nothing on the grid shows a setting, so only the
@@ -523,7 +535,7 @@ impl Window {
                 Some(mix) => dialog.refresh(mix, &self.outputs.borrow()),
                 None => {
                     drop(state);
-                    dialog.close();
+                    dialog.close_gone();
                     *self.mix_dialog.borrow_mut() = None;
                 }
             }
@@ -541,7 +553,7 @@ impl Window {
                 ),
                 None => {
                     drop(state);
-                    dialog.close();
+                    dialog.close_gone();
                     *self.channel_dialog.borrow_mut() = None;
                 }
             }

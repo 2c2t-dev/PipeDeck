@@ -38,6 +38,14 @@ pub struct MixDialog {
     /// Set once the window is gone, so it is never closed twice: the second
     /// time, libadwaita has nothing left to close and says so loudly.
     closed: Rc<StdCell<bool>>,
+    /// Set when the mix is gone, deleted here or elsewhere: a name typed
+    /// and not yet sent is not sent for a mix that is no more.
+    gone: Rc<StdCell<bool>>,
+    /// The outputs drawn, by device, whether on and what they are called,
+    /// and the devices the picker offers: drawn again only when these
+    /// change, not under a fader being dragged.
+    drawn_outputs: RefCell<Option<Vec<(String, bool, String)>>>,
+    offered: RefCell<Option<Vec<String>>>,
 }
 
 impl MixDialog {
@@ -91,6 +99,9 @@ impl MixDialog {
             attached: RefCell::new(Vec::new()),
             syncing: Rc::new(StdCell::new(false)),
             closed: Rc::new(StdCell::new(false)),
+            gone: Rc::new(StdCell::new(false)),
+            drawn_outputs: RefCell::new(None),
+            offered: RefCell::new(None),
         });
 
         dialog.set_child(Some(&this.build(mix)));
@@ -147,6 +158,7 @@ impl MixDialog {
         delete.connect_clicked({
             let this = self.clone();
             move |_| {
+                this.gone.set(true);
                 this.engine.send(Command::RemoveMix(this.id));
                 this.dialog.close();
             }
@@ -222,9 +234,12 @@ impl MixDialog {
         });
         self.dialog.connect_closed({
             let closed = self.closed.clone();
+            let gone = self.gone.clone();
             move |_| {
                 closed.set(true);
-                rename();
+                if !gone.get() {
+                    rename();
+                }
             }
         });
 
@@ -283,10 +298,18 @@ impl MixDialog {
         }
     }
 
+    /// Close the window of a mix that is gone, sending nothing for it.
+    pub fn close_gone(&self) {
+        self.gone.set(true);
+        self.close();
+    }
+
     /// Push engine state into the window, rebuilding the output list.
     pub fn refresh(self: &Rc<Self>, mix: &MixConfig, devices: &[Device]) {
         self.syncing.set(true);
-        if self.name.text() != mix.name {
+        // Not while it is being typed into: what is typed is the user's
+        // until it is sent.
+        if self.name.text() != mix.name && !widgets::being_edited(&self.name) {
             self.name.set_text(&mix.name);
         }
         self.volume.set_value(f64::from(mix.gain) * FADER_MAX);
@@ -300,6 +323,36 @@ impl MixDialog {
 
         *self.attached.borrow_mut() = mix.outputs.iter().map(|o| o.device.clone()).collect();
 
+        let label_of = |device: &str| {
+            devices
+                .iter()
+                .find(|d| d.name == device)
+                .map(|d| d.description.clone())
+                .unwrap_or_else(|| format!("{device} (unavailable)"))
+        };
+        let outputs: Vec<(String, bool, String)> = mix
+            .outputs
+            .iter()
+            .map(|o| (o.device.clone(), o.enabled, label_of(&o.device)))
+            .collect();
+        let offered: Vec<String> = devices.iter().map(|d| d.name.clone()).collect();
+        if self.drawn_outputs.borrow().as_ref() != Some(&outputs) {
+            *self.drawn_outputs.borrow_mut() = Some(outputs);
+            self.draw_outputs(mix, devices);
+        }
+        // The picker is made again for new devices, but never while it is
+        // open under the pointer.
+        let picking = self.add_output.popover().is_some_and(|p| p.is_visible());
+        if !picking && self.offered.borrow().as_ref() != Some(&offered) {
+            *self.offered.borrow_mut() = Some(offered);
+            let popover = self.device_popover(devices);
+            self.add_output.set_popover(Some(&popover));
+        }
+        self.syncing.set(false);
+    }
+
+    /// The outputs, a row each.
+    fn draw_outputs(self: &Rc<Self>, mix: &MixConfig, devices: &[Device]) {
         while let Some(child) = self.outputs.first_child() {
             self.outputs.remove(&child);
         }
@@ -318,10 +371,6 @@ impl MixDialog {
             let row = self.output_row(index, &label, output.state(), output.enabled);
             self.outputs.append(&row);
         }
-
-        let popover = self.device_popover(devices);
-        self.add_output.set_popover(Some(&popover));
-        self.syncing.set(false);
     }
 
     fn output_row(

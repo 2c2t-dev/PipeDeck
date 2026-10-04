@@ -249,6 +249,15 @@ fn menu_button(popover: &gtk::Popover) -> gtk::MenuButton {
     button
 }
 
+/// Is the user typing into this field? Its focus is on the text inside it,
+/// not on the field itself, so the field asks after what it holds.
+pub fn being_edited(widget: &impl IsA<gtk::Widget>) -> bool {
+    widget
+        .as_ref()
+        .state_flags()
+        .contains(gtk::StateFlags::FOCUS_WITHIN)
+}
+
 /// The name field at the top of an object window.
 pub fn name_entry(name: &str) -> gtk::Entry {
     let entry = gtk::Entry::new();

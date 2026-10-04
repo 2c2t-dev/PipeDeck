@@ -49,6 +49,12 @@ pub struct ChannelDialog {
     /// Set once the window is gone, so it is never closed twice: the second
     /// time, libadwaita has nothing left to close and says so loudly.
     closed: Rc<StdCell<bool>>,
+    /// Set when the channel is gone, removed here or elsewhere: a name
+    /// typed and not yet sent is not sent for a channel that is no more.
+    gone: Rc<StdCell<bool>>,
+    /// The applications drawn, and the ones playing the picker was made
+    /// with: drawn again only when these change, not under the pointer.
+    drawn_apps: RefCell<Option<(Vec<String>, Vec<String>)>>,
 }
 
 impl ChannelDialog {
@@ -112,6 +118,8 @@ impl ChannelDialog {
             },
             syncing: Rc::new(StdCell::new(false)),
             closed: Rc::new(StdCell::new(false)),
+            gone: Rc::new(StdCell::new(false)),
+            drawn_apps: RefCell::new(None),
         });
 
         dialog.set_child(Some(&this.build(source)));
@@ -182,6 +190,7 @@ impl ChannelDialog {
         delete.connect_clicked({
             let this = self.clone();
             move |_| {
+                this.gone.set(true);
                 this.engine.send(Command::RemoveSource(this.id));
                 this.dialog.close();
             }
@@ -275,13 +284,16 @@ impl ChannelDialog {
         });
         self.dialog.connect_closed({
             let closed = self.closed.clone();
+            let gone = self.gone.clone();
             let effects = self.effects.clone();
             move |_| {
                 closed.set(true);
                 // Effect windows belong to this one: left open, they would
                 // be set by a tab no longer told when the chain changes.
                 effects.close_windows();
-                rename();
+                if !gone.get() {
+                    rename();
+                }
             }
         });
 
@@ -352,6 +364,12 @@ impl ChannelDialog {
         }
     }
 
+    /// Close the window of a channel that is gone, sending nothing for it.
+    pub fn close_gone(&self) {
+        self.gone.set(true);
+        self.close();
+    }
+
     /// Push engine state into the window, rebuilding the app list.
     pub fn refresh(
         self: &Rc<Self>,
@@ -363,7 +381,9 @@ impl ChannelDialog {
     ) {
         self.syncing.set(true);
         self.effects.refresh(&source.effects, plugins, stereotool);
-        if self.name.text() != source.name {
+        // Not while it is being typed into: what is typed is the user's
+        // until it is sent.
+        if self.name.text() != source.name && !widgets::being_edited(&self.name) {
             self.name.set_text(&source.name);
         }
         self.volume
@@ -387,6 +407,20 @@ impl ChannelDialog {
             return;
         }
 
+        // Drawn again only when what is assigned or what plays changed: an
+        // application starting anywhere says so, and the list and its
+        // picker made again each time would close the picker as it is used.
+        let playing: Vec<String> = running.iter().map(|app| app.key.clone()).collect();
+        let now = (source.apps.clone(), playing);
+        if self.drawn_apps.borrow().as_ref() == Some(&now) {
+            self.syncing.set(false);
+            return;
+        }
+        let picking = self.add_app.popover().is_some_and(|p| p.is_visible());
+        if !picking {
+            *self.drawn_apps.borrow_mut() = Some(now);
+        }
+
         while let Some(child) = self.apps.first_child() {
             self.apps.remove(&child);
         }
@@ -403,8 +437,10 @@ impl ChannelDialog {
             self.apps.append(&row);
         }
 
-        let popover = self.app_popover(source, running);
-        self.add_app.set_popover(Some(&popover));
+        if !picking {
+            let popover = self.app_popover(source, running);
+            self.add_app.set_popover(Some(&popover));
+        }
         self.syncing.set(false);
     }
 
