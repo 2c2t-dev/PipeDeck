@@ -70,7 +70,7 @@ profiles is replaced, so keep your own in another. **Lay out now** does it
 at once; so does
 
 ```sh
-~/.config/opendeck/plugins/com.fabienmillet.pipedeck.sdPlugin/x86_64-unknown-linux-gnu/bin/pipedeck-opendeck --profiles
+~/.config/opendeck/plugins/dev.2c2t.pipedeck.sdPlugin/x86_64-unknown-linux-gnu/bin/pipedeck-opendeck --profiles
 ```
 
 with OpenDeck closed.

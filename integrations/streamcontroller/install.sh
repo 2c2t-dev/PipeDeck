@@ -6,11 +6,13 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 data=${STREAMCONTROLLER_DATA:-"$HOME/.var/app/com.core447.StreamController/data"}
-name=com_fabienmillet_Pipedeck
+name=dev_2c2t_Pipedeck
 dest="$data/plugins/$name"
 
 mkdir -p "$data/plugins"
 rm -rf "$dest"
+# The plugin under the name it had before.
+rm -rf "$data/plugins/com_fabienmillet_Pipedeck"
 mkdir -p "$dest/assets/icons"
 cp "$here/$name"/*.py "$here/$name"/manifest.json "$here/$name"/locales.csv "$dest/"
 cp "$repo/crates/pipedeck/icons"/*.svg "$dest/assets/icons/"

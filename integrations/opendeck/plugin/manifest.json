@@ -2,7 +2,7 @@
   "Name": "Pipedeck",
   "Description": "Control Pipedeck, the PipeWire mixer: mute channels, mixes and the people of a call, move their levels with keys or dials, choose the mix heard in your headphones and the device it is heard on.",
   "Author": "Fabien Millet",
-  "URL": "https://github.com/fabienmillet/Pipedeck",
+  "URL": "https://github.com/2c2t/Pipedeck",
   "Version": "0.1.0",
   "SDKVersion": 2,
   "CodePaths": {
@@ -20,7 +20,7 @@
   ],
   "Actions": [
     {
-      "UUID": "com.fabienmillet.pipedeck.channel",
+      "UUID": "dev.2c2t.pipedeck.channel",
       "Name": "Channel Level",
       "Tooltip": "Mute, set or adjust a channel's level, its own or in one mix",
       "Icon": "icons/channel",
@@ -46,7 +46,7 @@
       "PropertyInspectorPath": "propertyInspector/index.html"
     },
     {
-      "UUID": "com.fabienmillet.pipedeck.mix",
+      "UUID": "dev.2c2t.pipedeck.mix",
       "Name": "Mix Level",
       "Tooltip": "Mute, set or adjust a mix's level",
       "Icon": "icons/mix",
@@ -72,7 +72,7 @@
       "PropertyInspectorPath": "propertyInspector/index.html"
     },
     {
-      "UUID": "com.fabienmillet.pipedeck.monitor",
+      "UUID": "dev.2c2t.pipedeck.monitor",
       "Name": "Monitor Mix",
       "Tooltip": "Choose the mix heard in your headphones, or switch between two",
       "Icon": "icons/monitor",
@@ -97,7 +97,7 @@
       "PropertyInspectorPath": "propertyInspector/index.html"
     },
     {
-      "UUID": "com.fabienmillet.pipedeck.output",
+      "UUID": "dev.2c2t.pipedeck.output",
       "Name": "Main Output Device",
       "Tooltip": "Choose the device the mixes are heard on, or switch between two",
       "Icon": "icons/output",
@@ -122,7 +122,7 @@
       "PropertyInspectorPath": "propertyInspector/index.html"
     },
     {
-      "UUID": "com.fabienmillet.pipedeck.voice",
+      "UUID": "dev.2c2t.pipedeck.voice",
       "Name": "Call Voice",
       "Tooltip": "A person of the Discord call, by their place in it",
       "Icon": "icons/voice",
@@ -148,7 +148,7 @@
       "PropertyInspectorPath": "propertyInspector/index.html"
     },
     {
-      "UUID": "com.fabienmillet.pipedeck.call",
+      "UUID": "dev.2c2t.pipedeck.call",
       "Name": "Call",
       "Tooltip": "Go to the call's profile, or back to the mixer's",
       "Icon": "icons/call",
@@ -173,7 +173,7 @@
       "PropertyInspectorPath": "propertyInspector/index.html"
     },
     {
-      "UUID": "com.fabienmillet.pipedeck.effect",
+      "UUID": "dev.2c2t.pipedeck.effect",
       "Name": "Channel Effect",
       "Tooltip": "Switch one effect of a channel off or on",
       "Icon": "icons/effect",
@@ -198,7 +198,7 @@
       "PropertyInspectorPath": "propertyInspector/index.html"
     },
     {
-      "UUID": "com.fabienmillet.pipedeck.app",
+      "UUID": "dev.2c2t.pipedeck.app",
       "Name": "Add to Channel",
       "Tooltip": "Put an application on a channel, or take it off",
       "Icon": "icons/app",

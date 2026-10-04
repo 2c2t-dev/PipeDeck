@@ -40,7 +40,7 @@ use crate::draw::{self, Picture, State};
 use crate::mixer::{order, Mixer, Peaks, Target, View};
 
 /// The plugin's identifier, which its actions' start with.
-pub const PLUGIN: &str = "com.fabienmillet.pipedeck";
+pub const PLUGIN: &str = "dev.2c2t.pipedeck";
 
 /// How often a fade moves the fader.
 const FADE_STEP: Duration = Duration::from_millis(40);

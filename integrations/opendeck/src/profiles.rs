@@ -429,7 +429,7 @@ fn streamcontroller_page(model: Model, layout: &Layout) -> Value {
         }
         Some(json!({
             "states": { "0": {
-                "actions": [{ "id": format!("com_fabienmillet_Pipedeck::{action}"), "settings": settings }],
+                "actions": [{ "id": format!("dev_2c2t_Pipedeck::{action}"), "settings": settings }],
                 "image-control-action": 0,
                 "label-control-actions": [0, 0, 0],
                 "background-control-action": 0,
@@ -584,7 +584,7 @@ mod tests {
         let page = streamcontroller_page(Model::Plus, &layout(Model::Plus, &view()));
         assert_eq!(
             page["keys"]["3x0"]["states"]["0"]["actions"][0]["id"],
-            "com_fabienmillet_Pipedeck::CallPage"
+            "dev_2c2t_Pipedeck::CallPage"
         );
         assert_eq!(
             page["keys"]["3x0"]["states"]["0"]["actions"][0]["settings"]["to"],
@@ -592,7 +592,7 @@ mod tests {
         );
         assert_eq!(
             page["dials"]["0"]["states"]["0"]["actions"][0]["id"],
-            "com_fabienmillet_Pipedeck::ChannelLevel"
+            "dev_2c2t_Pipedeck::ChannelLevel"
         );
         let call = streamcontroller_page(Model::Plus, &call_layout(Model::Plus));
         assert_eq!(

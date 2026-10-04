@@ -62,5 +62,5 @@ one connection, subscribed to the mixer's state and carrying the orders
 back. The protocol is described in
 [`control.rs`](../../crates/pipedeck-engine/src/control.rs); anything else
 that can write a line of JSON to a Unix socket can use it too.
-`python3 com_fabienmillet_Pipedeck/client.py` prints the state as it
+`python3 dev_2c2t_Pipedeck/client.py` prints the state as it
 changes.

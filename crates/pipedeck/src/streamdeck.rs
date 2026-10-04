@@ -28,41 +28,37 @@ const OPENDECK_LAYOUT: &str =
     include_str!("../../../integrations/opendeck/plugin/layouts/strip.json");
 const OPENDECK_PAGE: &str =
     include_str!("../../../integrations/opendeck/plugin/propertyInspector/index.html");
-const OPENDECK_PLUGIN: &str = "com.fabienmillet.pipedeck.sdPlugin";
+const OPENDECK_PLUGIN: &str = "dev.2c2t.pipedeck.sdPlugin";
 const OPENDECK_PROGRAM: &str = "pipedeck-opendeck";
 
 /// StreamController's plugin, as the repository has it.
 const STREAMCONTROLLER_FILES: &[(&str, &str)] = &[
     (
         "main.py",
-        include_str!("../../../integrations/streamcontroller/com_fabienmillet_Pipedeck/main.py"),
+        include_str!("../../../integrations/streamcontroller/dev_2c2t_Pipedeck/main.py"),
     ),
     (
         "actions.py",
-        include_str!("../../../integrations/streamcontroller/com_fabienmillet_Pipedeck/actions.py"),
+        include_str!("../../../integrations/streamcontroller/dev_2c2t_Pipedeck/actions.py"),
     ),
     (
         "client.py",
-        include_str!("../../../integrations/streamcontroller/com_fabienmillet_Pipedeck/client.py"),
+        include_str!("../../../integrations/streamcontroller/dev_2c2t_Pipedeck/client.py"),
     ),
     (
         "draw.py",
-        include_str!("../../../integrations/streamcontroller/com_fabienmillet_Pipedeck/draw.py"),
+        include_str!("../../../integrations/streamcontroller/dev_2c2t_Pipedeck/draw.py"),
     ),
     (
         "manifest.json",
-        include_str!(
-            "../../../integrations/streamcontroller/com_fabienmillet_Pipedeck/manifest.json"
-        ),
+        include_str!("../../../integrations/streamcontroller/dev_2c2t_Pipedeck/manifest.json"),
     ),
     (
         "locales.csv",
-        include_str!(
-            "../../../integrations/streamcontroller/com_fabienmillet_Pipedeck/locales.csv"
-        ),
+        include_str!("../../../integrations/streamcontroller/dev_2c2t_Pipedeck/locales.csv"),
     ),
 ];
-const STREAMCONTROLLER_PLUGIN: &str = "com_fabienmillet_Pipedeck";
+const STREAMCONTROLLER_PLUGIN: &str = "dev_2c2t_Pipedeck";
 
 /// Where the mixer's icons are, in the application's resources.
 const ICONS: &str = "/dev/_2c2t/Pipedeck/icons/scalable/actions";
@@ -122,6 +118,23 @@ impl App {
                 .join(".var/app/com.core447.StreamController/data")
                 .join("plugins"),
         }
+    }
+
+    /// Where the plugin was installed under the name it had before.
+    fn legacy_dir(self) -> PathBuf {
+        self.plugins_dir().join(match self {
+            App::OpenDeck => "com.fabienmillet.pipedeck.sdPlugin",
+            App::StreamController => "com_fabienmillet_Pipedeck",
+        })
+    }
+
+    /// Take out the plugin installed under its old name.
+    fn remove_legacy(self) -> Result<(), String> {
+        let dir = self.legacy_dir();
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        Ok(())
     }
 
     fn plugin_dir(self) -> PathBuf {
@@ -236,6 +249,10 @@ pub fn state(app: App) -> State {
     }
     let dir = app.plugin_dir();
     if !dir.is_dir() {
+        // Installed under the name it had: to be updated.
+        if app.legacy_dir().is_dir() {
+            return State::Installed { current: false };
+        }
         return State::Available;
     }
     let installed = std::fs::read_to_string(dir.join(MARKER)).ok();
@@ -364,6 +381,7 @@ fn write(path: &Path, contents: &[u8]) -> Result<(), String> {
 }
 
 fn install_opendeck() -> Result<(), String> {
+    App::OpenDeck.remove_legacy()?;
     let program = opendeck_program().ok_or("the plugin program is missing")?;
     let dir = App::OpenDeck.plugin_dir();
     if dir.exists() {
@@ -400,6 +418,7 @@ fn install_opendeck() -> Result<(), String> {
 }
 
 fn install_streamcontroller() -> Result<(), String> {
+    App::StreamController.remove_legacy()?;
     let dir = App::StreamController.plugin_dir();
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -427,7 +446,12 @@ pub fn remove(app: App) -> Result<String, String> {
     let _busy = Busy::take()?;
     let was_running = app == App::OpenDeck && close_opendeck();
     let dir = app.plugin_dir();
-    let result = std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()));
+    let result = if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))
+    } else {
+        Ok(())
+    }
+    .and_then(|()| app.remove_legacy());
     if was_running {
         start_opendeck();
     }
@@ -627,7 +651,7 @@ mod tests {
 
     #[test]
     fn the_plugins_are_carried_whole() {
-        assert!(OPENDECK_MANIFEST.contains("com.fabienmillet.pipedeck.channel"));
+        assert!(OPENDECK_MANIFEST.contains("dev.2c2t.pipedeck.channel"));
         assert!(OPENDECK_PAGE.contains("connectElgatoStreamDeckSocket"));
         let names: Vec<&str> = STREAMCONTROLLER_FILES.iter().map(|(n, _)| *n).collect();
         assert!(names.contains(&"main.py") && names.contains(&"manifest.json"));
