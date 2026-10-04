@@ -35,6 +35,43 @@ def address(lang, page):
     return "/" + prefix(lang) + name
 
 
+def structured_data(lang, strings):
+    """What the home page says of Pipedeck to search engines, as JSON-LD:
+    the application and the site, in the page's language. JSON escaped for
+    a script element, which a "</" would end."""
+    home = ORIGIN + address(lang, "index.html")
+    data = {
+        "@context": "https://schema.org",
+        "@graph": [
+            {
+                "@type": "SoftwareApplication",
+                "name": "Pipedeck",
+                "description": strings["meta_description"],
+                "url": home,
+                "inLanguage": lang,
+                "applicationCategory": "MultimediaApplication",
+                "applicationSubCategory": "Audio mixer",
+                "operatingSystem": "Linux",
+                "downloadUrl": "https://github.com/2c2t-dev/PipeDeck/releases/latest",
+                "license": "https://opensource.org/license/mit",
+                "isAccessibleForFree": True,
+                "offers": {"@type": "Offer", "price": "0", "priceCurrency": "EUR"},
+                "image": ORIGIN + "/assets/social-preview.png",
+                "screenshot": [ORIGIN + "/assets/mixer-dark.png", ORIGIN + "/assets/equaliser-dark.png"],
+                "sameAs": ["https://github.com/2c2t-dev/PipeDeck"],
+            },
+            {
+                "@type": "WebSite",
+                "name": "Pipedeck",
+                "url": home,
+                "inLanguage": lang,
+            },
+        ],
+    }
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    return text.replace("</", "<\\/")
+
+
 def render(template, strings, page):
     def fill(match):
         key = match.group(1)
@@ -81,6 +118,7 @@ def main():
                 + f'>{texts[other]["language_name"]}</a></li>'
                 for other in LANGUAGES
             )
+            strings["structured_data"] = structured_data(lang, texts[lang])
             target = out / prefix(lang) / page
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(render(template, strings, page))
