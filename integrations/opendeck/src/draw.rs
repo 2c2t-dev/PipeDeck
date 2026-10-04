@@ -351,6 +351,9 @@ pub fn strip(picture: &Picture) -> String {
     svg
 }
 
+/// A picture of nothing, for a layer of the strip with nothing to show.
+pub const NOTHING: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="46" height="46" viewBox="0 0 46 46"><rect width="46" height="46" fill="none"/></svg>"#;
+
 /// Where a person's picture sits on the strip, as `plugin/layouts/strip.json`
 /// puts its layers.
 pub const STRIP_PICTURE: (f32, f32, f32) = (12.0, 27.0, 46.0);
@@ -360,7 +363,7 @@ pub const STRIP_PICTURE: (f32, f32, f32) = (12.0, 27.0, 46.0);
 pub fn strip_over(picture: &Picture) -> String {
     let side = STRIP_PICTURE.2;
     let mut svg = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{side}" height="{side}" viewBox="0 0 {side} {side}">"#
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{side}" height="{side}" viewBox="0 0 {side} {side}"><rect width="{side}" height="{side}" fill="none"/>"#
     );
     over_picture(&mut svg, 0.0, 0.0, side, picture.state);
     svg.push_str("</svg>");

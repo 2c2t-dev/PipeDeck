@@ -555,10 +555,12 @@ impl Deck {
             messages.push(json!({
                 "event": "setFeedback",
                 "context": context,
+                // A layer left empty is drawn as a checkerboard: one with
+                // nothing to show is given a picture of nothing.
                 "payload": {
                     "canvas": strip,
-                    "avatar": avatar.unwrap_or_default(),
-                    "over": over.unwrap_or_default(),
+                    "avatar": avatar.unwrap_or_else(|| draw::NOTHING.to_owned()),
+                    "over": over.unwrap_or_else(|| draw::NOTHING.to_owned()),
                 },
             }));
         }
