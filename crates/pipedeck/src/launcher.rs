@@ -10,6 +10,12 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Reverse-DNS id of 2c2t.dev. GApplication (like D-Bus) forbids an element
+/// starting with a digit, so the `2c2t` component takes the conventional
+/// leading underscore. Changing this later also renames the .desktop file,
+/// the GSettings path and the Flatpak sandbox, so it is meant to be stable.
+pub const APP_ID: &str = "dev._2c2t.Pipedeck";
+
 const ENTRY: &str = include_str!("../data/dev._2c2t.Pipedeck.desktop");
 const ICON: &str = include_str!("../data/dev._2c2t.Pipedeck.svg");
 const SYMBOLIC: &str = include_str!("../data/dev._2c2t.Pipedeck-symbolic.svg");

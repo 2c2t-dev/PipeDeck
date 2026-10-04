@@ -218,11 +218,20 @@ impl Window {
 
     /// Lay OpenDeck's Pipedeck profiles out again if what they are laid
     /// out from changed, and the user wants that. See [`streamdeck`].
+    ///
+    /// Only Pipedeck itself does: one run under an id of its own, a build
+    /// being tried or a test, has a mixer of its own, which the decks are
+    /// not laid out from.
     fn lay_out_stream_decks(&self) {
+        let itself = self
+            .window
+            .application()
+            .and_then(|app| app.application_id())
+            .is_some_and(|id| id == crate::launcher::APP_ID);
         crate::streamdeck::mixer_changed(
             &self.state.borrow(),
             &self.outputs.borrow(),
-            crate::settings::Settings::load().stream_deck_profiles,
+            itself && crate::settings::Settings::load().stream_deck_profiles,
         );
     }
 

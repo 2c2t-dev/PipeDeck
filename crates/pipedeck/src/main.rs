@@ -33,13 +33,8 @@ use libadwaita as adw;
 use pipedeck_engine::{Config, Event};
 
 use engine_link::EngineLink;
+use launcher::APP_ID;
 use window::Window;
-
-/// Reverse-DNS id of 2c2t.dev. GApplication (like D-Bus) forbids an element
-/// starting with a digit, so the `2c2t` component takes the conventional
-/// leading underscore. Changing this later also renames the .desktop file,
-/// the GSettings path and the Flatpak sandbox, so it is meant to be stable.
-const APP_ID: &str = "dev._2c2t.Pipedeck";
 
 thread_local! {
     /// Asked to start with the window closed: honoured once, when the
