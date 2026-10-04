@@ -332,6 +332,64 @@ pub enum Event {
 pub struct EngineHandle {
     tx: pw::channel::Sender<Command>,
     thread: Option<JoinHandle<()>>,
+    /// Who else hears what the engine says, besides the client that
+    /// spawned it: the control socket's clients.
+    watch: Watch,
+}
+
+/// The engine's word passed on to other listeners than its client, from
+/// any thread. The matrix and the devices last said are kept, so one that
+/// starts listening late is told where things stand.
+#[derive(Clone, Default)]
+pub struct Watch(std::sync::Arc<std::sync::Mutex<Watchers>>);
+
+#[derive(Default)]
+struct Watchers {
+    listeners: Vec<std::sync::mpsc::Sender<Event>>,
+    state: Option<Event>,
+    devices: Option<Event>,
+}
+
+impl Watch {
+    /// Pass an event on. Only what a remote control shows is: the matrix,
+    /// the devices and the levels set; not the meters, many times a second.
+    fn publish(&self, event: &Event) {
+        let passed = matches!(
+            event,
+            Event::State(_)
+                | Event::Devices { .. }
+                | Event::MixChanged { .. }
+                | Event::SourceChanged { .. }
+                | Event::LinkChanged { .. }
+        );
+        if !passed {
+            return;
+        }
+        let Ok(mut watchers) = self.0.lock() else {
+            return;
+        };
+        match event {
+            Event::State(_) => watchers.state = Some(event.clone()),
+            Event::Devices { .. } => watchers.devices = Some(event.clone()),
+            _ => {}
+        }
+        watchers
+            .listeners
+            .retain(|listener| listener.send(event.clone()).is_ok());
+    }
+
+    /// Start hearing what the engine says, beginning with where things
+    /// stand now.
+    pub fn listen(&self) -> std::sync::mpsc::Receiver<Event> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Ok(mut watchers) = self.0.lock() {
+            for known in [&watchers.state, &watchers.devices].into_iter().flatten() {
+                let _ = tx.send(known.clone());
+            }
+            watchers.listeners.push(tx);
+        }
+        rx
+    }
 }
 
 impl EngineHandle {
@@ -343,7 +401,7 @@ impl EngineHandle {
     /// call Vesktop is in. Only the application does, so a test or an
     /// example never answers in its place. See [`crate::control`].
     pub fn serve_control(&self) {
-        crate::control::listen(self.tx.clone());
+        crate::control::listen(self.tx.clone(), self.watch.clone());
     }
 
     /// Ask the engine to stop and block until the thread has exited.
@@ -376,20 +434,28 @@ where
     F: Fn(Event) + Send + 'static,
 {
     let (tx, rx) = pw::channel::channel::<Command>();
+    let watch = Watch::default();
     let thread = std::thread::Builder::new()
         .name("pipedeck-engine".into())
-        .spawn(move || {
-            let events: Rc<dyn Fn(Event)> = Rc::new(on_event);
-            if let Err(e) = run(config_path, rx, events.clone()) {
-                log::error!("engine stopped: {e}");
-                events(Event::Error(e.to_string()));
+        .spawn({
+            let watch = watch.clone();
+            move || {
+                let events: Rc<dyn Fn(Event)> = Rc::new(move |event: Event| {
+                    watch.publish(&event);
+                    on_event(event);
+                });
+                if let Err(e) = run(config_path, rx, events.clone()) {
+                    log::error!("engine stopped: {e}");
+                    events(Event::Error(e.to_string()));
+                }
+                events(Event::Stopped);
             }
-            events(Event::Stopped);
         })
         .expect("cannot spawn the engine thread");
     EngineHandle {
         tx,
         thread: Some(thread),
+        watch,
     }
 }
 

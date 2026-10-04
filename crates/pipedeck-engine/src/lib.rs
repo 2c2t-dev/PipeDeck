@@ -19,7 +19,9 @@ pub mod types;
 pub mod vst3;
 
 pub use config::Config;
-pub use engine::{spawn, Command, EffectLevel, EngineHandle, Event, Learning, StateSnapshot};
+pub use engine::{
+    spawn, Command, EffectLevel, EngineHandle, Event, Learning, StateSnapshot, Watch,
+};
 pub use error::EngineError;
 pub use types::{
     new_mix, node_prefix, voice_app, voice_labels, App, CallMember, ChainState, Control, Device,
