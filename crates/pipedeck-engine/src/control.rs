@@ -25,6 +25,15 @@
 //! mixes, the cells joining them, and the device listened on, every level a
 //! fader position from 0 to 1.
 //!
+//! The meters, asked for with `{"meters": true}`, come ten times a second
+//! as the loudest each channel, mix and person of a call got meanwhile, a
+//! linear amplitude, once more when it falls silent and not again until it
+//! is not:
+//!
+//! ```json
+//! {"levels": {"channels": [[2, 0.31]], "mixes": [[1, 0.2]], "voices": [[3, "2350…", 0.1]]}}
+//! ```
+//!
 //! And what to do, answered `{"ok": true}` or `{"error": "..."}`:
 //!
 //! ```json
@@ -72,6 +81,7 @@ struct Message {
     call: Option<Vec<CallMember>>,
     get: Option<String>,
     subscribe: Option<bool>,
+    meters: Option<bool>,
     #[serde(rename = "do")]
     action: Option<Action>,
 }
@@ -215,12 +225,90 @@ struct Model {
     outputs: Vec<Device>,
     /// The clients that asked to hear of every change.
     subscribers: Vec<mpsc::Sender<()>>,
+    /// The clients that asked for the meters, and are handed every
+    /// measurement to pass on at their own pace.
+    meter_listeners: Vec<mpsc::Sender<Peaks>>,
+}
+
+/// The loudest each channel, mix and person of a call got, as a linear
+/// amplitude: a meter's reading.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Peaks {
+    pub channels: Vec<(u32, f32)>,
+    pub mixes: Vec<(u32, f32)>,
+    /// A person by their row and their id.
+    pub voices: Vec<(u32, String, f32)>,
+}
+
+impl Peaks {
+    /// Keep the louder of what was read and what is read now.
+    fn merge(&mut self, other: Peaks) {
+        fn louder<K: PartialEq>(kept: &mut Vec<(K, f32)>, read: Vec<(K, f32)>) {
+            for (key, peak) in read {
+                match kept.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, kept)) => *kept = kept.max(peak),
+                    None => kept.push((key, peak)),
+                }
+            }
+        }
+        louder(&mut self.channels, other.channels);
+        louder(&mut self.mixes, other.mixes);
+        let mut voices: Vec<((u32, String), f32)> = std::mem::take(&mut self.voices)
+            .into_iter()
+            .map(|(row, user, peak)| ((row, user), peak))
+            .collect();
+        louder(
+            &mut voices,
+            other
+                .voices
+                .into_iter()
+                .map(|(row, user, peak)| ((row, user), peak))
+                .collect(),
+        );
+        self.voices = voices
+            .into_iter()
+            .map(|((row, user), peak)| (row, user, peak))
+            .collect();
+    }
+
+    /// Rounded, so a line says no more than a meter can show.
+    fn rounded(mut self) -> Self {
+        let round = |peak: &mut f32| *peak = (*peak * 1000.0).round() / 1000.0;
+        self.channels.iter_mut().for_each(|(_, p)| round(p));
+        self.mixes.iter_mut().for_each(|(_, p)| round(p));
+        self.voices.iter_mut().for_each(|(_, _, p)| round(p));
+        self
+    }
+
+    fn silent(&self) -> bool {
+        self.channels.iter().all(|(_, p)| *p == 0.0)
+            && self.mixes.iter().all(|(_, p)| *p == 0.0)
+            && self.voices.iter().all(|(_, _, p)| *p == 0.0)
+    }
 }
 
 impl Model {
     /// Take in what the engine said.
     fn hear(&mut self, event: Event) {
         match event {
+            Event::Levels {
+                sources,
+                mixes,
+                voices,
+                ..
+            } => {
+                let peaks = Peaks {
+                    channels: sources.into_iter().map(|(id, p)| (id.0, p)).collect(),
+                    mixes: mixes.into_iter().map(|(id, p)| (id.0, p)).collect(),
+                    voices: voices
+                        .into_iter()
+                        .map(|(id, user, p)| (id.0, user, p))
+                        .collect(),
+                };
+                self.meter_listeners
+                    .retain(|listener| listener.send(peaks.clone()).is_ok());
+                return;
+            }
             Event::State(state) => self.state = Some(state),
             Event::Devices { outputs, .. } => self.outputs = outputs,
             Event::SourceChanged { id, state } => {
@@ -592,6 +680,14 @@ fn say(writer: &Mutex<UnixStream>, value: &impl Serialize) -> bool {
         .unwrap_or(false)
 }
 
+/// How often the meters are passed on.
+const METER_PACE: std::time::Duration = std::time::Duration::from_millis(100);
+
+#[derive(Serialize)]
+struct LevelsLine {
+    levels: Peaks,
+}
+
 #[derive(Serialize)]
 struct StateLine {
     state: Option<View>,
@@ -690,6 +786,46 @@ fn serve(stream: UnixStream, commands: pw::channel::Sender<Command>, model: Arc<
                             break;
                         }
                         told = now;
+                    }
+                });
+        }
+
+        if message.meters == Some(true) {
+            // Measured twenty times a second; passed on ten times, the
+            // loudest of each pair, which a key redrawn over USB keeps up
+            // with. Silence is said once, not again until it is broken.
+            let (tx, rx) = mpsc::channel::<Peaks>();
+            if let Ok(mut model) = model.lock() {
+                model.meter_listeners.push(tx);
+            }
+            let writer = writer.clone();
+            let _ = std::thread::Builder::new()
+                .name("pipedeck-meters".into())
+                .spawn(move || {
+                    let mut quiet = false;
+                    loop {
+                        std::thread::sleep(METER_PACE);
+                        let mut peaks = Peaks::default();
+                        loop {
+                            match rx.try_recv() {
+                                Ok(read) => peaks.merge(read),
+                                Err(mpsc::TryRecvError::Empty) => break,
+                                Err(mpsc::TryRecvError::Disconnected) => return,
+                            }
+                        }
+                        let silent = peaks.silent();
+                        if silent && quiet {
+                            continue;
+                        }
+                        quiet = silent;
+                        if !say(
+                            &writer,
+                            &LevelsLine {
+                                levels: peaks.rounded(),
+                            },
+                        ) {
+                            return;
+                        }
                     }
                 });
         }
@@ -870,6 +1006,25 @@ mod tests {
                 listening: true
             }])
         );
+    }
+
+    #[test]
+    fn a_meter_keeps_the_loudest_it_was_told() {
+        let mut peaks = Peaks {
+            channels: vec![(1, 0.2), (2, 0.5)],
+            voices: vec![(3, "a".into(), 0.1)],
+            ..Peaks::default()
+        };
+        peaks.merge(Peaks {
+            channels: vec![(1, 0.4), (2, 0.1)],
+            mixes: vec![(1, 0.3)],
+            voices: vec![(3, "a".into(), 0.05), (3, "b".into(), 0.2)],
+        });
+        assert_eq!(peaks.channels, [(1, 0.4), (2, 0.5)]);
+        assert_eq!(peaks.mixes, [(1, 0.3)]);
+        assert_eq!(peaks.voices, [(3, "a".into(), 0.1), (3, "b".into(), 0.2)]);
+        assert!(!peaks.silent());
+        assert!(Peaks::default().silent());
     }
 
     #[test]

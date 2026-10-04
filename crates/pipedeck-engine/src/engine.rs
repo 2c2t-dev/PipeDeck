@@ -352,19 +352,29 @@ struct Watchers {
 
 impl Watch {
     /// Pass an event on. Only what a remote control shows is: the matrix,
-    /// the devices and the levels set; not the meters, many times a second.
+    /// the devices, the levels set and the meters, without what the
+    /// effects are doing, which only their windows draw.
     fn publish(&self, event: &Event) {
-        let passed = matches!(
-            event,
+        let event = match event {
             Event::State(_)
-                | Event::Devices { .. }
-                | Event::MixChanged { .. }
-                | Event::SourceChanged { .. }
-                | Event::LinkChanged { .. }
-        );
-        if !passed {
-            return;
-        }
+            | Event::Devices { .. }
+            | Event::MixChanged { .. }
+            | Event::SourceChanged { .. }
+            | Event::LinkChanged { .. } => event.clone(),
+            Event::Levels {
+                sources,
+                mixes,
+                voices,
+                ..
+            } => Event::Levels {
+                sources: sources.clone(),
+                mixes: mixes.clone(),
+                voices: voices.clone(),
+                effects: Vec::new(),
+            },
+            _ => return,
+        };
+        let event = &event;
         let Ok(mut watchers) = self.0.lock() else {
             return;
         };
