@@ -1,0 +1,22 @@
+# Once a week, a pull request for what Pipedeck depends on: the crates, and
+# the actions the workflows use. Minor and patch updates come together, so
+# a week brings one pull request rather than one per crate.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+    groups:
+      crates:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+    groups:
+      actions:
+        update-types: [minor, patch]

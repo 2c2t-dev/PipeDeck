@@ -152,6 +152,9 @@ own settings in `interface.toml` next to it.
 
 ## Development
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and send a
+change, and [CHANGELOG.md](CHANGELOG.md) for what each release brings.
+
 | Folder | Contents |
 | --- | --- |
 | `crates/pipedeck-engine` | The PipeWire graph, the config and the control socket. No GTK. |

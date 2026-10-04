@@ -1,0 +1,17 @@
+name: Feature request
+description: Something Pipedeck could do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you are trying to do
+      description: "The situation rather than the solution: what you stream, record or listen to, and where Pipedeck gets in the way."
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: How Pipedeck could help
+      description: If you have an idea of how it would look or work.

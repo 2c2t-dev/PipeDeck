@@ -1,0 +1,81 @@
+name: Bug report
+description: Something in Pipedeck does not work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      placeholder: |
+        1. Create a channel…
+        2. Send Firefox to it…
+        3. …
+
+  - type: input
+    id: version
+    attributes:
+      label: Pipedeck version
+      description: Shown in Settings → About.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installed
+    attributes:
+      label: Installed from
+      options:
+        - .deb
+        - .rpm
+        - AppImage
+        - Built from source
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and desktop
+      placeholder: "Fedora 42, GNOME 48"
+    validations:
+      required: true
+
+  - type: input
+    id: pipewire
+    attributes:
+      label: PipeWire version
+      description: What `pipewire --version` says.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: integration
+    attributes:
+      label: Integrations involved
+      multiple: true
+      options:
+        - None
+        - OpenDeck
+        - StreamController
+        - Vesktop (Discord voices)
+        - VST3 plug-ins
+        - Stereo Tool
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Start Pipedeck from a terminal with
+        `RUST_LOG=pipedeck=debug,pipedeck_engine=debug pipedeck`,
+        make the problem happen, and paste what it printed.
+      render: shell

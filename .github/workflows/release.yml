@@ -80,10 +80,33 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+      # The packages are named after Cargo.toml's version: a tag that says
+      # another would put them on the wrong release.
+      - name: Check the tag against Cargo.toml
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          manifest=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$version" != "$manifest" ]; then
+            echo "::error::The tag says $version, Cargo.toml says $manifest"
+            exit 1
+          fi
+      # The release's notes: this version's section of the changelog, which
+      # GitHub's own list of what was merged follows.
+      - name: Take the notes from the changelog
+        run: |
+          awk -v v="${GITHUB_REF_NAME#v}" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && (/^## \[/ || /^\[[^]]+\]: /) { exit }
+            on { print }
+          ' CHANGELOG.md | sed '/./,$!d' > notes.md
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
+          fail_on_unmatched_files: true
+          body_path: notes.md
+          generate_release_notes: true
