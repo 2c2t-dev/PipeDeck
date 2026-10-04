@@ -262,6 +262,16 @@ fn follow(
     Ok(())
 }
 
+/// Ask the mixer once where things stand. `None` while it is not up yet.
+pub fn fetch() -> std::io::Result<Option<View>> {
+    let mut socket = UnixStream::connect(socket_path())?;
+    socket.write_all(b"{\"get\": \"state\"}\n")?;
+    let mut line = String::new();
+    BufReader::new(socket).read_line(&mut line)?;
+    let message: Value = serde_json::from_str(&line)?;
+    Ok(serde_json::from_value(message["state"].clone())?)
+}
+
 fn socket_path() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)

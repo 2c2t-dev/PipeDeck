@@ -9,7 +9,9 @@
 //! is passed on as it comes.
 //!
 //! `pipedeck-opendeck --icons DIR` writes the icons the plugin is listed
-//! with, which `install.sh` does.
+//! with, which `install.sh` does; `pipedeck-opendeck --profiles` writes a
+//! profile laid out from the mixer for each Stream Deck OpenDeck knows (see
+//! `profiles.rs`).
 
 mod deck;
 mod draw;
@@ -17,6 +19,7 @@ mod mixer;
 #[path = "../../../crates/pipedeck/src/presets.rs"]
 #[allow(dead_code)]
 mod presets;
+mod profiles;
 
 use std::net::TcpStream;
 use std::process::ExitCode;
@@ -40,6 +43,15 @@ fn main() -> ExitCode {
 
     if let Some(dir) = arg("--icons") {
         return write_icons(&dir);
+    }
+    if args.iter().any(|a| a == "--profiles") {
+        return match profiles::write_all() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("pipedeck-opendeck: {e}");
+                ExitCode::FAILURE
+            }
+        };
     }
 
     let (Some(port), Some(uuid), Some(register)) =

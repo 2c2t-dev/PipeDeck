@@ -488,10 +488,11 @@ fn picture(
                     muted: false,
                     dim: !mix.listening,
                 },
-                below: (
-                    if mix.listening { "Heard" } else { "" }.to_owned(),
-                    "#ffffff",
-                ),
+                below: if mix.listening {
+                    ("Heard".to_owned(), "#ffffff")
+                } else {
+                    ("Hear".to_owned(), draw::FAINT)
+                },
             })
         }
         Action::MainOutput => {
@@ -514,10 +515,11 @@ fn picture(
                     muted: false,
                     dim: !found.listening,
                 },
-                below: (
-                    if found.listening { "Listening" } else { "" }.to_owned(),
-                    "#ffffff",
-                ),
+                below: if found.listening {
+                    ("Listening".to_owned(), "#ffffff")
+                } else {
+                    ("Listen".to_owned(), draw::FAINT)
+                },
             })
         }
     }

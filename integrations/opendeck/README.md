@@ -40,6 +40,30 @@ USB path (`1-2.4.2` here, as `lsusb -t` or `/sys/bus/usb/devices` show it):
 echo 1-2.4.2:1.0 | sudo tee /sys/bus/usb/drivers/usbhid/bind
 ```
 
+## Ready-made profiles
+
+```sh
+~/.config/opendeck/plugins/com.fabienmillet.pipedeck.sdPlugin/x86_64-unknown-linux-gnu/bin/pipedeck-opendeck --profiles
+```
+
+writes a profile called **Pipedeck** for each Stream Deck OpenDeck knows,
+laid out from the mixer as it is, next to the profiles already there; pick
+it in OpenDeck's profile menu. Run it again after adding channels or
+mixes, or after plugging in another deck; it replaces only the Pipedeck
+profiles, and is best run with OpenDeck closed.
+
+- **Stream Deck** (15 keys): the channels on the top row, the mixes to hear
+  in the headphones on the middle one with the output device at its end,
+  the mixes at the bottom.
+- **Stream Deck +**: a channel on each dial, the mixes on the top keys, the
+  mixes to hear and the output device under them.
+- **Stream Deck XL**: the mixer's grid, a column for each channel (up to
+  six) with its own level on top and its level in each mix under it, then a
+  column of mixes and a column of mixes to hear, the output device last.
+
+Every key on them is an ordinary action: change it in its settings, move it
+or replace it as any other.
+
 ## How it works
 
 A Stream Deck SDK plugin, in Rust (`src/`), started by OpenDeck with the

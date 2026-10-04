@@ -52,7 +52,7 @@ const GLYPH: &str = "#12141a";
 const GREY: &str = "#5e5c64";
 pub const RED: &str = "#ed333b";
 const TEXT: &str = "#ffffff";
-const FAINT: &str = "#a0a0a0";
+pub const FAINT: &str = "#a0a0a0";
 const TRACK: &str = "rgba(255,255,255,0.2)";
 const LEVEL: &str = "rgba(255,255,255,0.9)";
 
