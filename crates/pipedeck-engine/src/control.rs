@@ -164,6 +164,8 @@ pub struct View {
 pub struct ChannelView {
     pub id: u32,
     pub name: String,
+    /// The look the interface gives it, a preset's key.
+    pub icon: Option<String>,
     pub volume: f32,
     pub muted: bool,
     /// Bound to a microphone, which has no level of its own here.
@@ -176,6 +178,7 @@ pub struct ChannelView {
 pub struct MixView {
     pub id: u32,
     pub name: String,
+    pub icon: Option<String>,
     pub volume: f32,
     pub muted: bool,
     /// Heard on the device listened on.
@@ -272,6 +275,7 @@ impl Model {
                 .map(|source| ChannelView {
                     id: source.id.0,
                     name: source.name.clone(),
+                    icon: source.icon.clone(),
                     volume: source.gain,
                     muted: source.muted,
                     input: source.is_input(),
@@ -294,6 +298,7 @@ impl Model {
                 .map(|mix| MixView {
                     id: mix.id.0,
                     name: mix.name.clone(),
+                    icon: mix.icon.clone(),
                     volume: mix.gain,
                     muted: mix.muted,
                     listening: heard(mix, state.listen_device.as_deref()),
