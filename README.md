@@ -142,16 +142,33 @@ Checks against the live PipeWire server, all run with
 ### The graph
 
 ```
- apps ──▶ [pipedeck.src.N] ──monitor──┐
-           an output device           ├─ loopback (cell fader) ═▶ [pipedeck.mix.M] ──┬─ loopback ──▶ device
- mic  ────────────────────────────────┘                            an input device   └─ loopback ──▶ device
-                                                                   (recorded by OBS)
+  applications              microphone
+       |                        |
+       v                        |
+  [pipedeck.src.N]              |
+  a channel: an output device   |
+       |                        |
+       +-----------+------------+
+                   |
+                   v
+  [pipedeck.vst.N]
+  the channel's effects, if it has any
+                   |
+                   v
+  a cell: a loopback with its fader and mute,
+  one for each channel and mix it links
+                   |
+                   v
+  [pipedeck.mix.M]
+  a mix: an input device, which OBS records
+       |
+       +--> loopback --> headphones
+       +--> loopback --> another output device
 ```
 
 A channel is a sink, and a mix is a source, which is why each shows up in
 only one list. A session manager routes nothing into a source, so Pipedeck
-links the cells (`═▶`) into their mix itself, port by port. A channel with
-effects adds a node, `pipedeck.vst.N`, between itself and its cells.
+links the cells into their mix itself, port by port.
 
 Every node belongs to Pipedeck's own PipeWire connection, so if Pipedeck
 dies, nothing is left behind. On quitting, it hands the applications it
