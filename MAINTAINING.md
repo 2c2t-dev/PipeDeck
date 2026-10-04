@@ -24,8 +24,11 @@ AppImage, Fedora 42 for the .rpm.
 
 `site/` is [pipedeck.2c2t.dev](https://pipedeck.2c2t.dev/). The *Site*
 workflow publishes it on Cloudflare Pages, with the icon and the pictures in
-`.github/`, whenever one of them changes on `main`. The headers it is served
-with, its Content Security Policy among them, are in `site/_headers`.
+`.github/`, whenever one of them changes on `main`; it also draws WebP
+copies of the pictures at the sizes the page shows them. The headers it is
+served with, its Content Security Policy among them, are in
+`site/_headers`. The typefaces are the site's own, in `site/fonts/`, so it
+loads nothing from another server.
 
 The workflow needs two repository secrets, `CLOUDFLARE_API_TOKEN`, a token
 allowed to edit Cloudflare Pages, and `CLOUDFLARE_ACCOUNT_ID`. Without them

@@ -1,0 +1,14 @@
+# Pipedeck
+
+> A PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link. Applications go to channels, channels go to mixes at levels of their own, and each mix is an input device for OBS or a call, or plays to headphones. It has built-in voice effects, runs VST3 plug-ins and Stereo Tool, and has Stream Deck (OpenDeck, StreamController) and Discord (Vesktop) integrations. Free software under the MIT License, written in Rust with GTK 4 and libadwaita.
+
+## Documentation
+
+- [README](https://github.com/2c2t-dev/PipeDeck/blob/main/README.md): what Pipedeck does, how to install it and how it works
+- [Changelog](https://github.com/2c2t-dev/PipeDeck/blob/main/CHANGELOG.md): what each release brings
+- [Contributing](https://github.com/2c2t-dev/PipeDeck/blob/main/CONTRIBUTING.md): building, testing and the engine's rules
+
+## Download
+
+- [Latest release](https://github.com/2c2t-dev/PipeDeck/releases/latest): .deb, .rpm and AppImage
+- [Source](https://github.com/2c2t-dev/PipeDeck)

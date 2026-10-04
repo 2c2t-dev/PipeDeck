@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://pipedeck.2c2t.dev/sitemap.xml

@@ -1,3 +1,19 @@
+/* The site's own copies of its two typefaces, the Latin letters only, so
+   the page asks nothing of another server. Both are variable fonts: one file
+   gives every weight. */
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/inter-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Nunito";
+  src: url("fonts/nunito-latin.woff2") format("woff2");
+  font-weight: 200 1000;
+  font-display: swap;
+}
+
 :root {
   --ground: #f6f5f9;
   --surface: #ffffff;
@@ -5,7 +21,7 @@
   --line: #e1dee9;
   --text: #241f31;
   --muted: #5e5c64;
-  --faint: #8b8794;
+  --faint: #6b6774;
   --pink: #c4378f;
   --yellow: #b8860b;
   --blue: #1c71d8;

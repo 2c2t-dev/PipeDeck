@@ -13,9 +13,8 @@
 <meta property="og:image" content="https://pipedeck.2c2t.dev/assets/social-preview.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Nunito:wght@700;800&display=swap">
+<link rel="preload" href="fonts/nunito-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 <script src="script.js" defer></script>
 </head>
@@ -48,8 +47,10 @@
       </div>
       <div class="shot">
         <picture>
+          <source media="(prefers-color-scheme: dark)" type="image/webp" sizes="(max-width: 1072px) calc(100vw - 48px), 1024px" srcset="assets/mixer-dark-1024.webp 1024w, assets/mixer-dark-2048.webp 2048w">
+          <source type="image/webp" sizes="(max-width: 1072px) calc(100vw - 48px), 1024px" srcset="assets/mixer-light-1024.webp 1024w, assets/mixer-light-2048.webp 2048w">
           <source media="(prefers-color-scheme: dark)" srcset="assets/mixer-dark.png">
-          <img src="assets/mixer-light.png" width="1024" height="520" alt="The mixer: five channels in rows, three mixes in columns, a fader in each cell that links them.">
+          <img src="assets/mixer-light.png" width="1024" height="520" fetchpriority="high" alt="The mixer: five channels in rows, three mixes in columns, a fader in each cell that links them.">
         </picture>
       </div>
     </div>
@@ -145,8 +146,10 @@
         <p class="note">Built in, nothing to install. VST3 plug-ins and Thimeo's Stereo Tool run on a channel too.</p>
       </div>
       <picture>
+        <source media="(prefers-color-scheme: dark)" type="image/webp" sizes="(max-width: 860px) calc(100vw - 48px), 520px" srcset="assets/equaliser-dark-720.webp 720w, assets/equaliser-dark-1440.webp 1440w">
+        <source type="image/webp" sizes="(max-width: 860px) calc(100vw - 48px), 520px" srcset="assets/equaliser-light-720.webp 720w, assets/equaliser-light-1440.webp 1440w">
         <source media="(prefers-color-scheme: dark)" srcset="assets/equaliser-dark.png">
-        <img src="assets/equaliser-light.png" width="720" height="468" alt="The equaliser's window: five bands on a curve, over the zones a voice is talked about in.">
+        <img src="assets/equaliser-light.png" width="720" height="468" loading="lazy" decoding="async" alt="The equaliser's window: five bands on a curve, over the zones a voice is talked about in.">
       </picture>
     </div>
   </section>
@@ -208,7 +211,7 @@ cargo build --release
 
 <footer>
   <div class="wrap">
-    <p>Pipedeck is free software under the <a href="https://github.com/2c2t-dev/PipeDeck/blob/main/LICENSE">MIT License</a>. Interface icons from <a href="https://fonts.google.com/icons">Material Symbols</a>, Apache License 2.0.</p>
+    <p>Pipedeck is free software under the <a href="https://github.com/2c2t-dev/PipeDeck/blob/main/LICENSE">MIT License</a>. Interface icons from <a href="https://fonts.google.com/icons">Material Symbols</a>, Apache License 2.0. Set in <a href="fonts/Inter-OFL.txt">Inter</a> and <a href="fonts/Nunito-OFL.txt">Nunito</a>, under the SIL Open Font License.</p>
     <p>Not affiliated with Elgato or Corsair. Wave Link and Stream Deck are their trademarks.</p>
   </div>
 </footer>
