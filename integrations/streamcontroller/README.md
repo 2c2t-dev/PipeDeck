@@ -15,10 +15,15 @@ changes, whoever changed it.
 | **Main Output Device** | one device, or two to switch between | listens on that device | press, the same |
 | **Call Voice** | a place in the Discord call: the first, the second… | as Channel Level, for whoever is there | the same |
 | **Channel Effect** | a channel and one of its effects | switches the effect off or on | press, the same |
-| **Add to Channel** | an application and a channel | puts the application on the channel, or takes it off | press, the same |
+| **Add to Channel** | an application, or the one in front, and a channel | puts the application on the channel, or takes it off | press, the same |
+| **Call** | the page it goes to | goes to the call's page, saying how many are in it, or back | press, the same |
 
 A person of a call wears their Discord picture, as Vesktop's plugin
-fetched it. A level shows its meter with it, as the mixer's do: inside the ring on a
+fetched it. The application in front is the one playing in the window that has the
+focus, which on KDE a KWin script of Pipedeck's says: switch on
+**Application in front** in Pipedeck's Stream Deck settings.
+
+A level shows its meter with it, as the mixer's do: inside the ring on a
 key, in the bar on the touch strip with the level as a handle on it; set
 **Display** to *Volume only* to leave it out. A channel's level in one mix
 wears that mix's badge in its corner. Everything is kept by id, so renaming
@@ -37,6 +42,18 @@ settings.
 
 Or by hand, from a checkout: `integrations/streamcontroller/install.sh`
 (or with `$STREAMCONTROLLER_DATA` for another data folder).
+
+## Ready-made pages
+
+With the plugin installed, Pipedeck lays out **Pipedeck** pages from the
+mixer as it is, and again when a channel, a mix or a device comes or goes:
+StreamController keeps pages apart from decks, so there is a pair for each
+kind, **Pipedeck** and **Pipedeck Call** for a Stream Deck, **Pipedeck +**
+and **Pipedeck + Call**, **Pipedeck XL** and **Pipedeck XL Call**; give your
+deck its own. They are laid out as OpenDeck's profiles are (see
+[its README](../opendeck/README.md)), with a Call key between the two. With
+**Follow calls** on, in a Call key's settings, a deck on a Pipedeck page
+goes to the call's as a call starts, and back as it ends.
 
 ## How it talks to Pipedeck
 

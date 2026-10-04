@@ -70,9 +70,27 @@ const ICONS: &str = "/dev/_2c2t/Pipedeck/icons/scalable/actions";
 /// Left in an installed plugin: what was installed, to tell when it is out
 /// of date.
 const MARKER: &str = ".pipedeck";
-/// Left in OpenDeck's plugin: what the mixer had when the profiles were
-/// last laid out, to tell when they need it again.
-const LAID_OUT: &str = ".pipedeck-profiles";
+/// What the mixer had when the profiles and pages were last laid out, to
+/// tell when they need it again: kept in Pipedeck's cache.
+fn laid_out_marker() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".cache"))
+        .join("pipedeck")
+        .join("stream-deck-layout")
+}
+
+/// Whether Pipedeck's plugin is in an application.
+fn has_plugin(app: App) -> bool {
+    matches!(state(app), State::Installed { .. })
+}
+
+/// Whether Pipedeck's plugin is in either application, which is when
+/// there are profiles or pages to lay out.
+pub fn any_installed() -> bool {
+    has_plugin(App::OpenDeck) || has_plugin(App::StreamController)
+}
 
 /// One of the Stream Deck applications.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,7 +327,7 @@ pub fn install(app: App, lay_out: bool) -> Result<String, String> {
             let was_running = close_opendeck();
             let result = install_opendeck().and_then(|()| {
                 if lay_out {
-                    lay_out_profiles_now()
+                    opendeck_profiles_now()
                 } else {
                     Ok(())
                 }
@@ -327,6 +345,13 @@ pub fn install(app: App, lay_out: bool) -> Result<String, String> {
             })
         }
         App::StreamController => install_streamcontroller()
+            .and_then(|()| {
+                if lay_out {
+                    streamcontroller_pages_now()
+                } else {
+                    Ok(())
+                }
+            })
             .map(|()| "Installed: restart StreamController to load it.".to_owned()),
     }
 }
@@ -414,26 +439,33 @@ pub fn remove(app: App) -> Result<String, String> {
     })
 }
 
-/// Lay out a Pipedeck profile for each deck OpenDeck knows, from the
-/// mixer as it is: OpenDeck is closed meanwhile.
+/// Lay out the Pipedeck profiles of OpenDeck and the Pipedeck pages of
+/// StreamController, whichever have the plugin, from the mixer as it is:
+/// OpenDeck is closed meanwhile.
 pub fn lay_out_profiles() -> Result<String, String> {
     let _busy = Busy::take()?;
-    let was_running = close_opendeck();
-    let result = lay_out_profiles_now();
-    if was_running {
-        start_opendeck();
+    let mut said = Vec::new();
+    if has_plugin(App::OpenDeck) {
+        let was_running = close_opendeck();
+        let result = opendeck_profiles_now();
+        if was_running {
+            start_opendeck();
+        }
+        result?;
+        said.push("pick the Pipedeck profile in OpenDeck");
     }
-    result.map(|()| "Laid out: pick the Pipedeck profile in OpenDeck.".to_owned())
+    if has_plugin(App::StreamController) {
+        streamcontroller_pages_now()?;
+        said.push("the Pipedeck page of your deck in StreamController");
+    }
+    Ok(format!("Laid out: {}.", said.join(", and ")))
 }
 
-fn lay_out_profiles_now() -> Result<(), String> {
-    let program = App::OpenDeck
-        .plugin_dir()
-        .join(opendeck_target())
-        .join("bin")
-        .join(OPENDECK_PROGRAM);
-    let out = Command::new(&program)
-        .arg("--profiles")
+/// Run OpenDeck's plugin program on something to lay out, and note what
+/// it was laid out from, so it is not laid out again for it.
+fn run_layout(program: &Path, args: &[&std::ffi::OsStr]) -> Result<(), String> {
+    let out = Command::new(program)
+        .args(args)
         .output()
         .map_err(|e| format!("{}: {e}", program.display()))?;
     if !out.status.success() {
@@ -443,14 +475,50 @@ fn lay_out_profiles_now() -> Result<(), String> {
             .trim_start_matches(&format!("{OPENDECK_PROGRAM}: "))
             .to_owned());
     }
-    // What they were laid out from, so they are not laid out again for it.
     if let Some(layout) = LATEST.lock().ok().and_then(|latest| latest.clone()) {
-        let marker = App::OpenDeck.plugin_dir().join(LAID_OUT);
-        if let Err(e) = std::fs::write(&marker, layout) {
+        let marker = laid_out_marker();
+        let written = marker
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&marker, layout));
+        if let Err(e) = written {
             log::warn!("{}: {e}", marker.display());
         }
     }
     Ok(())
+}
+
+fn opendeck_profiles_now() -> Result<(), String> {
+    let program = App::OpenDeck
+        .plugin_dir()
+        .join(opendeck_target())
+        .join("bin")
+        .join(OPENDECK_PROGRAM);
+    run_layout(&program, &["--profiles".as_ref()])
+}
+
+/// StreamController's pages, laid out by the same program, wherever it
+/// is: beside Pipedeck, or in OpenDeck's plugin.
+fn streamcontroller_pages_now() -> Result<(), String> {
+    let program = opendeck_program()
+        .or_else(|| {
+            let installed = App::OpenDeck
+                .plugin_dir()
+                .join(opendeck_target())
+                .join("bin")
+                .join(OPENDECK_PROGRAM);
+            installed.is_file().then_some(installed)
+        })
+        .ok_or_else(|| format!("{OPENDECK_PROGRAM}, which lays the pages out, is missing"))?;
+    let pages = App::StreamController
+        .plugins_dir()
+        .parent()
+        .map(|data| data.join("pages"))
+        .ok_or("StreamController keeps its pages nowhere")?;
+    run_layout(
+        &program,
+        &["--streamcontroller-pages".as_ref(), pages.as_os_str()],
+    )
 }
 
 /// Set while an install, a removal or a layout runs: two at once would
@@ -524,10 +592,10 @@ pub fn mixer_changed(mixer: &StateSnapshot, outputs: &[Device], enabled: bool) {
         let Some(layout) = LATEST.lock().ok().and_then(|latest| latest.clone()) else {
             return;
         };
-        if !matches!(state(App::OpenDeck), State::Installed { .. }) {
+        if !any_installed() {
             return;
         }
-        let marker = App::OpenDeck.plugin_dir().join(LAID_OUT);
+        let marker = laid_out_marker();
         if std::fs::read_to_string(&marker).ok().as_deref() == Some(layout.as_str()) {
             return;
         }

@@ -15,6 +15,9 @@ the OpenDeck plugin has them too (`integrations/opendeck/src/deck.rs`):
   the first, the second, and on, following the call as people come and go.
 - **Channel Effect**: one effect of a channel, switched off or on.
 - **Add to Channel**: an application put on a channel, or taken off it.
+- **Call**: to the call's page, saying how many are in the call, or back
+  to the mixer's; see `main.py` for the decks following calls by
+  themselves.
 
 Everything is kept by id, so renaming a channel does not lose its key, and
 shown as Pipedeck says it is, whoever changed it.
@@ -34,6 +37,8 @@ from loguru import logger as log  # noqa: E402
 from src.backend.DeckManagement.InputIdentifier import Input  # noqa: E402
 from src.backend.PluginManager.ActionCore import ActionCore  # noqa: E402
 from src.backend.PluginManager.EventAssigner import EventAssigner  # noqa: E402
+
+import globals as gl  # noqa: E402
 
 from . import draw  # noqa: E402
 
@@ -591,6 +596,56 @@ class AddApp(PressAction):
         )
         self.picked(app, lambda value, label: self.save(app=value, label=label))
         return [app, self.channel_row(settings)]
+
+
+def switch_page(controller, name: str) -> bool:
+    """Show the page of that name on a deck, as StreamController's own
+    actions do. Says whether there was one."""
+    path = gl.page_manager.find_matching_page_path(name)
+    if not path:
+        return False
+    controller.load_page(gl.page_manager.get_page(path, controller))
+    return True
+
+
+class CallPage(PressAction):
+    """To the call's page, or back to the mixer's, by its name."""
+
+    def press(self) -> None:
+        to = self.settings().get("to")
+        if not to or not switch_page(self.deck_controller, to):
+            self.show_error(1)
+
+    def picture(self, settings: dict) -> draw.Picture:
+        if settings.get("page") == "mixer":
+            return draw.Picture(name="Mixer", look=("pd-listen-symbolic", draw.WHITE), below=("Back", draw.TEXT))
+        people = sum(len(c["voices"]) for c in self.pipedeck.state["channels"])
+        return draw.Picture(
+            name="Call",
+            look=draw.look("people"),
+            dim=people == 0,
+            below={0: ("No call", draw.FAINT), 1: ("1 person", draw.TEXT)}.get(people, (f"{people} people", draw.TEXT)),
+        )
+
+    def get_config_rows(self) -> list:
+        settings = self.settings()
+        pages = gl.page_manager.get_page_names()
+        to = self.combo("Goes to", [(name, name) for name in pages], settings.get("to"))
+        # Back to the mixer when the page it goes to is not a call's.
+        self.picked(to, lambda value, _: self.save(to=value, page="call" if value.endswith(" Call") else "mixer"))
+        follow = Adw.SwitchRow(
+            title="Follow calls",
+            subtitle="Every deck on a Pipedeck page goes to the call as one starts, and back as it ends",
+        )
+        follow.set_active(bool((self.plugin_base.get_settings() or {}).get("follow_call")))
+
+        def on_follow(row, *_):
+            kept = self.plugin_base.get_settings() or {}
+            kept["follow_call"] = row.get_active()
+            self.plugin_base.set_settings(kept)
+
+        follow.connect("notify::active", on_follow)
+        return [to, follow]
 
 
 class SwitchAction(PipedeckAction):

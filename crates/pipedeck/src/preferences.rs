@@ -363,9 +363,7 @@ fn stream_deck_group() -> adw::PreferencesGroup {
                 }
                 install.set_visible(streamdeck::can_install(app).is_ok());
                 remove.set_visible(installed);
-                if app == App::OpenDeck {
-                    profiles.set_visible(installed);
-                }
+                profiles.set_visible(streamdeck::any_installed());
             }
         });
         show();
@@ -385,10 +383,8 @@ fn stream_deck_group() -> adw::PreferencesGroup {
             let (start, show) = (start.clone(), show.clone());
             move |_| start(Box::new(move || streamdeck::remove(app)), show.clone())
         });
-        if app == App::OpenDeck {
-            group.add(&profiles);
-        }
     }
+    group.add(&profiles);
     // On KDE, the application in front, for Add to Channel: a KWin script
     // says which window has the focus.
     if crate::kwin::available() {

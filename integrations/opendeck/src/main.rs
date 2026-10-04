@@ -11,7 +11,8 @@
 //! `pipedeck-opendeck --icons DIR` writes the icons the plugin is listed
 //! with, which `install.sh` does; `pipedeck-opendeck --profiles` writes a
 //! profile laid out from the mixer for each Stream Deck OpenDeck knows (see
-//! `profiles.rs`).
+//! `profiles.rs`); `pipedeck-opendeck --streamcontroller-pages DIR` writes
+//! the same for StreamController, as its pages.
 
 mod avatar;
 mod deck;
@@ -44,6 +45,15 @@ fn main() -> ExitCode {
 
     if let Some(dir) = arg("--icons") {
         return write_icons(&dir);
+    }
+    if let Some(dir) = arg("--streamcontroller-pages") {
+        return match profiles::write_streamcontroller(std::path::Path::new(&dir)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("pipedeck-opendeck: {e}");
+                ExitCode::FAILURE
+            }
+        };
     }
     if args.iter().any(|a| a == "--profiles") {
         return match profiles::write_all() {

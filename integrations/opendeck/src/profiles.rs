@@ -15,6 +15,10 @@
 //! of a Discord call by their place in it, on the dials first and then the
 //! keys, so it follows the call as people come and go; and a key back.
 //!
+//! StreamController gets the same, as pages: it keeps pages apart from
+//! decks, so there is a pair for each kind of deck, named after it, and a
+//! deck is given its own in StreamController.
+//!
 //! A deck is told apart by its keys and dials, from the profiles OpenDeck
 //! has already written for it; one OpenDeck has not seen yet gets its
 //! profile the next time this runs.
@@ -346,6 +350,96 @@ pub fn write_all() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// StreamController's pages for a kind of deck: the mixer's, and the
+/// call's.
+fn streamcontroller_names(model: Model) -> (String, String) {
+    let mixer = match model {
+        Model::StreamDeck => MIXER_PROFILE.to_owned(),
+        Model::Plus => format!("{MIXER_PROFILE} +"),
+        Model::Xl => format!("{MIXER_PROFILE} XL"),
+    };
+    let call = format!("{mixer} Call");
+    (mixer, call)
+}
+
+/// StreamController's name for one of the plugin's actions.
+fn streamcontroller_action(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "channel" => "ChannelLevel",
+        "mix" => "MixLevel",
+        "monitor" => "MonitorMix",
+        "output" => "MainOutput",
+        "voice" => "CallVoice",
+        "call" => "CallPage",
+        "effect" => "ChannelEffect",
+        "app" => "AddApp",
+        _ => return None,
+    })
+}
+
+/// A layout as one of StreamController's pages: keys by their column and
+/// row, dials by their place. A Call key is told the page it goes to by
+/// name, since StreamController's pages are not a deck's own.
+fn streamcontroller_page(model: Model, layout: &Layout) -> Value {
+    let (mixer, call) = streamcontroller_names(model);
+    let slot = |slot: &Slot| -> Option<Value> {
+        let (name, settings) = slot.as_ref()?;
+        let action = streamcontroller_action(name)?;
+        let mut settings = settings.clone();
+        if *name == "call" {
+            let to = if settings["page"] == "mixer" {
+                &mixer
+            } else {
+                &call
+            };
+            settings["to"] = Value::from(to.clone());
+        }
+        Some(json!({
+            "states": { "0": {
+                "actions": [{ "id": format!("com_fabienmillet_Pipedeck::{action}"), "settings": settings }],
+                "image-control-action": 0,
+                "label-control-actions": [0, 0, 0],
+                "background-control-action": 0,
+            }},
+        }))
+    };
+    let mut keys = serde_json::Map::new();
+    for (index, key) in layout.keys.iter().enumerate() {
+        if let Some(key) = slot(key) {
+            let (column, row) = (index % model.columns(), index / model.columns());
+            keys.insert(format!("{column}x{row}"), key);
+        }
+    }
+    let mut dials = serde_json::Map::new();
+    for (index, dial) in layout.dials.iter().enumerate() {
+        if let Some(dial) = slot(dial) {
+            dials.insert(index.to_string(), dial);
+        }
+    }
+    json!({ "keys": keys, "dials": dials })
+}
+
+/// Write StreamController's Pipedeck pages, for every kind of deck, into
+/// its pages folder, and say what was done.
+pub fn write_streamcontroller(pages: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let view = crate::mixer::fetch()
+        .map_err(|e| format!("cannot reach Pipedeck, is it running? ({e})"))?
+        .ok_or("Pipedeck is not ready yet")?;
+    std::fs::create_dir_all(pages)?;
+    for model in [Model::StreamDeck, Model::Plus, Model::Xl] {
+        let (mixer, call) = streamcontroller_names(model);
+        for (name, layout) in [(mixer, layout(model, &view)), (call, call_layout(model))] {
+            let path = pages.join(format!("{name}.json"));
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&streamcontroller_page(model, &layout))?,
+            )?;
+            println!("{} page written to {}", model.name(), path.display());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,6 +523,28 @@ mod tests {
         assert_eq!(places, (1..=11).collect::<Vec<_>>());
         assert_eq!(layout.keys[7].as_ref().unwrap().1["page"], "mixer");
         assert_eq!(call_layout(Model::Xl).keys.iter().flatten().count(), 32);
+    }
+
+    #[test]
+    fn a_streamcontroller_page_is_keyed_by_column_and_row() {
+        let page = streamcontroller_page(Model::Plus, &layout(Model::Plus, &view()));
+        assert_eq!(
+            page["keys"]["3x0"]["states"]["0"]["actions"][0]["id"],
+            "com_fabienmillet_Pipedeck::CallPage"
+        );
+        assert_eq!(
+            page["keys"]["3x0"]["states"]["0"]["actions"][0]["settings"]["to"],
+            "Pipedeck + Call"
+        );
+        assert_eq!(
+            page["dials"]["0"]["states"]["0"]["actions"][0]["id"],
+            "com_fabienmillet_Pipedeck::ChannelLevel"
+        );
+        let call = streamcontroller_page(Model::Plus, &call_layout(Model::Plus));
+        assert_eq!(
+            call["keys"]["3x1"]["states"]["0"]["actions"][0]["settings"]["to"],
+            "Pipedeck +"
+        );
     }
 
     #[test]

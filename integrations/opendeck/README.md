@@ -14,11 +14,15 @@ changed it.
 | **Main Output Device** | one device, or two to switch between | listens on that device | press, the same |
 | **Call Voice** | a place in the Discord call: the first, the second… | as Channel Level, for whoever is there | the same |
 | **Channel Effect** | a channel and one of its effects | switches the effect off or on | press, the same |
-| **Add to Channel** | an application and a channel | puts the application on the channel, or takes it off | press, the same |
+| **Add to Channel** | an application, or the one in front, and a channel | puts the application on the channel, or takes it off | press, the same |
 | **Call** | the call, or back to the mixer | goes to the Pipedeck Call profile, or back | press, the same |
 
 A person of a call wears their Discord picture, as Vesktop's plugin
-fetched it. A level shows its meter with it, as the mixer's do: inside the ring on a
+fetched it. The application in front is the one playing in the window that has the
+focus, which on KDE a KWin script of Pipedeck's says: switch on
+**Application in front** in Pipedeck's Stream Deck settings.
+
+A level shows its meter with it, as the mixer's do: inside the ring on a
 key, in the bar on the touch strip with the level as a handle on it; set
 **Display** to *Volume only* to leave it out. A channel's level in one mix
 is what the mixer calls a cell: the key wears
