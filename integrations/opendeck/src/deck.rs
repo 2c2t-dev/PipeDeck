@@ -1145,6 +1145,75 @@ mod tests {
         );
     }
 
+    /// The touch strip as OpenDeck draws it, from what a dial was sent:
+    /// its layout, with OpenDeck's own renderer, as RGBA rows.
+    fn on_the_strip(feedback: &Value, layout: &str) -> Vec<u8> {
+        let mut renderer =
+            streamdeck_strip_render::get_incremental_renderer(layout.to_owned(), None).unwrap();
+        renderer.set_feedback(feedback.clone()).unwrap();
+        renderer.get_image().into_raw()
+    }
+
+    const LAYOUT: &str = include_str!("../plugin/layouts/strip.json");
+    /// The strip with nothing but the drawing, to compare with.
+    const CANVAS_ONLY: &str = r#"{"id": "canvas", "items": [{"key": "canvas", "type": "pixmap", "rect": [0, 0, 200, 100]}]}"#;
+
+    fn pixel(image: &[u8], x: usize, y: usize) -> [u8; 4] {
+        let at = (y * 200 + x) * 4;
+        [image[at], image[at + 1], image[at + 2], image[at + 3]]
+    }
+
+    fn feedback_of(deck: &mut Deck, action: &str, settings: Value) -> Value {
+        let told = deck.hear(&json!({
+            "event": "willAppear",
+            "action": format!("{PLUGIN}.{action}"),
+            "context": format!("{action}-dial"),
+            "device": "d",
+            "payload": {"controller": "Encoder", "settings": settings},
+        }));
+        told.into_iter()
+            .find(|m| m["event"] == "setFeedback")
+            .expect("a dial is sent its strip")["payload"]
+            .clone()
+    }
+
+    #[test]
+    fn a_dial_without_a_picture_is_its_drawing_and_nothing_over_it() {
+        let mut deck = Deck::new(Mixer::default());
+        deck.mixer_changed(Some(view()));
+        let feedback = feedback_of(&mut deck, "channel", json!({"channel": 2}));
+        let drawn = on_the_strip(&feedback, LAYOUT);
+        let alone = on_the_strip(&json!({"canvas": feedback["canvas"]}), CANVAS_ONLY);
+        assert!(drawn == alone, "the layers over the badge are not empty");
+    }
+
+    #[test]
+    fn a_person_wears_their_picture_round_on_the_strip() {
+        let path = std::env::temp_dir().join(format!("pipedeck-strip-{}.png", std::process::id()));
+        {
+            let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 64, 64);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let red: Vec<u8> = [230u8, 20, 20].repeat(64 * 64);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&red)
+                .unwrap();
+        }
+        let mut view = in_call(&["Alice"]);
+        view.channels[0].voices[0].avatar = Some(path.to_string_lossy().into_owned());
+        let mut deck = Deck::new(Mixer::default());
+        deck.mixer_changed(Some(view));
+        let drawn = on_the_strip(&feedback_of(&mut deck, "voice", json!({"slot": 1})), LAYOUT);
+        let _ = std::fs::remove_file(&path);
+        // The picture's middle, at 12 + 23 by 27 + 23: red.
+        let [r, g, b, _] = pixel(&drawn, 35, 50);
+        assert!(r > 200 && g < 60 && b < 60, "the middle is {r} {g} {b}");
+        // Its corner, outside the circle: the strip's black, no checkerboard.
+        assert_eq!(pixel(&drawn, 13, 28)[..3], [0, 0, 0]);
+    }
+
     #[test]
     fn a_channel_in_a_mix_is_its_cell() {
         let settings = Settings {

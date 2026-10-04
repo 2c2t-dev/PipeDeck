@@ -12,3 +12,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 png = "0.18"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+
+[dev-dependencies]
+# The touch strip's renderer, as OpenDeck 2.14 draws it: the tests draw the
+# strip with it rather than with something like it.
+streamdeck-strip-render = { git = "https://github.com/FrostyCoolSlug/streamdeck-strip-render", rev = "23fa1399" }
