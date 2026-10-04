@@ -104,7 +104,7 @@ impl<T> Quarantine<T> {
 }
 
 /// Where a level read back from the graph belongs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Owner {
     Source(SourceId),
     Mix(MixId),
@@ -331,6 +331,11 @@ pub struct Graph {
     /// hold a number of its own. The listener only queues, because it fires
     /// while the graph is borrowed.
     incoming: Rc<RefCell<Vec<(Owner, ChainState)>>>,
+    /// When the mixer last set each sink's level itself. The graph says the
+    /// level back a moment later, and while a fader is dragged those words
+    /// trail behind it: taken for a change made elsewhere, they would put
+    /// the fader back where it was, and be saved.
+    written: HashMap<Owner, std::time::Instant>,
     /// Proxies of nodes we are about to destroy. See [`Quarantine`].
     retired: Quarantine<Node>,
     devices: HashMap<u32, DeviceEntry>,
@@ -412,6 +417,7 @@ impl Graph {
             port_owner: HashMap::new(),
             meter_targets: HashMap::new(),
             incoming: Rc::new(RefCell::new(Vec::new())),
+            written: HashMap::new(),
             retired: Quarantine::new(),
             devices: HashMap::new(),
             devices_dirty: false,
@@ -1026,6 +1032,8 @@ impl Graph {
         cfg.set_state(state);
         let mix = self.mixes.get(&id).ok_or(EngineError::UnknownMix(id))?;
         apply_props(&mix.sink, &id.sink_node_name(), &state);
+        self.written
+            .insert(Owner::Mix(id), std::time::Instant::now());
         self.dirty = true;
         self.emit(Event::MixChanged { id, state });
         Ok(())
@@ -1638,6 +1646,8 @@ impl Graph {
         cfg.set_state(state);
         if let Some(sink) = self.sources.get(&id).and_then(|s| s.sink.as_ref()) {
             apply_props(sink, &id.sink_node_name(), &state);
+            self.written
+                .insert(Owner::Source(id), std::time::Instant::now());
         }
         self.dirty = true;
         self.emit(Event::SourceChanged { id, state });
@@ -2401,8 +2411,18 @@ impl Graph {
     /// through the same listener, and taking those in again would be a loop
     /// with the interface.
     fn absorb_levels(&mut self) {
+        /// How long the graph's word on a level the mixer just set is taken
+        /// for an echo of it.
+        const ECHO: std::time::Duration = std::time::Duration::from_secs(1);
         let incoming: Vec<(Owner, ChainState)> = self.incoming.borrow_mut().drain(..).collect();
         for (owner, state) in incoming {
+            if self
+                .written
+                .get(&owner)
+                .is_some_and(|at| at.elapsed() < ECHO)
+            {
+                continue;
+            }
             let known = match owner {
                 Owner::Source(id) => self.config.source(id).map(|s| s.state()),
                 Owner::Mix(id) => self.config.mix(id).map(|m| m.state()),
@@ -2410,9 +2430,9 @@ impl Graph {
             let Some(known) = known else {
                 continue;
             };
-            if (known.linear_volume() - state.linear_volume()).abs() < 1e-3
-                && known.muted == state.muted
-            {
+            // Compared as faders: a step low on one is a tiny amplitude, and
+            // compared as amplitudes it would pass for no change at all.
+            if (known.gain - state.gain).abs() < 1e-3 && known.muted == state.muted {
                 continue;
             }
             log::debug!("{owner:?} was set to {state:?} outside the mixer");
