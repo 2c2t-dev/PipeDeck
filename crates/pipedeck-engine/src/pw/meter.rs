@@ -24,18 +24,25 @@ use pipewire::stream::{StreamFlags, StreamListener, StreamRc};
 
 use crate::error::EngineError;
 
-/// The peak of the last buffer, as f32 bits.
+/// The loudest peak since the meter was last read, as f32 bits.
 #[derive(Clone, Default)]
 pub struct Level(Arc<AtomicU32>);
 
 impl Level {
-    fn store(&self, value: f32) {
-        self.0.store(value.to_bits(), Ordering::Relaxed);
+    /// Keep a buffer's peak if it is the loudest since the last take.
+    ///
+    /// A peak is never negative, and for floats that are not, the order of
+    /// their bits is the order of their values: the loudest is kept in one
+    /// step, with nothing to wait on.
+    fn raise(&self, value: f32) {
+        self.0
+            .fetch_max(value.max(0.0).to_bits(), Ordering::Relaxed);
     }
 
-    /// Peak in `0.0..=1.0`, read from any thread.
-    pub fn get(&self) -> f32 {
-        f32::from_bits(self.0.load(Ordering::Relaxed))
+    /// The loudest peak since the last take, and start again from silence,
+    /// in one step: a peak that lands meanwhile is in this one or the next.
+    fn take(&self) -> f32 {
+        f32::from_bits(self.0.swap(0f32.to_bits(), Ordering::Relaxed))
     }
 }
 
@@ -131,7 +138,7 @@ impl Meter {
                     };
                     peak = peak.max(f32::from_le_bytes(bytes).abs());
                 }
-                state.level.store(peak.min(1.0));
+                state.level.raise(peak.min(1.0));
             })
             .register()?;
 
@@ -164,11 +171,29 @@ impl Meter {
         })
     }
 
-    /// Peak of the last buffer, and forget it, so a meter that stops being
-    /// fed falls back to silence instead of holding its last value.
+    /// The loudest peak since the last time it was asked, and forget it, so
+    /// a meter that stops being fed falls back to silence instead of
+    /// holding its last value. Every buffer counts, not only the last one:
+    /// several pass between two asks, and a hit in any of them shows.
     pub fn take(&self) -> f32 {
-        let peak = self.level.get();
-        self.level.store(0.0);
-        peak
+        self.level.take()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_loudest_peak_since_the_last_read_is_kept() {
+        let level = Level::default();
+        for peak in [0.2, 0.9, 0.1, 0.4] {
+            level.raise(peak);
+        }
+        assert_eq!(level.take(), 0.9);
+        // Read, it starts again from silence.
+        assert_eq!(level.take(), 0.0);
+        level.raise(0.3);
+        assert_eq!(level.take(), 0.3);
     }
 }
