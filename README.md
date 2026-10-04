@@ -1,4 +1,9 @@
-# Pipedeck
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/banner-dark.svg">
+    <img src=".github/banner-light.svg" alt="Pipedeck" width="420">
+  </picture>
+</h1>
 
 A PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link.
 Send each application to a channel, then decide how loud every channel is
