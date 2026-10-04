@@ -95,6 +95,24 @@ pub fn args(spec: &ChainSpec<'_>, latency: &str) -> Option<String> {
     if effects.is_empty() {
         return None;
     }
+    // A bypassed effect is left out. With every one of them bypassed the
+    // chain still runs, as a copy: the channel keeps the nodes it plays
+    // through, and bringing one back is the same reload as setting it.
+    let copy = Effect {
+        name: "Bypassed".into(),
+        kind: crate::types::EffectKind::Builtin,
+        plugin: None,
+        label: "copy".into(),
+        controls: Vec::new(),
+        bypassed: false,
+    };
+    let mut effects: Vec<&Effect> = effects
+        .into_iter()
+        .filter(|effect| !effect.bypassed)
+        .collect();
+    if effects.is_empty() {
+        effects.push(&copy);
+    }
 
     let mut nodes = Vec::new();
     let mut links = Vec::new();
@@ -201,7 +219,22 @@ mod tests {
                 name: "Freq".into(),
                 value: 90.0,
             }],
+            bypassed: false,
         }
+    }
+
+    #[test]
+    fn a_bypassed_effect_is_left_out_and_none_is_a_copy() {
+        let mut source = SourceConfig::virtual_sink(SourceId(3), "Mic");
+        let mut off = low_cut();
+        off.bypassed = true;
+        source.effects = vec![off.clone(), low_cut()];
+        let rendered = args(&ChainSpec::for_source(&source), "512/48000").expect("a chain");
+        assert_eq!(rendered.matches("label = \"bq_highpass\"").count(), 2);
+        source.effects = vec![off];
+        let rendered = args(&ChainSpec::for_source(&source), "512/48000").expect("still a chain");
+        assert_eq!(rendered.matches("label = \"copy\"").count(), 2);
+        assert!(!rendered.contains("bq_highpass"));
     }
 
     #[test]

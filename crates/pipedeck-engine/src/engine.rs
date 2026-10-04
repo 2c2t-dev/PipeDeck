@@ -142,6 +142,13 @@ pub enum Command {
         index: usize,
         controls: Vec<crate::types::Control>,
     },
+    /// Switch one effect of a row off, or back on, by its place in the
+    /// chain. Not sent again as the matrix either.
+    SetEffectBypass {
+        id: SourceId,
+        index: usize,
+        bypassed: bool,
+    },
     /// Who is in the call Vesktop is in, as its plugin says, everyone but
     /// the user. The row carrying Vesktop gets a sub-track for each of
     /// them, and loses the ones who left; an empty list ends the call.
@@ -348,6 +355,7 @@ struct Watchers {
     listeners: Vec<std::sync::mpsc::Sender<Event>>,
     state: Option<Event>,
     devices: Option<Event>,
+    apps: Option<Event>,
 }
 
 impl Watch {
@@ -360,7 +368,9 @@ impl Watch {
             | Event::Devices { .. }
             | Event::MixChanged { .. }
             | Event::SourceChanged { .. }
-            | Event::LinkChanged { .. } => event.clone(),
+            | Event::LinkChanged { .. }
+            | Event::SourceEffects { .. }
+            | Event::Apps { .. } => event.clone(),
             Event::Levels {
                 sources,
                 mixes,
@@ -381,6 +391,7 @@ impl Watch {
         match event {
             Event::State(_) => watchers.state = Some(event.clone()),
             Event::Devices { .. } => watchers.devices = Some(event.clone()),
+            Event::Apps { .. } => watchers.apps = Some(event.clone()),
             _ => {}
         }
         watchers
@@ -393,7 +404,10 @@ impl Watch {
     pub fn listen(&self) -> std::sync::mpsc::Receiver<Event> {
         let (tx, rx) = std::sync::mpsc::channel();
         if let Ok(mut watchers) = self.0.lock() {
-            for known in [&watchers.state, &watchers.devices].into_iter().flatten() {
+            for known in [&watchers.state, &watchers.devices, &watchers.apps]
+                .into_iter()
+                .flatten()
+            {
                 let _ = tx.send(known.clone());
             }
             watchers.listeners.push(tx);
@@ -891,6 +905,14 @@ fn handle_command(
         } => {
             structural = false;
             g.set_effect_params(id, index, controls)
+        }
+        Command::SetEffectBypass {
+            id,
+            index,
+            bypassed,
+        } => {
+            structural = false;
+            g.set_effect_bypass(id, index, bypassed)
         }
         Command::SetCall { members } => {
             // The matrix is sent again only when the call changed.

@@ -1329,11 +1329,18 @@ impl Graph {
             if plugins.iter().all(Option::is_none) {
                 continue;
             }
+            let bypassed: Vec<bool> = cfg
+                .effects
+                .iter()
+                .filter(|effect| effect.is_plugin())
+                .map(|effect| effect.bypassed)
+                .collect();
             let chain = PluginChain::new(
                 &self.core,
                 &cfg.id.plugins_node_name(),
                 &cfg.name,
                 &plugins,
+                &bypassed,
                 from,
                 from_sink,
                 into,
@@ -1415,12 +1422,12 @@ impl Graph {
             if let Some(chain) = self.sources.get(&id).and_then(|s| s.plugins.as_ref()) {
                 for (index, effect) in hosted.enumerate() {
                     chain.set_params(index, &effect.controls);
+                    chain.set_bypass(index, effect.bypassed);
                 }
             }
-            let filters_moved = before
-                .iter()
-                .zip(&cfg.effects)
-                .any(|(old, new)| !new.is_plugin() && old.controls != new.controls);
+            let filters_moved = before.iter().zip(&cfg.effects).any(|(old, new)| {
+                !new.is_plugin() && (old.controls != new.controls || old.bypassed != new.bypassed)
+            });
             if !filters_moved {
                 return Ok(());
             }
@@ -1607,6 +1614,33 @@ impl Graph {
             return Ok(());
         };
         effect.controls = controls;
+        self.set_effects(id, effects.clone())?;
+        self.emit(Event::SourceEffects { id, effects });
+        Ok(())
+    }
+
+    /// Switch the effect at `index` of a row off or on. One the mixer runs
+    /// is skipped where it runs, with no gap; one PipeWire runs is left out
+    /// of its chain, which is reloaded as when one of its settings moves.
+    pub fn set_effect_bypass(
+        &mut self,
+        id: SourceId,
+        index: usize,
+        bypassed: bool,
+    ) -> Result<(), EngineError> {
+        let mut effects = self
+            .config
+            .source(id)
+            .ok_or(EngineError::UnknownSource(id))?
+            .effects
+            .clone();
+        let Some(effect) = effects.get_mut(index) else {
+            return Ok(());
+        };
+        if effect.bypassed == bypassed {
+            return Ok(());
+        }
+        effect.bypassed = bypassed;
         self.set_effects(id, effects.clone())?;
         self.emit(Event::SourceEffects { id, effects });
         Ok(())

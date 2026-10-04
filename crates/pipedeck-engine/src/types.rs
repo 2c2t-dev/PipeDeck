@@ -550,6 +550,9 @@ pub struct Effect {
     pub label: String,
     #[serde(default)]
     pub controls: Vec<Control>,
+    /// Switched off: the sound goes past it untouched, its settings kept.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bypassed: bool,
 }
 
 /// An application playing audio, as offered to the user.
@@ -617,6 +620,7 @@ mod tests {
             plugin: None,
             label: "stereotool".into(),
             controls: Vec::new(),
+            bypassed: false,
         };
         assert!(effect.is_plugin());
         assert_eq!(effect.preset(), None);

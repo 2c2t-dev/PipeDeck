@@ -423,6 +423,29 @@ impl EffectPanel {
             top.append(&open);
         }
 
+        // On or bypassed: the sound goes past it, its settings kept.
+        let on = gtk::Switch::new();
+        on.set_active(!effect.bypassed);
+        on.set_valign(gtk::Align::Center);
+        on.set_tooltip_text(Some("Switch this effect off or on"));
+        if effect.bypassed {
+            title.add_css_class("dim-label");
+        }
+        on.connect_active_notify({
+            let this = Rc::downgrade(self);
+            move |on| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
+                this.engine.send(Command::SetEffectBypass {
+                    id: this.target,
+                    index: position,
+                    bypassed: !on.is_active(),
+                });
+            }
+        });
+        top.append(&on);
+
         if effects::spec(effect).is_some() {
             let settings = gtk::Button::from_icon_name("emblem-system-symbolic");
             settings.add_css_class("flat");
@@ -943,6 +966,7 @@ impl EffectPanel {
                         plugin: None,
                         label: "stereotool".to_owned(),
                         controls: Vec::new(),
+                        bypassed: false,
                     });
                     this.send(chain);
                     popover.popdown();
@@ -968,6 +992,7 @@ impl EffectPanel {
                         plugin: None,
                         label: plugin.class_id.clone(),
                         controls: Vec::new(),
+                        bypassed: false,
                     });
                     this.send(chain);
                     popover.popdown();
@@ -982,12 +1007,17 @@ impl EffectPanel {
     }
 }
 
-/// Whether two chains hold the same effects in the same order, whatever
-/// their controls are set to.
+/// Whether two chains hold the same effects in the same order, each on or
+/// off alike, whatever their controls are set to: the cards show which are
+/// on, not the controls.
 fn same_chain(a: &[Effect], b: &[Effect]) -> bool {
     a.len() == b.len()
         && a.iter().zip(b).all(|(a, b)| {
-            a.name == b.name && a.kind == b.kind && a.plugin == b.plugin && a.label == b.label
+            a.name == b.name
+                && a.kind == b.kind
+                && a.plugin == b.plugin
+                && a.label == b.label
+                && a.bypassed == b.bypassed
         })
 }
 

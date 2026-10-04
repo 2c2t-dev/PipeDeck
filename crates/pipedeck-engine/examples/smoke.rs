@@ -863,6 +863,7 @@ fn main() -> ExitCode {
                     name: "Freq".into(),
                     value: 90.0,
                 }],
+                bypassed: false,
             }],
         })
         .unwrap();
@@ -923,6 +924,7 @@ fn main() -> ExitCode {
                     name: "Freq".into(),
                     value: 8_000.0,
                 }],
+                bypassed: false,
             }],
         })
         .unwrap();
@@ -989,6 +991,7 @@ fn main() -> ExitCode {
                     plugin: None,
                     label: plugin.class_id.clone(),
                     controls: Vec::new(),
+                    bypassed: false,
                 }],
             })
             .unwrap();
@@ -1062,6 +1065,7 @@ fn main() -> ExitCode {
             plugin: None,
             label: id.to_owned(),
             controls,
+            bypassed: false,
         }
     };
     engine
@@ -1222,6 +1226,66 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
+    // An effect switched off is skipped where it runs, the chain left as it
+    // is: the compressor, bypassed, hears nothing of the tone going past
+    // it, and hears it again once back on.
+    match node_serial(&pw_dump(), &format!("pipedeck-smoke.src.{source}")) {
+        Some(serial) => {
+            let mut player = Process::new("pw-play")
+                .arg(format!("--target={serial}"))
+                .arg(&tone)
+                .spawn()
+                .expect("pw-play must be installed");
+            let compressor_hears = |rx: &mpsc::Receiver<Event>| {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                let mut loudest = f32::NEG_INFINITY;
+                while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+                    if let Ok(Event::Levels { effects, .. }) = rx.recv_timeout(left) {
+                        for fx in effects
+                            .iter()
+                            .filter(|fx| fx.source == source && fx.index == 3)
+                        {
+                            loudest = loudest.max(fx.level);
+                        }
+                    }
+                }
+                loudest
+            };
+            std::thread::sleep(Duration::from_secs(1));
+            engine
+                .send(Command::SetEffectBypass {
+                    id: source,
+                    index: 3,
+                    bypassed: true,
+                })
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+            drain(&rx);
+            let off = compressor_hears(&rx);
+            engine
+                .send(Command::SetEffectBypass {
+                    id: source,
+                    index: 3,
+                    bypassed: false,
+                })
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+            drain(&rx);
+            let on = compressor_hears(&rx);
+            let kept = node_id(&pw_dump(), &format!("pipedeck-smoke.vst.{source}.in"));
+            check(
+                off < -60.0 && on > -60.0 && kept == chain_in,
+                &format!(
+                    "a bypassed effect hears nothing, back on it hears the tone, and the chain stays: {off:.1} then {on:.1} dB, {chain_in:?} then {kept:?}"
+                ),
+                &mut failures,
+            );
+            let _ = player.kill();
+            let _ = player.wait();
+        }
+        None => check(false, "the chain has no sink to play into", &mut failures),
+    }
+
     // A chain made and dropped while sound goes through it, over and over:
     // the plug-ins must not go while the audio thread is still running them.
     match node_serial(&pw_dump(), &format!("pipedeck-smoke.src.{source}")) {
@@ -1278,6 +1342,7 @@ fn main() -> ExitCode {
                     plugin: None,
                     label: "00000000000000000000000000000000".into(),
                     controls: Vec::new(),
+                    bypassed: false,
                 },
                 native("compressor", &[]),
             ],
@@ -1526,6 +1591,7 @@ fn main() -> ExitCode {
                     plugin: None,
                     label: "stereotool".into(),
                     controls: Vec::new(),
+                    bypassed: false,
                 }],
             })
             .unwrap();
@@ -1639,6 +1705,7 @@ fn main() -> ExitCode {
                         name: "Freq".into(),
                         value: 90.0,
                     }],
+                    bypassed: false,
                 }],
             })
             .unwrap();

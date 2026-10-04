@@ -44,7 +44,14 @@
 //! {"do": {"what": "hear", "mix": 2, "listening": "toggle"}}
 //! {"do": {"what": "hear", "mix": 2, "only": true}}
 //! {"do": {"what": "listen", "device": "alsa_output.usb-…"}}
+//! {"do": {"what": "effect", "channel": 2, "index": 0, "bypass": "toggle"}}
+//! {"do": {"what": "app", "app": "spotify", "channel": 1}}
+//! {"do": {"what": "app", "app": "spotify", "channel": 1, "release": true}}
 //! ```
+//!
+//! An effect is told by its place in the channel's chain; bypassed, the
+//! sound goes past it. An application is told by its key, as the state
+//! lists the ones playing; it is on one channel at a time.
 //!
 //! A mix is heard, or not, on the device listened on; `only` hears that
 //! one mix there and none of the others.
@@ -153,6 +160,20 @@ enum Action {
     Listen {
         device: String,
     },
+    /// One effect of a channel, by its place in the chain, switched off
+    /// or on.
+    Effect {
+        channel: u32,
+        index: usize,
+        bypass: Switch,
+    },
+    /// An application, by its key, put on a channel, or taken off it.
+    App {
+        app: String,
+        channel: u32,
+        #[serde(default)]
+        release: bool,
+    },
 }
 
 impl Switch {
@@ -173,6 +194,21 @@ pub struct View {
     /// The device listened on, and the ones that could be.
     pub listen: Option<String>,
     pub outputs: Vec<DeviceView>,
+    /// The applications playing now.
+    pub apps: Vec<AppView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AppView {
+    /// What an application is put on a channel by.
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EffectView {
+    pub name: String,
+    pub bypassed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -187,6 +223,10 @@ pub struct ChannelView {
     pub input: bool,
     /// The people of the call it carries, when it does.
     pub voices: Vec<VoiceView>,
+    /// Its effects, in order.
+    pub effects: Vec<EffectView>,
+    /// The applications put on it, by their keys.
+    pub apps: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -214,6 +254,9 @@ pub struct VoiceView {
     pub name: String,
     pub volume: f32,
     pub muted: bool,
+    /// Their picture, a PNG file on this machine, once their client has
+    /// fetched it.
+    pub avatar: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -228,6 +271,7 @@ pub struct DeviceView {
 struct Model {
     state: Option<StateSnapshot>,
     outputs: Vec<Device>,
+    apps: Vec<crate::types::App>,
     /// The clients that asked to hear of every change.
     subscribers: Vec<mpsc::Sender<()>>,
     /// The clients that asked for the meters, and are handed every
@@ -368,6 +412,12 @@ impl Model {
             }
             Event::State(state) => self.state = Some(state),
             Event::Devices { outputs, .. } => self.outputs = outputs,
+            Event::Apps { running } => self.apps = running,
+            Event::SourceEffects { id, effects } => {
+                if let Some(source) = self.source_mut(id.0) {
+                    source.effects = effects;
+                }
+            }
             Event::SourceChanged { id, state } => {
                 if let Some(source) = self.source_mut(id.0) {
                     source.set_state(state);
@@ -433,8 +483,18 @@ impl Model {
                             name: voice.name.clone(),
                             volume: voice.gain,
                             muted: voice.muted,
+                            avatar: voice.avatar.clone(),
                         })
                         .collect(),
+                    effects: source
+                        .effects
+                        .iter()
+                        .map(|effect| EffectView {
+                            name: effect.name.clone(),
+                            bypassed: effect.bypassed,
+                        })
+                        .collect(),
+                    apps: source.apps.clone(),
                 })
                 .collect(),
             mixes: state
@@ -466,6 +526,14 @@ impl Model {
                 .map(|device| DeviceView {
                     name: device.name.clone(),
                     description: device.description.clone(),
+                })
+                .collect(),
+            apps: self
+                .apps
+                .iter()
+                .map(|app| AppView {
+                    key: app.key.clone(),
+                    name: app.name.clone(),
                 })
                 .collect(),
         })
@@ -617,6 +685,54 @@ impl Model {
             Action::Listen { device } => {
                 state.listen_device = Some(device.clone());
                 commands.push(Command::SetListenDevice(device));
+            }
+            Action::Effect {
+                channel,
+                index,
+                bypass,
+            } => {
+                let effect = state
+                    .sources
+                    .iter_mut()
+                    .find(|source| source.id.0 == channel)
+                    .ok_or(format!("no channel {channel}"))?
+                    .effects
+                    .get_mut(index)
+                    .ok_or(format!("channel {channel} has no effect {index}"))?;
+                let bypassed = bypass.turn(effect.bypassed);
+                if bypassed != effect.bypassed {
+                    effect.bypassed = bypassed;
+                    commands.push(Command::SetEffectBypass {
+                        id: SourceId(channel),
+                        index,
+                        bypassed,
+                    });
+                }
+            }
+            Action::App {
+                app,
+                channel,
+                release,
+            } => {
+                if !state.sources.iter().any(|source| source.id.0 == channel) {
+                    return Err(format!("no channel {channel}"));
+                }
+                let id = SourceId(channel);
+                if release {
+                    if let Some(source) = state.sources.iter_mut().find(|s| s.id == id) {
+                        source.apps.retain(|key| *key != app);
+                    }
+                    commands.push(Command::ReleaseApp { id, app });
+                } else {
+                    // An application is on one channel at a time.
+                    for source in &mut state.sources {
+                        source.apps.retain(|key| *key != app);
+                    }
+                    if let Some(source) = state.sources.iter_mut().find(|s| s.id == id) {
+                        source.apps.push(app.clone());
+                    }
+                    commands.push(Command::AssignApp { id, app });
+                }
             }
         }
         Ok(commands)
@@ -1097,6 +1213,54 @@ mod tests {
         assert_eq!(peaks.voices, [(3, "a".into(), 0.1), (3, "b".into(), 0.2)]);
         assert!(!peaks.silent());
         assert!(Peaks::default().silent());
+    }
+
+    #[test]
+    fn an_effect_is_switched_off_and_an_app_moved() {
+        let mut model = model();
+        model.state.as_mut().unwrap().sources[0].effects = vec![crate::types::Effect {
+            name: "Noise suppression".into(),
+            kind: crate::types::EffectKind::Native,
+            plugin: None,
+            label: "denoise".into(),
+            controls: Vec::new(),
+            bypassed: false,
+        }];
+        assert_eq!(
+            act(
+                &mut model,
+                r#"{"do":{"what":"effect","channel":2,"index":0,"bypass":"toggle"}}"#
+            ),
+            Ok(vec![Command::SetEffectBypass {
+                id: SourceId(2),
+                index: 0,
+                bypassed: true
+            }])
+        );
+        assert!(model.view().unwrap().channels[0].effects[0].bypassed);
+        assert!(act(
+            &mut model,
+            r#"{"do":{"what":"effect","channel":2,"index":4,"bypass":true}}"#
+        )
+        .is_err());
+
+        assert_eq!(
+            act(
+                &mut model,
+                r#"{"do":{"what":"app","app":"spotify","channel":2}}"#
+            ),
+            Ok(vec![Command::AssignApp {
+                id: SourceId(2),
+                app: "spotify".into()
+            }])
+        );
+        assert_eq!(model.view().unwrap().channels[0].apps, ["spotify"]);
+        act(
+            &mut model,
+            r#"{"do":{"what":"app","app":"spotify","channel":2,"release":true}}"#,
+        )
+        .unwrap();
+        assert!(model.view().unwrap().channels[0].apps.is_empty());
     }
 
     #[test]

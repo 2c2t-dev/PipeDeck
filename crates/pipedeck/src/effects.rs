@@ -29,6 +29,7 @@ pub fn build(spec: &EffectSpec) -> Effect {
         plugin: None,
         label: spec.id.to_owned(),
         controls: dsp::defaults(spec),
+        bypassed: false,
     }
 }
 

@@ -12,7 +12,7 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use libspa::param::audio::{AudioFormat, AudioInfoRaw};
@@ -209,7 +209,9 @@ impl Processor {
 
 /// What the capture side needs while it runs.
 struct Processing {
-    plugins: Vec<Processor>,
+    /// Each with whether it is bypassed, which the audio thread reads for
+    /// every block: switching one off or on costs no gap.
+    plugins: Vec<(Processor, Arc<AtomicBool>)>,
     ring: Arc<Ring>,
     /// One buffer per channel, allocated once: the real-time thread must not
     /// ask for memory.
@@ -253,6 +255,9 @@ pub struct PluginChain {
     /// chain was asked for, shared with the audio thread: writing one here
     /// is the effect taking it.
     params: Vec<Option<(String, Arc<dsp::Params>)>>,
+    /// Whether each is bypassed, one slot per plug-in asked for, shared
+    /// with the audio thread.
+    bypass: Vec<Arc<AtomicBool>>,
 }
 
 impl Drop for PluginChain {
@@ -313,6 +318,15 @@ impl PluginChain {
         }
     }
 
+    /// Bypass the plug-in at `index`, or bring it back, while it runs:
+    /// the sound goes past it untouched. `index` counts the plug-ins of the
+    /// chain, as for windows.
+    pub fn set_bypass(&self, index: usize, bypassed: bool) {
+        if let Some(flag) = self.bypass.get(index) {
+            flag.store(bypassed, Ordering::Relaxed);
+        }
+    }
+
     /// The settings, and what it heard, of the mixer's own effect at
     /// `index`, which counts the plug-ins of the chain as for windows.
     pub fn params(&self, index: usize) -> Option<&Arc<dsp::Params>> {
@@ -352,6 +366,7 @@ impl PluginChain {
         node: &str,
         owner: &str,
         plugins: &[Option<Request>],
+        bypassed: &[bool],
         from: u32,
         from_sink: bool,
         into: u32,
@@ -365,7 +380,14 @@ impl PluginChain {
         // One slot per plug-in asked for, whether or not it opened, so the
         // caller can point at "the third effect" and be understood.
         let mut windows: Vec<Option<Arc<stereotool::Handle>>> = Vec::new();
-        for plugin in plugins {
+        let bypass: Vec<Arc<AtomicBool>> = (0..plugins.len())
+            .map(|slot| {
+                Arc::new(AtomicBool::new(
+                    bypassed.get(slot).copied().unwrap_or(false),
+                ))
+            })
+            .collect();
+        for (slot, plugin) in plugins.iter().enumerate() {
             // Asked for and not to be had: its slot stays, empty.
             let Some(plugin) = plugin else {
                 windows.push(None);
@@ -378,7 +400,7 @@ impl PluginChain {
                         Processor::StereoTool(stereotool) => Some(stereotool.handle()),
                         Processor::Vst3(_) | Processor::Native(..) => None,
                     });
-                    opened.push(instance);
+                    opened.push((instance, bypass[slot].clone()));
                 }
                 Err(e) => {
                     log::error!("cannot open a plug-in of {owner}: {e}");
@@ -464,7 +486,10 @@ impl PluginChain {
                     let Some(mut block) = block(&mut state.scratch, frames) else {
                         return;
                     };
-                    for plugin in &mut state.plugins {
+                    for (plugin, bypassed) in &mut state.plugins {
+                        if bypassed.load(Ordering::Relaxed) {
+                            continue;
+                        }
                         if plugin.process(&mut block).is_err() {
                             return;
                         }
@@ -572,6 +597,7 @@ impl PluginChain {
             windows,
             open,
             params,
+            bypass,
         })
     }
 }
