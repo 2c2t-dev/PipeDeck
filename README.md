@@ -139,32 +139,20 @@ Checks against the live PipeWire server, all run with
 | `plugins`, `plugin_check [name]` | Lists the VST3 plug-ins, runs a tone through one. |
 | `stereotool_check [preset.sts]` | Runs a tone through Stereo Tool; `--window` also shows its window. |
 
-### The graph
+### PipeWire nodes
 
-```
-  applications              microphone
-       |                        |
-       v                        |
-  [pipedeck.src.N]              |
-  a channel: an output device   |
-       |                        |
-       +-----------+------------+
-                   |
-                   v
-  [pipedeck.vst.N]
-  the channel's effects, if it has any
-                   |
-                   v
-  a cell: a loopback with its fader and mute,
-  one for each channel and mix it links
-                   |
-                   v
-  [pipedeck.mix.M]
-  a mix: an input device, which OBS records
-       |
-       +--> loopback --> headphones
-       +--> loopback --> another output device
-```
+What Pipedeck puts on the graph, as `pw-dump`, `pw-top` or qpwgraph show it.
+`N` is a channel's id, `M` a mix's.
+
+| Node | What it is |
+| --- | --- |
+| `pipedeck.src.N` | A channel: the sink applications play into. |
+| `pipedeck.voice.N.<user>` | One person of a Discord call, playing into their channel. |
+| `pipedeck.fx.N`, `pipedeck.vst.N` | The channel once its effects have run, which the cells then read. |
+| `pipedeck.link.N.M` | A cell: a loopback carrying the cell's fader and mute. |
+| `pipedeck.mix.M` | A mix: the source OBS records. |
+| `pipedeck.out.M.<index>` | A mix playing to an output device. |
+| `pipedeck.meter.*` | What the meters listen to. |
 
 A channel is a sink, and a mix is a source, which is why each shows up in
 only one list. A session manager routes nothing into a source, so Pipedeck
