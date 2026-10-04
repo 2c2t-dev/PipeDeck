@@ -175,7 +175,7 @@ Checks against the live PipeWire server, all run with
 | `stereotool_check [preset.sts]` | Runs a tone through Stereo Tool; `--window` also shows its window. |
 
 `site/` is the website, [pipedeck.2c2t.dev](https://pipedeck.2c2t.dev/),
-published with the README's pictures by the Pages workflow whenever it
+published with the README's pictures on Cloudflare Pages whenever it
 changes on `main`.
 
 `packaging/package.sh deb|rpm|appimage` builds a package into `dist`, on
