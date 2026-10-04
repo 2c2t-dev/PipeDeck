@@ -229,8 +229,10 @@ fn record_peak(serial: i64, seconds: u32, into: &std::path::Path) -> f32 {
         return 0.0;
     }
     bytes[44..]
-        .chunks_exact(2)
-        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]).unsigned_abs() as f32 / 32768.0)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| i16::from_le_bytes(*pair).unsigned_abs() as f32 / 32768.0)
         .fold(0.0f32, f32::max)
 }
 

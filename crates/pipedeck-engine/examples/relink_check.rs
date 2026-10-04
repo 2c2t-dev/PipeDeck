@@ -174,11 +174,7 @@ fn main() -> ExitCode {
     // back.
     let broke = history.iter().any(|(cell, app)| !cell || !app);
     let whole_at_end = last == (true, true);
-    let whole_before = history.first().is_some_and(|(cell, app)| *cell && *app)
-        || history
-            .iter()
-            .position(|state| *state == (true, true))
-            .is_some();
+    let whole_before = history.contains(&(true, true));
     if whole_before && broke && whole_at_end {
         println!("[ ok ] it came apart and the mixer put it back together");
         ExitCode::SUCCESS

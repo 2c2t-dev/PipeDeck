@@ -55,7 +55,7 @@ fn remember(voices: &mut Vec<VoiceConfig>, today: u64) -> bool {
     voices.retain(|voice| {
         voice
             .seen
-            .map_or(true, |seen| today.saturating_sub(seen) <= FORGET_AFTER_DAYS)
+            .is_none_or(|seen| today.saturating_sub(seen) <= FORGET_AFTER_DAYS)
     });
     let mut changed = voices.len() != before;
     for voice in voices.iter_mut() {

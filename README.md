@@ -43,7 +43,7 @@ All three need a GTK at least 4.18, a libadwaita at least 1.7 and PipeWire
 ## Building
 
 Requirements: PipeWire ≥ 1.2 (with headers), GTK ≥ 4.18, libadwaita ≥ 1.7,
-clang (for bindgen), pkg-config and Rust ≥ 1.80.
+clang (for bindgen), pkg-config and Rust ≥ 1.92.
 
 ```sh
 cargo build --release

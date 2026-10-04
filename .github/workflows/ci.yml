@@ -38,3 +38,10 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace
+
+      # The oldest Rust Pipedeck says it builds with, read where it says so.
+      - name: Oldest supported Rust
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          rustup toolchain install "$msrv" --profile minimal
+          cargo "+$msrv" check --workspace --all-targets --locked

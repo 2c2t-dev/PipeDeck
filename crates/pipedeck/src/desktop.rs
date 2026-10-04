@@ -130,7 +130,7 @@ pub fn installed() -> Vec<DesktopApp> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.extension().is_some_and(|e| e == "desktop") {
+            if path.extension().is_none_or(|e| e != "desktop") {
                 continue;
             }
             let Some(app) = parse(&path) else {
