@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same branch makes an older run moot.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Ubuntu's GTK, libadwaita and PipeWire are older than Pipedeck needs;
+    # Arch has them current.
+    container: archlinux:latest
+    steps:
+      - name: Install the system libraries
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup
+          rustup default stable
+          rustup component add clippy rustfmt
+
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
