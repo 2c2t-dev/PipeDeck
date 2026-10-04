@@ -35,7 +35,7 @@
       <a class="keep" href="{{home}}#install">{{nav_install}}</a>
       <a class="keep" href="https://github.com/2c2t-dev/PipeDeck">GitHub</a>
       <details class="langs">
-        <summary aria-label="{{language_label}}">{{lang}}</summary>
+        <summary><span class="visually-hidden">{{language_label}}: </span>{{lang}}</summary>
         <ul>
 {{languages}}
         </ul>
@@ -197,16 +197,16 @@
       <div class="install">
         <div class="package">
           <div><h3>.deb</h3><p class="for">{{deb_for}}</p></div>
-          <div class="command"><pre><code>sudo apt install ./pipedeck_*_amd64.deb</code></pre><button class="copy" type="button" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
+          <div class="command"><pre><code>sudo apt install ./pipedeck_*_amd64.deb</code></pre><button class="copy" type="button" aria-live="polite" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
         </div>
         <div class="package">
           <div><h3>.rpm</h3><p class="for">{{rpm_for}}</p></div>
-          <div class="command"><pre><code>sudo dnf install ./pipedeck-*.x86_64.rpm</code></pre><button class="copy" type="button" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
+          <div class="command"><pre><code>sudo dnf install ./pipedeck-*.x86_64.rpm</code></pre><button class="copy" type="button" aria-live="polite" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
         </div>
         <div class="package">
           <div><h3>AppImage</h3><p class="for">{{appimage_for}}</p></div>
           <div class="command"><pre><code>chmod +x Pipedeck-*-x86_64.AppImage
-./Pipedeck-*-x86_64.AppImage</code></pre><button class="copy" type="button" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
+./Pipedeck-*-x86_64.AppImage</code></pre><button class="copy" type="button" aria-live="polite" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
         </div>
       </div>
       <div class="source">
@@ -215,7 +215,7 @@
         <div class="command"><pre><code>git clone https://github.com/2c2t-dev/PipeDeck.git
 cd PipeDeck
 cargo build --release
-./target/release/pipedeck</code></pre><button class="copy" type="button" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
+./target/release/pipedeck</code></pre><button class="copy" type="button" aria-live="polite" data-copied="{{copied}}" data-selected="{{selected}}">{{copy}}</button></div>
       </div>
     </div>
   </section>

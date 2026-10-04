@@ -152,8 +152,8 @@ section { padding-block: 72px; }
 
 /* Integrations. */
 .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
-.pair .feature a { font-weight: 600; color: var(--blue); text-decoration: none; }
-.pair .feature a:hover { text-decoration: underline; }
+.pair .feature a { font-weight: 600; color: var(--blue); text-decoration: underline; text-underline-offset: 3px; }
+.pair .feature a:hover { text-decoration-thickness: 2px; }
 
 /* Install. */
 .install { display: grid; gap: 12px; }
@@ -241,4 +241,14 @@ footer a { color: var(--muted); }
 .legal p { margin-top: 12px; color: var(--muted); }
 .legal a { color: var(--blue); }
 .legal .note { margin-top: 48px; }
+
+/* Where the keyboard is: one ring for every control, in both themes. */
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 6px; }
+.button:focus-visible, .langs summary:focus-visible { border-radius: 999px; }
+
+/* Read by screen readers, not shown. */
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
 
