@@ -153,7 +153,8 @@ own settings in `interface.toml` next to it.
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and send a
-change, and [CHANGELOG.md](CHANGELOG.md) for what each release brings.
+change, [CHANGELOG.md](CHANGELOG.md) for what each release brings, and
+[RELEASING.md](RELEASING.md) for how one is made.
 
 | Folder | Contents |
 | --- | --- |
