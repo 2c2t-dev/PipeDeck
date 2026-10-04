@@ -45,6 +45,7 @@ enum Msg {
 
 fn main() -> glib::ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    choose_renderer();
     // Before any thread exists, so every thread inherits the mask.
     signals::block_termination_signals();
 
@@ -55,6 +56,18 @@ fn main() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(app_id).build();
     app.connect_activate(activate);
     app.run()
+}
+
+/// Draw without the graphics card when asked to, unless `GSK_RENDERER`
+/// already says how: on some drivers GTK's graphics card renderers keep the
+/// glyphs of text in a cache that gets torn, and letters come out with bits
+/// of others on them.
+fn choose_renderer() {
+    if std::env::var_os("GSK_RENDERER").is_none() && settings::Settings::load().software_rendering {
+        // Before any thread exists, so nothing else reads the environment.
+        std::env::set_var("GSK_RENDERER", "cairo");
+        log::info!("drawing without the graphics card, as set");
+    }
 }
 
 /// Make the bundled icons available under their own names.

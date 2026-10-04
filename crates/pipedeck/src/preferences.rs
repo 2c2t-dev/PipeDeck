@@ -831,6 +831,19 @@ fn general_page() -> adw::PreferencesPage {
         }
     });
     session.add(&autostart);
+
+    let software = adw::SwitchRow::new();
+    software.set_title("Draw without the graphics card");
+    software.set_subtitle("If letters look broken. Applies on restart");
+    software.set_active(saved.borrow().software_rendering);
+    software.connect_active_notify({
+        let saved = saved.clone();
+        move |row| {
+            saved.borrow_mut().software_rendering = row.is_active();
+            saved.borrow().save();
+        }
+    });
+    session.add(&software);
     page.add(&session);
 
     page

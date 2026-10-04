@@ -42,6 +42,10 @@ pub struct Settings {
     /// channel, a mix or a device comes or goes.
     #[serde(default = "yes")]
     pub stream_deck_profiles: bool,
+    /// Whether the window is drawn without the graphics card, read when
+    /// Pipedeck starts.
+    #[serde(default)]
+    pub software_rendering: bool,
 }
 
 fn yes() -> bool {
@@ -54,6 +58,7 @@ impl Default for Settings {
             theme: Theme::default(),
             start_at_login: false,
             stream_deck_profiles: true,
+            software_rendering: false,
         }
     }
 }
