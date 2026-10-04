@@ -162,7 +162,9 @@ Every node belongs to Pipedeck's own PipeWire connection, so if Pipedeck
 dies, nothing is left behind. On quitting, it hands the applications it
 moved back to the session manager.
 
-## Credits
+## License
+
+Pipedeck is under the [MIT License](LICENSE).
 
 The interface icons are [Material Symbols](https://fonts.google.com/icons),
 under the Apache License 2.0, in `crates/pipedeck/icons`.
