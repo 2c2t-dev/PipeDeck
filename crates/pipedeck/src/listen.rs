@@ -64,6 +64,17 @@ impl Listen {
         self.button
             .set_tooltip_text(Some("The device you listen on, and how loud"));
 
+        // The menu is made again on the next word from the engine once it
+        // is shut: made again while open, it would close under the pointer,
+        // a volume being dragged with it.
+        if self
+            .button
+            .popover()
+            .is_some_and(|popover| popover.is_visible())
+        {
+            return;
+        }
+
         // Every output heard on that device: one per mix whose ear is lit.
         // They share the one volume up here.
         let heard: Vec<(pipedeck_engine::MixId, usize, f32)> = state
