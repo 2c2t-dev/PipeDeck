@@ -375,11 +375,6 @@ impl PluginChain {
         // What every plug-in is opened for, and what the streams are asked
         // to run at: see `format_param`.
         let rate = f64::from(dsp::SAMPLE_RATE);
-        let mut opened = Vec::new();
-        let mut names = Vec::new();
-        // One slot per plug-in asked for, whether or not it opened, so the
-        // caller can point at "the third effect" and be understood.
-        let mut windows: Vec<Option<Arc<stereotool::Handle>>> = Vec::new();
         let bypass: Vec<Arc<AtomicBool>> = (0..plugins.len())
             .map(|slot| {
                 Arc::new(AtomicBool::new(
@@ -387,64 +382,13 @@ impl PluginChain {
                 ))
             })
             .collect();
-        for (slot, plugin) in plugins.iter().enumerate() {
-            // Asked for and not to be had: its slot stays, empty.
-            let Some(plugin) = plugin else {
-                windows.push(None);
-                continue;
-            };
-            match Processor::open(plugin, rate, MAX_BLOCK) {
-                Ok(instance) => {
-                    names.push(instance.name().to_owned());
-                    windows.push(match &instance {
-                        Processor::StereoTool(stereotool) => Some(stereotool.handle()),
-                        Processor::Vst3(_) | Processor::Native(..) => None,
-                    });
-                    opened.push((instance, bypass[slot].clone()));
-                }
-                Err(e) => {
-                    log::error!("cannot open a plug-in of {owner}: {e}");
-                    windows.push(None);
-                }
-            }
-        }
+        let (opened, names, windows) = open_plugins(plugins, &bypass, owner, rate);
         if opened.is_empty() {
             return Err(EngineError::NoPlugin);
         }
 
         let ring = Arc::new(Ring::new());
-        let common = |name: String, description: String| {
-            properties! {
-                *pipewire::keys::MEDIA_TYPE => "Audio",
-                *pipewire::keys::NODE_NAME => name,
-                *pipewire::keys::NODE_DESCRIPTION => description,
-                "audio.position" => AUDIO_POSITION,
-                *pipewire::keys::NODE_LATENCY => latency,
-                *pipewire::keys::NODE_DONT_RECONNECT => "true",
-                "pipedeck.instance" => super::instance(),
-                "state.restore-props" => "false",
-                "state.restore-target" => "false",
-            }
-        };
-
-        let mut capture_props = common(
-            format!("{node}.in"),
-            format!("Pipedeck: {owner} plug-ins in"),
-        );
-        capture_props.insert(*pipewire::keys::MEDIA_CATEGORY, "Capture");
-        capture_props.insert(*pipewire::keys::MEDIA_CLASS, "Stream/Input/Audio/Internal");
-        if from_sink {
-            capture_props.insert(*pipewire::keys::STREAM_CAPTURE_SINK, "true");
-        }
-
-        let mut playback_props = common(
-            format!("{node}.out"),
-            format!("Pipedeck: {owner} plug-ins out"),
-        );
-        playback_props.insert(*pipewire::keys::MEDIA_CATEGORY, "Playback");
-        // Like the loopbacks' own: a stream inside the mixer, which the
-        // desktop's volume controls leave out.
-        playback_props.insert(*pipewire::keys::NODE_VIRTUAL, "true");
+        let (capture_props, playback_props) = stream_properties(node, owner, latency, from_sink);
 
         let capture = StreamRc::new(core.clone(), "pipedeck-plugins-in", capture_props)?;
         let playback = StreamRc::new(core.clone(), "pipedeck-plugins-out", playback_props)?;
@@ -455,52 +399,7 @@ impl PluginChain {
                 ring: ring.clone(),
                 scratch: vec![vec![0.0; MAX_BLOCK]; CHANNELS],
             })
-            .process(|stream, state| {
-                let Some(mut buffer) = stream.dequeue_buffer() else {
-                    return;
-                };
-                let datas = buffer.datas_mut();
-                if datas.len() < CHANNELS {
-                    return;
-                }
-                let stride = std::mem::size_of::<f32>();
-                let total = datas[0].chunk().size() as usize / stride;
-
-                // A quantum longer than the plug-ins were opened for is run
-                // through them a block at a time, rather than cut short.
-                let mut done = 0;
-                while done < total {
-                    let frames = (total - done).min(MAX_BLOCK);
-                    for (channel, data) in datas.iter_mut().enumerate().take(CHANNELS) {
-                        let offset = data.chunk().offset() as usize;
-                        let Some(bytes) = data.data() else {
-                            return;
-                        };
-                        let plane = &mut state.scratch[channel];
-                        for (frame, sample) in plane.iter_mut().take(frames).enumerate() {
-                            let start = offset + (done + frame) * stride;
-                            *sample = bytes
-                                .get(start..start + stride)
-                                .and_then(|bytes| bytes.try_into().ok())
-                                .map_or(0.0, f32::from_le_bytes);
-                        }
-                    }
-
-                    let Some(mut block) = block(&mut state.scratch, frames) else {
-                        return;
-                    };
-                    for (plugin, bypassed) in &mut state.plugins {
-                        if bypassed.load(Ordering::Relaxed) {
-                            continue;
-                        }
-                        if plugin.process(&mut block).is_err() {
-                            return;
-                        }
-                    }
-                    state.ring.write(&block, frames);
-                    done += frames;
-                }
-            })
+            .process(run_plugins)
             .register()?;
 
         let playback_listener = playback
@@ -508,55 +407,7 @@ impl PluginChain {
                 ring,
                 scratch: vec![vec![0.0; MAX_BLOCK]; CHANNELS],
             })
-            .process(|stream, state| {
-                let Some(mut buffer) = stream.dequeue_buffer() else {
-                    return;
-                };
-                let requested = buffer.requested() as usize;
-                let datas = buffer.datas_mut();
-
-                if datas.len() < CHANNELS {
-                    return;
-                }
-                let stride = std::mem::size_of::<f32>();
-                // As much as was asked for, as far as the buffers hold, a
-                // block at a time.
-                let room = datas
-                    .iter_mut()
-                    .take(CHANNELS)
-                    .map(|data| data.data().map_or(0, |bytes| bytes.len() / stride))
-                    .min()
-                    .unwrap_or(0);
-                let total = requested.min(room);
-                if total == 0 {
-                    return;
-                }
-
-                let mut done = 0;
-                while done < total {
-                    let frames = (total - done).min(MAX_BLOCK);
-                    let Some(mut block) = block(&mut state.scratch, frames) else {
-                        return;
-                    };
-                    state.ring.read(&mut block, frames);
-                    for (channel, data) in datas.iter_mut().enumerate().take(CHANNELS) {
-                        if let Some(bytes) = data.data() {
-                            for frame in 0..frames {
-                                let at = (done + frame) * stride;
-                                let sample = state.scratch[channel][frame].to_le_bytes();
-                                bytes[at..at + stride].copy_from_slice(&sample);
-                            }
-                        }
-                    }
-                    done += frames;
-                }
-                for data in datas.iter_mut().take(CHANNELS) {
-                    let chunk = data.chunk_mut();
-                    *chunk.offset_mut() = 0;
-                    *chunk.stride_mut() = stride as i32;
-                    *chunk.size_mut() = (total * stride) as u32;
-                }
-            })
+            .process(play_out)
             .register()?;
 
         let format = format_param();
@@ -602,6 +453,195 @@ impl PluginChain {
             params,
             bypass,
         })
+    }
+}
+
+/// Open the plug-ins asked for: those that opened, each with its bypass
+/// switch, their names, and one slot per plug-in asked for, whether or not
+/// it opened, so the caller can point at "the third effect" and be
+/// understood; a slot holds Stereo Tool's window when it is one.
+#[allow(clippy::type_complexity)]
+fn open_plugins(
+    plugins: &[Option<Request>],
+    bypass: &[Arc<AtomicBool>],
+    owner: &str,
+    rate: f64,
+) -> (
+    Vec<(Processor, Arc<AtomicBool>)>,
+    Vec<String>,
+    Vec<Option<Arc<stereotool::Handle>>>,
+) {
+    let mut opened = Vec::new();
+    let mut names = Vec::new();
+    let mut windows = Vec::new();
+    for (slot, plugin) in plugins.iter().enumerate() {
+        // Asked for and not to be had: its slot stays, empty.
+        let Some(plugin) = plugin else {
+            windows.push(None);
+            continue;
+        };
+        match Processor::open(plugin, rate, MAX_BLOCK) {
+            Ok(instance) => {
+                names.push(instance.name().to_owned());
+                windows.push(match &instance {
+                    Processor::StereoTool(stereotool) => Some(stereotool.handle()),
+                    Processor::Vst3(_) | Processor::Native(..) => None,
+                });
+                opened.push((instance, bypass[slot].clone()));
+            }
+            Err(e) => {
+                log::error!("cannot open a plug-in of {owner}: {e}");
+                windows.push(None);
+            }
+        }
+    }
+    (opened, names, windows)
+}
+
+/// The properties of the stream that reads into the plug-ins and of the one
+/// that plays what they made.
+fn stream_properties(
+    node: &str,
+    owner: &str,
+    latency: &str,
+    from_sink: bool,
+) -> (
+    pipewire::properties::PropertiesBox,
+    pipewire::properties::PropertiesBox,
+) {
+    let common = |name: String, description: String| {
+        properties! {
+            *pipewire::keys::MEDIA_TYPE => "Audio",
+            *pipewire::keys::NODE_NAME => name,
+            *pipewire::keys::NODE_DESCRIPTION => description,
+            "audio.position" => AUDIO_POSITION,
+            *pipewire::keys::NODE_LATENCY => latency,
+            *pipewire::keys::NODE_DONT_RECONNECT => "true",
+            "pipedeck.instance" => super::instance(),
+            "state.restore-props" => "false",
+            "state.restore-target" => "false",
+        }
+    };
+
+    let mut capture_props = common(
+        format!("{node}.in"),
+        format!("Pipedeck: {owner} plug-ins in"),
+    );
+    capture_props.insert(*pipewire::keys::MEDIA_CATEGORY, "Capture");
+    capture_props.insert(*pipewire::keys::MEDIA_CLASS, "Stream/Input/Audio/Internal");
+    if from_sink {
+        capture_props.insert(*pipewire::keys::STREAM_CAPTURE_SINK, "true");
+    }
+
+    let mut playback_props = common(
+        format!("{node}.out"),
+        format!("Pipedeck: {owner} plug-ins out"),
+    );
+    playback_props.insert(*pipewire::keys::MEDIA_CATEGORY, "Playback");
+    // Like the loopbacks' own: a stream inside the mixer, which the
+    // desktop's volume controls leave out.
+    playback_props.insert(*pipewire::keys::NODE_VIRTUAL, "true");
+    (capture_props, playback_props)
+}
+
+/// The capture side's callback, on the real-time thread: what came in, run
+/// through the plug-ins and into the ring.
+fn run_plugins(stream: &pipewire::stream::Stream, state: &mut Processing) {
+    let Some(mut buffer) = stream.dequeue_buffer() else {
+        return;
+    };
+    let datas = buffer.datas_mut();
+    if datas.len() < CHANNELS {
+        return;
+    }
+    let stride = std::mem::size_of::<f32>();
+    let total = datas[0].chunk().size() as usize / stride;
+
+    // A quantum longer than the plug-ins were opened for is run
+    // through them a block at a time, rather than cut short.
+    let mut done = 0;
+    while done < total {
+        let frames = (total - done).min(MAX_BLOCK);
+        for (channel, data) in datas.iter_mut().enumerate().take(CHANNELS) {
+            let offset = data.chunk().offset() as usize;
+            let Some(bytes) = data.data() else {
+                return;
+            };
+            let plane = &mut state.scratch[channel];
+            for (frame, sample) in plane.iter_mut().take(frames).enumerate() {
+                let start = offset + (done + frame) * stride;
+                *sample = bytes
+                    .get(start..start + stride)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .map_or(0.0, f32::from_le_bytes);
+            }
+        }
+
+        let Some(mut block) = block(&mut state.scratch, frames) else {
+            return;
+        };
+        for (plugin, bypassed) in &mut state.plugins {
+            if bypassed.load(Ordering::Relaxed) {
+                continue;
+            }
+            if plugin.process(&mut block).is_err() {
+                return;
+            }
+        }
+        state.ring.write(&block, frames);
+        done += frames;
+    }
+}
+
+/// The playback side's callback, on the real-time thread: what the plug-ins
+/// made, out of the ring.
+fn play_out(stream: &pipewire::stream::Stream, state: &mut Playing) {
+    let Some(mut buffer) = stream.dequeue_buffer() else {
+        return;
+    };
+    let requested = buffer.requested() as usize;
+    let datas = buffer.datas_mut();
+
+    if datas.len() < CHANNELS {
+        return;
+    }
+    let stride = std::mem::size_of::<f32>();
+    // As much as was asked for, as far as the buffers hold, a
+    // block at a time.
+    let room = datas
+        .iter_mut()
+        .take(CHANNELS)
+        .map(|data| data.data().map_or(0, |bytes| bytes.len() / stride))
+        .min()
+        .unwrap_or(0);
+    let total = requested.min(room);
+    if total == 0 {
+        return;
+    }
+
+    let mut done = 0;
+    while done < total {
+        let frames = (total - done).min(MAX_BLOCK);
+        let Some(mut block) = block(&mut state.scratch, frames) else {
+            return;
+        };
+        state.ring.read(&mut block, frames);
+        for (channel, data) in datas.iter_mut().enumerate().take(CHANNELS) {
+            if let Some(bytes) = data.data() {
+                for frame in 0..frames {
+                    let at = (done + frame) * stride;
+                    let sample = state.scratch[channel][frame].to_le_bytes();
+                    bytes[at..at + stride].copy_from_slice(&sample);
+                }
+            }
+        }
+        done += frames;
+    }
+    for data in datas.iter_mut().take(CHANNELS) {
+        let chunk = data.chunk_mut();
+        *chunk.offset_mut() = 0;
+        *chunk.stride_mut() = stride as i32;
+        *chunk.size_mut() = (total * stride) as u32;
     }
 }
 
