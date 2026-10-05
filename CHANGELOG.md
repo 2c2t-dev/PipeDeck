@@ -13,7 +13,9 @@ follow [Semantic Versioning](https://semver.org/).
   so, or says to put it on one.
 
 - Building Vesktop's plugin with a Node.js older than Vencord's pnpm needs
-  says so, with both versions, rather than failing inside pnpm.
+  failed inside pnpm. Pipedeck now builds with a newer one that nvm, fnm
+  or volta keeps, when there is one, and says which versions it found
+  otherwise.
 
 ## [0.1.2] - 2026-10-05
 

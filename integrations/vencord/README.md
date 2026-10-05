@@ -27,7 +27,10 @@ runs the plugins built into it, so Pipedeck clones Vencord into
 `~/.cache/pipedeck/vencord`, puts the plugin in, builds it (with git and
 Node.js; pnpm is fetched through npx), points Vesktop at the result and
 turns the plugin on. The Node.js has to be as new as the pnpm Vencord
-asks for needs: 22.13 or newer for pnpm 11, which Pipedeck checks first. Vesktop writes its settings when it quits, so the last
+asks for needs: 22.13 or newer for pnpm 11, which Pipedeck checks first.
+When the system's is older, as it often is beside one that nvm, fnm or
+volta put on a terminal's PATH only, Pipedeck builds with the newest of
+theirs that is new enough. Vesktop writes its settings when it quits, so the last
 step waits for it to be closed. Update does the same again; Remove points
 Vesktop back at its own Vencord.
 

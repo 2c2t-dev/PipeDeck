@@ -202,12 +202,12 @@ pub fn install(say: impl Fn(&str)) -> Result<(), String> {
 }
 
 fn build_and_point(say: &impl Fn(&str)) -> Result<(), String> {
-    for program in ["git", "npx"] {
-        if !on_path(program) {
-            return Err(format!(
-                "{program} is not installed. Building Vencord needs git and Node.js."
-            ));
-        }
+    let nodes = managed_nodes(&home(), |var| std::env::var_os(var));
+    if !on_path("git") {
+        return Err("git is not installed. Building Vencord needs git and Node.js.".into());
+    }
+    if !on_path("npx") && nodes.is_empty() {
+        return Err("npx is not installed. Building Vencord needs git and Node.js.".into());
     }
     let dir = vencord_dir();
     // Not marked as holding the plugin until this build is checked to.
@@ -241,20 +241,33 @@ fn build_and_point(say: &impl Fn(&str)) -> Result<(), String> {
 
     // Vencord is built with the pnpm its package names, fetched by npx.
     let pnpm = format!("pnpm@{}", pnpm_version(&dir)?);
-    node_new_enough(&dir, &pnpm)?;
+    let node = node_for_build(&dir, &pnpm, &nodes)?;
+    let npx = || {
+        let mut command = crate::launcher::host_command(
+            node.as_ref()
+                .map_or_else(|| PathBuf::from("npx"), |bin| bin.join("npx")),
+        );
+        // npx and pnpm run on whichever node the PATH finds first.
+        if let Some(bin) = &node {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let paths = std::iter::once(bin.clone()).chain(std::env::split_paths(&path));
+            if let Ok(joined) = std::env::join_paths(paths) {
+                command.env("PATH", joined);
+            }
+        }
+        command
+    };
     say("Fetching what Vencord is built with…");
     run(
         "Fetching what Vencord is built with",
-        crate::launcher::host_command("npx")
+        npx()
             .args(["--yes", &pnpm, "install", "--frozen-lockfile", "--silent"])
             .current_dir(&dir),
     )?;
     say("Building Vencord with the plugin…");
     run(
         "Building Vencord",
-        crate::launcher::host_command("npx")
-            .args(["--yes", &pnpm, "build"])
-            .current_dir(&dir),
+        npx().args(["--yes", &pnpm, "build"]).current_dir(&dir),
     )?;
     let renderer = std::fs::read_to_string(dist().join("vencordDesktopRenderer.js"))
         .map_err(|e| format!("the build left no Vesktop files: {e}"))?;
@@ -433,51 +446,119 @@ fn pnpm_version(dir: &Path) -> Result<String, String> {
         .ok_or_else(|| "Vencord's package names no pnpm".into())
 }
 
-/// Whether this system's Node.js is as new as Vencord and its pnpm ask: an
-/// older one fails deep inside pnpm, with an error that says nothing of
-/// Node's version. When a version cannot be read, the build is left to
-/// say what it will.
-fn node_new_enough(dir: &Path, pnpm: &str) -> Result<(), String> {
-    let Some(have) = command_output("node", &["--version"])
+/// The Node.js to build Vencord with: the one on the PATH when it is as
+/// new as Vencord and its pnpm ask, as `None`; or else the newest a version
+/// manager keeps that is, by the folder its programs are in. The desktop
+/// does not run the shell that puts a version manager's Node.js on the
+/// PATH, so Pipedeck started from a menu finds the system's, often older,
+/// and an older one fails deep inside pnpm, with an error that says
+/// nothing of Node's version. When the versions cannot be read, the build
+/// is left to say what it will.
+fn node_for_build(
+    dir: &Path,
+    pnpm: &str,
+    managed: &[(Version, PathBuf)],
+) -> Result<Option<PathBuf>, String> {
+    let have = command_output("node", &["--version"])
         .as_deref()
-        .and_then(version_in)
-    else {
-        return Ok(());
+        .and_then(version_in);
+    let npm = if on_path("npm") {
+        PathBuf::from("npm")
+    } else if let Some((_, bin)) = managed.last() {
+        bin.join("npm")
+    } else {
+        return Ok(None);
     };
     let vencord = read_json(&dir.join("package.json"))
         .ok()
         .and_then(|package| package["engines"]["node"].as_str().and_then(lowest));
-    let pnpm = command_output("npm", &["view", pnpm, "engines.node"])
+    let pnpm = command_output(npm, &["view", pnpm, "engines.node"])
         .as_deref()
         .and_then(lowest);
     let Some(needs) = vencord.into_iter().chain(pnpm).max() else {
-        return Ok(());
+        return Ok(None);
     };
-    if have >= needs {
-        return Ok(());
+    if have.is_some_and(|have| have >= needs) {
+        return Ok(None);
+    }
+    if let Some((_, bin)) = newest_from(managed, needs) {
+        return Ok(Some(bin.clone()));
     }
     let shown = |(major, minor, patch): Version| match (minor, patch) {
         (0, 0) => major.to_string(),
         (_, 0) => format!("{major}.{minor}"),
         _ => format!("{major}.{minor}.{patch}"),
     };
-    // Named by its path: the Node.js a terminal finds is often another,
-    // put on its PATH by a version manager that the desktop does not run.
-    let found = which("node").map_or_else(|| "node".to_owned(), |path| path.display().to_string());
+    // Named by its path: the Node.js a terminal finds is often another.
+    let found = match (which("node"), have) {
+        (Some(path), Some(have)) => format!(
+            "the one Pipedeck finds, {}, is {}",
+            path.display(),
+            shown(have)
+        ),
+        _ => "Pipedeck finds none".to_owned(),
+    };
     Err(format!(
-        "Building Vencord needs Node.js {} or newer, and the one Pipedeck finds, {found}, \
-         is {}. Install a newer one there, or start Pipedeck from a terminal where \
-         node --version says a newer one, then try again.",
-        shown(needs),
-        shown(have)
+        "Building Vencord needs Node.js {} or newer, and {found}, nor do nvm, fnm or \
+         volta keep one. Install a newer one, then try again.",
+        shown(needs)
     ))
+}
+
+/// The newest of the Node.js versions kept that is at least `needs`.
+fn newest_from(managed: &[(Version, PathBuf)], needs: Version) -> Option<&(Version, PathBuf)> {
+    managed.iter().rev().find(|(version, _)| *version >= needs)
+}
+
+/// The Node.js versions nvm, fnm and volta keep, oldest first, with the
+/// folder each one's programs are in. Read from their folders, where each
+/// version is named, rather than by running every one.
+fn managed_nodes(
+    home: &Path,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<(Version, PathBuf)> {
+    let set_or = |name: &str, fallback: PathBuf| var(name).map_or(fallback, PathBuf::from);
+    let data = set_or("XDG_DATA_HOME", home.join(".local/share"));
+    // Where each keeps its versions, and where a version's programs are.
+    let kept = [
+        (
+            set_or("NVM_DIR", home.join(".nvm")).join("versions/node"),
+            "bin",
+        ),
+        (
+            set_or("FNM_DIR", data.join("fnm")).join("node-versions"),
+            "installation/bin",
+        ),
+        (home.join(".fnm/node-versions"), "installation/bin"),
+        (
+            set_or("VOLTA_HOME", home.join(".volta")).join("tools/image/node"),
+            "bin",
+        ),
+    ];
+    let mut nodes: Vec<(Version, PathBuf)> = kept
+        .iter()
+        .filter_map(|(versions, bin)| Some((std::fs::read_dir(versions).ok()?, *bin)))
+        .flat_map(|(entries, bin)| {
+            entries.flatten().filter_map(move |entry| {
+                let version = version_in(entry.file_name().to_str()?)?;
+                let programs = entry.path().join(bin);
+                programs
+                    .join("node")
+                    .is_file()
+                    .then_some((version, programs))
+            })
+        })
+        .collect();
+    nodes.sort();
+    nodes.dedup_by(|a, b| a.0 == b.0);
+    nodes
 }
 
 /// A version, as major, minor and patch.
 type Version = (u32, u32, u32);
 
 /// What a program prints, when it runs and succeeds.
-fn command_output(program: &str, args: &[&str]) -> Option<String> {
+fn command_output(program: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> Option<String> {
     let output = crate::launcher::host_command(program)
         .args(args)
         .output()
@@ -570,6 +651,47 @@ fn edit_json(path: &Path, change: impl FnOnce(&mut Value)) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_version_manager_s_node_is_found_where_it_keeps_it() {
+        let home = std::env::temp_dir().join(format!("pipedeck-nodes-{}", std::process::id()));
+        let node = |path: &str| {
+            let bin = home.join(path);
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("node"), "").unwrap();
+            bin
+        };
+        node(".nvm/versions/node/v20.20.2/bin");
+        let nvm = node(".nvm/versions/node/v26.10.0/bin");
+        let fnm = node(".local/share/fnm/node-versions/v22.13.0/installation/bin");
+        let volta = node("volta/tools/image/node/24.1.0/bin");
+        // A folder without the program is no version.
+        std::fs::create_dir_all(home.join(".nvm/versions/node/v30.0.0")).unwrap();
+
+        let found = managed_nodes(&home, |var| {
+            (var == "VOLTA_HOME").then(|| home.join("volta").into_os_string())
+        });
+        let _ = std::fs::remove_dir_all(&home);
+
+        let versions: Vec<Version> = found.iter().map(|(version, _)| *version).collect();
+        assert_eq!(
+            versions,
+            [(20, 20, 2), (22, 13, 0), (24, 1, 0), (26, 10, 0)]
+        );
+        assert_eq!(
+            newest_from(&found, (22, 13, 0)).map(|(_, bin)| bin),
+            Some(&nvm)
+        );
+        assert_eq!(
+            newest_from(&found[..3], (22, 13, 0)).map(|(_, bin)| bin),
+            Some(&volta)
+        );
+        assert_eq!(
+            newest_from(&found[..2], (22, 13, 0)).map(|(_, bin)| bin),
+            Some(&fnm)
+        );
+        assert_eq!(newest_from(&found[..1], (22, 13, 0)), None);
+    }
 
     #[test]
     fn versions_are_read_as_node_and_ranges_write_them() {
