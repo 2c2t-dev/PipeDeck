@@ -67,18 +67,6 @@
 			<p class="note">A press puts it on the channel, or takes it off again.</p>
 		</div>
 
-		<div id="call-rows" hidden>
-			<label class="row">
-				Goes to
-				<select id="page">
-					<option value="call">The call</option>
-					<option value="mixer">The mixer</option>
-				</select>
-			</label>
-			<label class="row">Follow calls <input id="follow" type="checkbox" /></label>
-			<p class="note">Every deck goes to the call as one starts, and back as it ends.</p>
-		</div>
-
 		<div id="level-rows" hidden>
 			<label class="row">
 				Display
@@ -135,8 +123,6 @@
 			let dial;
 			let settings = {};
 			let mixer = null;
-			let globals = {};
-			let uuidOf = null;
 
 			const $ = (id) => document.getElementById(id);
 
@@ -149,19 +135,14 @@
 				settings = actionInfo.payload.settings || {};
 
 				socket = new WebSocket("ws://localhost:" + port);
-				uuidOf = uuid;
 				socket.onopen = () => {
 					socket.send(JSON.stringify({ event: registerEvent, uuid }));
-					socket.send(JSON.stringify({ event: "getGlobalSettings", context: uuid }));
 					socket.send(JSON.stringify({ event: "sendToPlugin", action: actionUuid, context, payload: { request: "mixer" } }));
 				};
 				socket.onmessage = (message) => {
 					const data = JSON.parse(message.data);
 					if (data.event === "sendToPropertyInspector" && "mixer" in data.payload) {
 						mixer = data.payload.mixer;
-						show();
-					} else if (data.event === "didReceiveGlobalSettings") {
-						globals = data.payload.settings || {};
 						show();
 					} else if (data.event === "didReceiveSettings") {
 						settings = data.payload.settings || {};
@@ -201,10 +182,8 @@
 				$("level-rows").hidden = !level;
 				$("switch-rows").hidden = action !== "monitor" && action !== "output";
 				$("voice-rows").hidden = action !== "voice";
-				$("call-rows").hidden = action !== "call";
 				$("effect-rows").hidden = action !== "effect";
 				$("app-rows").hidden = action !== "app";
-				$("follow").checked = globals.follow_call === true;
 				panels[action]?.(view);
 				if (level) showLevel();
 			}
@@ -214,7 +193,6 @@
 				effect: showEffect,
 				app: showApp,
 				voice: showVoice,
-				call: () => ($("page").value = settings.page === "mixer" ? "mixer" : "call"),
 				channel: showChannel,
 				mix: ({ mixes }) => fill($("mix"), mixes.map((mix) => [String(mix.id), mix.name]), settings.mix, settings.label),
 				monitor: showSwitch,
@@ -328,10 +306,6 @@
 				settings.label = `Person ${settings.slot}`;
 				save();
 			};
-			$("follow").onchange = () => {
-				globals.follow_call = $("follow").checked;
-				socket.send(JSON.stringify({ event: "setGlobalSettings", context: uuidOf, payload: globals }));
-			};
 			$("effect-channel").onchange = () => {
 				if (!$("effect-channel").value) return;
 				settings.channel = Number($("effect-channel").value);
@@ -356,10 +330,6 @@
 			$("app-channel").onchange = () => {
 				if (!$("app-channel").value) return;
 				settings.channel = Number($("app-channel").value);
-				save();
-			};
-			$("page").onchange = () => {
-				settings.page = $("page").value;
 				save();
 			};
 			$("display").onchange = () => {

@@ -15,7 +15,6 @@ changed it.
 | **Call Voice** | a place in the Discord call: the first, the second… | as Channel Level, for whoever is there | the same |
 | **Channel Effect** | a channel and one of its effects | switches the effect off or on | press, the same |
 | **Add to Channel** | an application, or the one in front, and a channel | puts the application on the channel, or takes it off | press, the same |
-| **Call** | the call, or back to the mixer | goes to the Pipedeck Call profile, or back | press, the same |
 
 A person of a call wears their Discord picture, as Vesktop's plugin
 fetched it. The application in front is the one playing in the window that has the
@@ -92,10 +91,8 @@ Call**: a person of the call on every dial and key, by their place in it,
 so it follows the call as people come and go without being laid out again,
 and a key back to the mixer. OpenDeck lets no plugin but its own Starter
 Pack switch profiles, so these two keys are the Starter Pack's **Switch
-Profile**, drawn as Pipedeck's keys are. With **Follow
-calls** ticked in a Call key's settings, every deck showing a Pipedeck
-profile goes to the call's as a call starts, and back as it ends; a deck on
-a profile of your own is left there.
+Profile**, drawn as Pipedeck's keys are; without the Starter Pack, they
+are left out.
 
 Every key on them is an ordinary action: change it in its settings, move it
 or replace it as any other, in a profile of your own.

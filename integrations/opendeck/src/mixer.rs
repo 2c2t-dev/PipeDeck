@@ -136,11 +136,6 @@ impl View {
             .nth(place)
     }
 
-    /// How many people are in the call.
-    pub fn people_in_call(&self) -> usize {
-        self.channels.iter().map(|c| c.voices.len()).sum()
-    }
-
     pub fn find(&self, target: &Target) -> Option<Found> {
         let channel = |id: u32| self.channels.iter().find(|c| c.id == id);
         let mix = |id: u32| self.mixes.iter().find(|m| m.id == id);

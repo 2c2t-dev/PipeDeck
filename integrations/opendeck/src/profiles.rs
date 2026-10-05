@@ -40,8 +40,7 @@ const STARTER_PACK: &str = "com.amansprojects.starterpack";
 const SWITCH_PROFILE: &str = "com.amansprojects.starterpack.switchprofile";
 
 /// The manifests of the plugins a profile's actions come from. Without the
-/// Starter Pack, the Call key is Pipedeck's own, which OpenDeck does not
-/// let switch profiles.
+/// Starter Pack, the Call keys are left empty.
 struct Manifests {
     pipedeck: Value,
     starter_pack: Option<Value>,
@@ -286,8 +285,8 @@ fn instance(manifests: &Manifests, controller: &str, position: usize, slot: &Slo
     let Some((name, settings)) = slot else {
         return Value::Null;
     };
-    let (plugin, manifest, uuid, settings, image) = match &manifests.starter_pack {
-        Some(starter_pack) if *name == "call" => {
+    let (plugin, manifest, uuid, settings, image) = match (*name, &manifests.starter_pack) {
+        ("call", Some(starter_pack)) => {
             let back = settings["page"] == "mixer";
             let profile = if back { MIXER_PROFILE } else { CALL_PROFILE };
             (
@@ -298,6 +297,7 @@ fn instance(manifests: &Manifests, controller: &str, position: usize, slot: &Slo
                 draw::data_url(&page_key(back)),
             )
         }
+        ("call", None) => return Value::Null,
         _ => (
             PLUGIN,
             &manifests.pipedeck,
@@ -326,7 +326,7 @@ fn instance(manifests: &Manifests, controller: &str, position: usize, slot: &Slo
             "property_inspector": format!("{folder}/{}", action["PropertyInspectorPath"].as_str().unwrap_or_default()),
             "controllers": action["Controllers"],
             "encoder": {
-                "icon": format!("icons/{name}"),
+                "icon": if plugin == PLUGIN { format!("icons/{name}") } else { image.clone() },
                 "stack_color": "",
                 "trigger_description": action["Encoder"]["TriggerDescription"],
                 "background": "",
@@ -342,8 +342,8 @@ fn instance(manifests: &Manifests, controller: &str, position: usize, slot: &Slo
     })
 }
 
-/// The Call key's picture, or the key back's, as Pipedeck's own Call key
-/// draws them.
+/// The Call key's picture, or the key back's, drawn as Pipedeck's keys
+/// are.
 fn page_key(back: bool) -> String {
     let (name, look, below) = if back {
         ("Mixer", ("pd-listen-symbolic", draw::WHITE), "Back")
@@ -415,7 +415,7 @@ pub fn write_all() -> Result<(), Box<dyn std::error::Error>> {
         starter_pack: manifest(STARTER_PACK).ok(),
     };
     if manifests.starter_pack.is_none() {
-        println!("OpenDeck's Starter Pack is not installed: the Call key cannot switch profiles");
+        println!("OpenDeck's Starter Pack is not installed: the Call keys are left out");
     }
     let mut written = 0;
     for device in std::fs::read_dir(config.join("profiles"))? {
@@ -717,12 +717,12 @@ mod tests {
             json!({ "profile": MIXER_PROFILE })
         );
 
-        // Without it, the key is Pipedeck's own.
+        // Without it, there is no key that can go there.
         let alone = Manifests {
             starter_pack: None,
             ..manifests
         };
         let mixer = profile(&layout(Model::Plus, &view()), &alone);
-        assert_eq!(mixer["keys"][3]["action"]["uuid"], format!("{PLUGIN}.call"));
+        assert_eq!(mixer["keys"][3], Value::Null);
     }
 }

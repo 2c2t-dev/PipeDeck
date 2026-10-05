@@ -6,6 +6,21 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- On OpenDeck, the Call key goes to the call's profile and back. OpenDeck
+  takes a profile switch only from its Starter Pack, so the laid-out Call
+  keys are now its Switch Profile.
+
+### Changed
+
+- A microphone's effects go on the keys left, no longer on a dial.
+
+### Removed
+
+- From the OpenDeck plugin, the Call action and Follow calls: OpenDeck
+  does not let them switch profiles. StreamController keeps both.
+
 ## [0.1.0] - 2026-10-05
 
 The first release.

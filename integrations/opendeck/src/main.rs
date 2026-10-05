@@ -87,11 +87,6 @@ fn run(port: &str, uuid: &str, register: &str) -> Result<(), Box<dyn std::error:
     let stream = TcpStream::connect(("127.0.0.1", port.parse::<u16>()?))?;
     let (mut socket, _) = tungstenite::client(format!("ws://127.0.0.1:{port}"), stream)?;
     send(&mut socket, &json!({ "event": register, "uuid": uuid }))?;
-    // Whether the decks follow the call, kept by OpenDeck for the plugin.
-    send(
-        &mut socket,
-        &json!({ "event": "getGlobalSettings", "context": uuid }),
-    )?;
     socket.get_mut().set_read_timeout(Some(POLL))?;
 
     let (changed, news) = mpsc::channel();

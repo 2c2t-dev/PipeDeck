@@ -12,14 +12,14 @@
 //! - **Main Output Device**: the device it is heard on, one, or the other
 //!   of two.
 //!
-//! And two of Pipedeck's own, for the people of a Discord call:
+//! And one of Pipedeck's own, for the people of a Discord call:
 //!
 //! - **Call Voice**: whoever is at a place in the call, the first, the
 //!   second, and on: their level as a channel's, following the call as
 //!   people come and go.
-//! - **Call**: to the profile laid out for the call, saying how many are in
-//!   it, and back to the mixer's; and, when asked, the decks go there by
-//!   themselves as a call starts, and back as it ends.
+//!
+//! None goes to another profile: OpenDeck lets only its Starter Pack do
+//! that, so the profiles' Call keys are its Switch Profile.
 //!
 //! And two more of Wave Link's:
 //!
@@ -52,12 +52,12 @@ pub enum Action {
     MonitorMix,
     MainOutput,
     CallVoice,
-    CallPage,
     ChannelEffect,
     AddApp,
 }
 
-/// The profiles the Call action goes between. See `profiles.rs`.
+/// The profiles laid out for the mixer and for the call. See
+/// `profiles.rs`.
 pub const MIXER_PROFILE: &str = "Pipedeck";
 pub const CALL_PROFILE: &str = "Pipedeck Call";
 
@@ -73,7 +73,6 @@ impl Action {
             "monitor" => Some(Action::MonitorMix),
             "output" => Some(Action::MainOutput),
             "voice" => Some(Action::CallVoice),
-            "call" => Some(Action::CallPage),
             "effect" => Some(Action::ChannelEffect),
             "app" => Some(Action::AddApp),
             _ => None,
@@ -118,8 +117,6 @@ struct Settings {
     display: Option<String>,
     /// Which person of the call, from 1.
     slot: Option<usize>,
-    /// Where the Call action goes: "call", or back to the "mixer".
-    page: Option<String>,
     /// An effect of the channel, by its place and its name: found by its
     /// name when the chain moved, by its place when it was renamed.
     index: Option<usize>,
@@ -162,11 +159,9 @@ impl Settings {
                 })
             }
             Action::MixLevel => Some(Target::Mix { id: self.mix? }),
-            Action::MonitorMix
-            | Action::MainOutput
-            | Action::CallPage
-            | Action::ChannelEffect
-            | Action::AddApp => None,
+            Action::MonitorMix | Action::MainOutput | Action::ChannelEffect | Action::AddApp => {
+                None
+            }
         }
     }
 
@@ -178,8 +173,6 @@ impl Settings {
 /// One action where OpenDeck put it.
 struct Instance {
     action: Action,
-    /// The deck it is on, which a profile is switched on.
-    device: String,
     /// On a dial, drawn on its part of the touch strip.
     dial: bool,
     settings: Settings,
@@ -220,9 +213,6 @@ pub struct Deck {
     open_page: Option<String>,
     /// The people's pictures, made round.
     avatars: Avatars,
-    /// Whether the decks go to the call's profile as a call starts, and
-    /// back as it ends: the plugin's own setting, the same for every key.
-    follow_call: bool,
 }
 
 impl Deck {
@@ -235,17 +225,12 @@ impl Deck {
             fades: Vec::new(),
             open_page: None,
             avatars: Avatars::default(),
-            follow_call: false,
         }
     }
 
     /// Take in a message from OpenDeck, and say what to send it back.
     pub fn hear(&mut self, message: &Value) -> Vec<Value> {
         let event = message["event"].as_str().unwrap_or_default();
-        if event == "didReceiveGlobalSettings" {
-            self.follow_call = message["payload"]["settings"]["follow_call"] == true;
-            return Vec::new();
-        }
         let Some(context) = message["context"].as_str().map(str::to_owned) else {
             return Vec::new();
         };
@@ -259,7 +244,6 @@ impl Deck {
                     context.clone(),
                     Instance {
                         action,
-                        device: message["device"].as_str().unwrap_or_default().to_owned(),
                         dial: payload["controller"] == "Encoder",
                         settings: settings_of(payload),
                         shown: None,
@@ -305,43 +289,13 @@ impl Deck {
             return Vec::new();
         }
         let listed = catalogue(self.view.as_ref()) != catalogue(view.as_ref());
-        let before = self.view.as_ref().map_or(0, View::people_in_call);
-        let after = view.as_ref().map_or(0, View::people_in_call);
         self.view = view;
-        let mut followed = Vec::new();
-        if self.follow_call && (before == 0) != (after == 0) && self.view.is_some() {
-            followed = self.follow(after > 0);
-        }
         let contexts: Vec<String> = self.instances.keys().cloned().collect();
         let mut messages: Vec<Value> = contexts.iter().flat_map(|c| self.draw(c)).collect();
-        messages.extend(followed);
         if let Some(open) = self.open_page.clone().filter(|_| listed) {
             messages.extend(self.tell_settings_page(&open));
         }
         messages
-    }
-
-    /// Take every deck showing one Pipedeck profile to the other: to the
-    /// call's as a call starts, back to the mixer's as it ends. A deck on a
-    /// profile of the user's own is left there.
-    fn follow(&self, started: bool) -> Vec<Value> {
-        let (from, to) = if started {
-            (MIXER_PROFILE, CALL_PROFILE)
-        } else {
-            (CALL_PROFILE, MIXER_PROFILE)
-        };
-        let mut devices: Vec<&str> = self
-            .instances
-            .iter()
-            .filter(|(context, instance)| profile_of(context, &instance.device) == Some(from))
-            .map(|(_, instance)| instance.device.as_str())
-            .collect();
-        devices.sort_unstable();
-        devices.dedup();
-        devices
-            .into_iter()
-            .map(|device| json!({ "event": "switchProfile", "device": device, "profile": to }))
-            .collect()
     }
 
     /// Take in what the meters read, and redraw the meters it moved.
@@ -406,7 +360,6 @@ impl Deck {
                 Reply::Order(json!({ "what": "effect", "channel": channel, "index": index, "bypass": "toggle" }))
             }),
             Action::AddApp => app_order(settings, view).map(Reply::Order),
-            Action::CallPage => Some(Reply::Tell(profile_switch(settings, &instance.device))),
             Action::ChannelLevel | Action::MixLevel | Action::CallVoice => {
                 level_reply(instance.action, settings, view, press)
             }
@@ -415,7 +368,6 @@ impl Deck {
         };
         match reply {
             None => vec![alert(context)],
-            Some(Reply::Tell(message)) => vec![message],
             Some(Reply::Order(change)) => {
                 if self.mixer.send(change) {
                     Vec::new()
@@ -511,8 +463,6 @@ impl Deck {
 enum Reply {
     /// An order for the mixer.
     Order(Value),
-    /// A message for OpenDeck.
-    Tell(Value),
     /// A level to move there step by step.
     Fade(Fade),
 }
@@ -530,21 +480,6 @@ fn app_order(settings: &Settings, view: &View) -> Option<Value> {
         .iter()
         .any(|c| c.id == channel && c.apps.contains(&app));
     Some(json!({ "what": "app", "app": app, "channel": channel, "release": here }))
-}
-
-/// Go to the call's page or back to the mixer's. OpenDeck's own event, not
-/// the Stream Deck SDK's.
-fn profile_switch(settings: &Settings, device: &str) -> Value {
-    let profile = if settings.page.as_deref() == Some("mixer") {
-        MIXER_PROFILE
-    } else {
-        CALL_PROFILE
-    };
-    json!({
-        "event": "switchProfile",
-        "device": device,
-        "profile": profile,
-    })
 }
 
 /// Move a level, set it, or mute it. A dial moves the level and mutes it,
@@ -676,7 +611,6 @@ fn picture(
     match action {
         Action::ChannelEffect => effect_picture(settings, view),
         Action::AddApp => app_picture(settings, view),
-        Action::CallPage => page_picture(settings, view),
         // Nobody there: the place shows it is free.
         Action::CallVoice if settings.target(action, Some(view)).is_none() => {
             Ok(free_place(settings))
@@ -754,42 +688,6 @@ fn app_picture(settings: &Settings, view: &View) -> Result<Drawn, &'static str> 
         (format!("To {}", channel.name), draw::FAINT)
     };
     Ok(drawn)
-}
-
-/// The way to the call's page, with how many are in it, or back.
-fn page_picture(settings: &Settings, view: &View) -> Result<Drawn, &'static str> {
-    if settings.page.as_deref() == Some("mixer") {
-        return Ok(Drawn {
-            name: "Mixer".to_owned(),
-            look: ("pd-listen-symbolic", draw::WHITE),
-            corner: None,
-            level: None,
-            meter: None,
-            state: State::default(),
-            below: ("Back".to_owned(), "#ffffff"),
-            avatar_file: None,
-            avatar: None,
-        });
-    }
-    let people = view.people_in_call();
-    Ok(Drawn {
-        name: "Call".to_owned(),
-        look: draw::look(Some("people"), false, false),
-        corner: None,
-        level: None,
-        meter: None,
-        state: State {
-            muted: false,
-            dim: people == 0,
-        },
-        below: match people {
-            0 => ("No call".to_owned(), draw::FAINT),
-            1 => ("1 person".to_owned(), "#ffffff"),
-            n => (format!("{n} people"), "#ffffff"),
-        },
-        avatar_file: None,
-        avatar: None,
-    })
 }
 
 /// A place in the call nobody is in.
@@ -914,15 +812,6 @@ fn output_picture(settings: &Settings, view: &View) -> Result<Drawn, &'static st
     })
 }
 
-/// The profile an action is on, from its context, which OpenDeck makes of
-/// the deck, the profile, the controller and the place.
-fn profile_of<'a>(context: &'a str, device: &str) -> Option<&'a str> {
-    let rest = context.strip_prefix(device)?.strip_prefix('.')?;
-    let mut parts = rest.rsplitn(4, '.');
-    let (_index, _position, _controller) = (parts.next()?, parts.next()?, parts.next()?);
-    parts.next()
-}
-
 fn settings_of(payload: &Value) -> Settings {
     serde_json::from_value(payload["settings"].clone()).unwrap_or_default()
 }
@@ -1044,68 +933,6 @@ mod tests {
             (drawn.name.as_str(), drawn.below.0.as_str()),
             ("Person 2", "Empty")
         );
-    }
-
-    #[test]
-    fn the_call_key_counts_the_people_and_switches_the_profile() {
-        let mut deck = Deck::new(Mixer::default());
-        deck.mixer_changed(Some(in_call(&["Alice", "Bob", "Carol"])));
-        let shown = deck.hear(&json!({
-            "event": "willAppear",
-            "action": format!("{PLUGIN}.call"),
-            "context": "here",
-            "device": "sd-1",
-            "payload": {"controller": "Keypad", "settings": {}},
-        }));
-        let image = shown[0]["payload"]["image"].as_str().unwrap().to_owned();
-        assert!(image.starts_with("data:image/svg+xml;base64,"));
-        let told = deck.hear(&json!({"event": "keyDown", "context": "here", "payload": {}}));
-        assert_eq!(
-            told,
-            vec![json!({"event": "switchProfile", "device": "sd-1", "profile": CALL_PROFILE})]
-        );
-    }
-
-    #[test]
-    fn a_profile_is_read_from_where_opendeck_says_an_action_is() {
-        assert_eq!(
-            profile_of("sd-1.Pipedeck Call.Keypad.3.0", "sd-1"),
-            Some(CALL_PROFILE)
-        );
-        assert_eq!(
-            profile_of("sd-1.Pipedeck.Encoder.0.0", "sd-1"),
-            Some(MIXER_PROFILE)
-        );
-        assert_eq!(profile_of("sd-2.Pipedeck.Keypad.0.0", "sd-1"), None);
-    }
-
-    #[test]
-    fn the_decks_follow_a_call_when_asked() {
-        let mut deck = Deck::new(Mixer::default());
-        deck.mixer_changed(Some(view()));
-        deck.hear(&json!({
-            "event": "willAppear",
-            "action": format!("{PLUGIN}.call"),
-            "context": "sd-1.Pipedeck.Keypad.0.0",
-            "device": "sd-1",
-            "payload": {"controller": "Keypad", "settings": {}},
-        }));
-        let switches = |told: &[Value]| -> Vec<Value> {
-            told.iter()
-                .filter(|m| m["event"] == "switchProfile")
-                .cloned()
-                .collect()
-        };
-        // Not asked: nothing moves.
-        assert!(switches(&deck.mixer_changed(Some(in_call(&["Alice"])))).is_empty());
-        deck.mixer_changed(Some(view()));
-        deck.hear(&json!({"event": "didReceiveGlobalSettings", "payload": {"settings": {"follow_call": true}}}));
-        assert_eq!(
-            switches(&deck.mixer_changed(Some(in_call(&["Alice"])))),
-            vec![json!({"event": "switchProfile", "device": "sd-1", "profile": CALL_PROFILE})]
-        );
-        // Someone else joining is not a call starting.
-        assert!(switches(&deck.mixer_changed(Some(in_call(&["Alice", "Bob"])))).is_empty());
     }
 
     #[test]
