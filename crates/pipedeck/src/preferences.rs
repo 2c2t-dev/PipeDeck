@@ -1029,8 +1029,112 @@ fn audio_page(engine: &EngineLink, latency: &str) -> adw::PreferencesPage {
     warning.add_prefix(&gtk::Image::from_icon_name("dialog-information-symbolic"));
     group.add(&warning);
     page.add(&group);
+    page.add(&mixer_group(engine));
 
     page
+}
+
+/// The mixer in a file and back: to keep it, to bring it to another
+/// computer, or to give it. The engine writes and reads the file, and says
+/// how it went.
+fn mixer_group(engine: &EngineLink) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Mixer");
+    group.set_description(Some(
+        "Its channels, mixes, cells and effects, in a file. The Stereo Tool key stays out \
+         of it, and devices another computer lacks are picked again there.",
+    ));
+
+    let export = gtk::Button::with_label("Export…");
+    export.set_valign(gtk::Align::Center);
+    export.connect_clicked({
+        let engine = engine.clone();
+        move |button| {
+            let dialog = gtk::FileDialog::new();
+            dialog.set_title("Export the mixer");
+            dialog.set_initial_name(Some("pipedeck-mixer.toml"));
+            dialog.set_filters(Some(&mixer_files()));
+            let window = button.root().and_downcast::<gtk::Window>();
+            let engine = engine.clone();
+            dialog.save(
+                window.as_ref(),
+                None::<&gtk::gio::Cancellable>,
+                move |answer| {
+                    if let Some(path) = answer.ok().and_then(|file| file.path()) {
+                        engine.send(Command::ExportConfig(path));
+                    }
+                },
+            );
+        }
+    });
+    let row = adw::ActionRow::new();
+    row.set_title("Export the mixer");
+    row.set_subtitle("To keep it, or to bring it to another computer");
+    row.add_suffix(&export);
+    group.add(&row);
+
+    let import = gtk::Button::with_label("Import…");
+    import.set_valign(gtk::Align::Center);
+    import.connect_clicked({
+        let engine = engine.clone();
+        move |button| {
+            let dialog = gtk::FileDialog::new();
+            dialog.set_title("Import a mixer");
+            dialog.set_filters(Some(&mixer_files()));
+            let window = button.root().and_downcast::<gtk::Window>();
+            let (engine, button) = (engine.clone(), button.clone());
+            dialog.open(
+                window.as_ref(),
+                None::<&gtk::gio::Cancellable>,
+                move |answer| {
+                    if let Some(path) = answer.ok().and_then(|file| file.path()) {
+                        confirm_import(&button, &engine, path);
+                    }
+                },
+            );
+        }
+    });
+    let row = adw::ActionRow::new();
+    row.set_title("Import a mixer");
+    row.set_subtitle("In place of this one");
+    row.add_suffix(&import);
+    group.add(&row);
+    group
+}
+
+/// What the mixer's file dialogs show.
+fn mixer_files() -> gtk::gio::ListStore {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Pipedeck mixers"));
+    filter.add_pattern("*.toml");
+    let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    filters
+}
+
+/// Ask before the mixer is replaced, since nothing of it is kept.
+fn confirm_import(parent: &gtk::Button, engine: &EngineLink, path: std::path::PathBuf) {
+    let dialog = adw::AlertDialog::new(
+        Some("Replace the mixer?"),
+        Some(
+            "Its channels, mixes, cells and effects give way to the file's. The audio stops \
+             for a moment while the new mixer is put in place.",
+        ),
+    );
+    dialog.add_responses(&[("cancel", "Cancel"), ("replace", "Replace")]);
+    dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let engine = engine.clone();
+    dialog.choose(
+        Some(parent),
+        None::<&gtk::gio::Cancellable>,
+        move |response| {
+            if response == "replace" {
+                engine.send(Command::ImportConfig(path));
+            }
+        },
+    );
 }
 
 fn about_page() -> adw::PreferencesPage {

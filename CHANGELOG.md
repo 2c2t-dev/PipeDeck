@@ -8,6 +8,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The mixer can be exported to a file and imported from one, in the
+  settings, without the Stereo Tool key.
 - Software centres such as GNOME Software and Discover describe Pipedeck,
   with its screenshots and what each release changed.
 - Pipedeck builds as a Flatpak, for Flathub. In the sandbox, starting with

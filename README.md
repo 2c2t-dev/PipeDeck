@@ -132,7 +132,10 @@ you are looking at to a channel.
   starts it that way, Ctrl+Q quits), and drawing without the graphics card
   if text shows up damaged.
 - **Audio**: the quantum Pipedeck's nodes ask for, 512 frames by default.
-  Raise it if you get xruns.
+  Raise it if you get xruns. **Export** writes the mixer to a file, to keep
+  or to bring to another computer, without the Stereo Tool key; **Import**
+  puts a mixer from such a file in place of yours. Devices the other
+  computer lacks are picked again there.
 - **Plug-ins**: VST3, Stereo Tool, Stream Deck and Discord.
 
 The mixer is saved in `$XDG_CONFIG_HOME/pipedeck/config.toml`, the window's
