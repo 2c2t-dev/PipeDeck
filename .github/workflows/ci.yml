@@ -23,7 +23,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup \
-            python python-pillow python-cairosvg
+            python python-pillow python-cairosvg dbus
           rustup default stable
           rustup component add clippy rustfmt
 
