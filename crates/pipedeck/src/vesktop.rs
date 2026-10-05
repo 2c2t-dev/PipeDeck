@@ -478,19 +478,26 @@ fn node_for_build(
     let Some(needs) = vencord.into_iter().chain(pnpm).max() else {
         return Ok(None);
     };
+    pick_node(have, needs, managed, which("node").as_deref())
+}
+
+/// Which Node.js to build with, from what is known of them: the system's,
+/// `have`, found at `system`, when it is at least `needs`, as `None`; else
+/// the newest kept one that is; else why there is none.
+fn pick_node(
+    have: Option<Version>,
+    needs: Version,
+    managed: &[(Version, PathBuf)],
+    system: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
     if have.is_some_and(|have| have >= needs) {
         return Ok(None);
     }
     if let Some((_, bin)) = newest_from(managed, needs) {
         return Ok(Some(bin.clone()));
     }
-    let shown = |(major, minor, patch): Version| match (minor, patch) {
-        (0, 0) => major.to_string(),
-        (_, 0) => format!("{major}.{minor}"),
-        _ => format!("{major}.{minor}.{patch}"),
-    };
     // Named by its path: the Node.js a terminal finds is often another.
-    let found = match (which("node"), have) {
+    let found = match (system, have) {
         (Some(path), Some(have)) => format!(
             "the one Pipedeck finds, {}, is {}",
             path.display(),
@@ -503,6 +510,15 @@ fn node_for_build(
          volta keep one. Install a newer one, then try again.",
         shown(needs)
     ))
+}
+
+/// A version as people write it: `22.13` rather than `22.13.0`.
+fn shown((major, minor, patch): Version) -> String {
+    match (minor, patch) {
+        (0, 0) => major.to_string(),
+        (_, 0) => format!("{major}.{minor}"),
+        _ => format!("{major}.{minor}.{patch}"),
+    }
 }
 
 /// The newest of the Node.js versions kept that is at least `needs`.
@@ -594,6 +610,11 @@ fn lowest(range: &str) -> Option<Version> {
 /// object as in its reason, so the line naming the error is what is said,
 /// and the whole of it is kept in a log beside Vencord.
 fn run(step: &str, command: &mut Command) -> Result<(), String> {
+    run_logged(step, command, &build_log())
+}
+
+/// The same, keeping what a failed step printed in `log`.
+fn run_logged(step: &str, command: &mut Command, log: &Path) -> Result<(), String> {
     let output = command.output().map_err(|e| format!("{step}: {e}"))?;
     if output.status.success() {
         return Ok(());
@@ -603,8 +624,7 @@ fn run(step: &str, command: &mut Command) -> Result<(), String> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let log = build_log();
-    let kept = std::fs::write(&log, &said).is_ok();
+    let kept = std::fs::write(log, &said).is_ok();
     let mut reason = reason_in(&said);
     if kept {
         reason.push_str(&format!(" (all of it is in {})", log.display()));
@@ -691,6 +711,73 @@ mod tests {
             Some(&fnm)
         );
         assert_eq!(newest_from(&found[..1], (22, 13, 0)), None);
+    }
+
+    #[test]
+    fn the_node_built_with_is_the_system_s_or_a_newer_kept_one() {
+        let needs = (22, 13, 0);
+        let kept = vec![
+            ((20, 1, 0), PathBuf::from("/nvm/v20/bin")),
+            ((26, 10, 0), PathBuf::from("/nvm/v26/bin")),
+        ];
+        let system = Some(Path::new("/usr/bin/node"));
+        assert_eq!(pick_node(Some((24, 0, 0)), needs, &kept, system), Ok(None));
+        assert_eq!(
+            pick_node(Some((20, 20, 2)), needs, &kept, system),
+            Ok(Some(PathBuf::from("/nvm/v26/bin")))
+        );
+        assert_eq!(
+            pick_node(None, needs, &kept, None),
+            Ok(Some(PathBuf::from("/nvm/v26/bin")))
+        );
+        let old = pick_node(Some((20, 20, 2)), needs, &kept[..1], system).unwrap_err();
+        assert!(old.contains("needs Node.js 22.13 or newer"), "{old}");
+        assert!(old.contains("/usr/bin/node, is 20.20.2"), "{old}");
+        let none = pick_node(None, needs, &[], None).unwrap_err();
+        assert!(none.contains("Pipedeck finds none"), "{none}");
+        assert_eq!(shown((22, 0, 0)), "22");
+        assert_eq!(shown((22, 13, 1)), "22.13.1");
+    }
+
+    #[test]
+    fn a_step_says_what_failed_and_keeps_all_of_it() {
+        let dir = std::env::temp_dir().join(format!("pipedeck-steps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("build.log");
+        let sh = |script: &str| {
+            let mut command = Command::new("sh");
+            command.args(["-c", script]);
+            command
+        };
+
+        assert_eq!(run_logged("Fine", &mut sh("true"), &log), Ok(()));
+        assert!(!log.exists(), "nothing is kept of a step that went well");
+        let failed = run_logged(
+            "Building Vencord",
+            &mut sh("echo building; echo 'Error: no such module' >&2; echo '}' >&2; exit 1"),
+            &log,
+        );
+        let kept = std::fs::read_to_string(&log).unwrap_or_default();
+        let missing = run_logged(
+            "Missing",
+            &mut Command::new("pipedeck-no-such-program"),
+            &log,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let failed = failed.unwrap_err();
+        assert!(
+            failed.starts_with("Building Vencord failed: Error: no such module"),
+            "{failed}"
+        );
+        assert!(failed.contains(&log.display().to_string()), "{failed}");
+        assert!(kept.contains("building") && kept.contains('}'), "{kept}");
+        assert!(missing.unwrap_err().starts_with("Missing: "));
+        assert_eq!(
+            command_output("sh", &["-c", "echo ' 22.13 '"]).as_deref(),
+            Some("22.13")
+        );
+        assert_eq!(command_output("sh", &["-c", "exit 1"]), None);
     }
 
     #[test]
