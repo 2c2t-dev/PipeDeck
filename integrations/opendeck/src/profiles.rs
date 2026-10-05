@@ -12,8 +12,9 @@
 //!   then a column of mixes and one of mixes to hear.
 //!
 //! Each has a Call key, to a second profile, "Pipedeck Call": the people
-//! of a Discord call by their place in it, on the dials first and then the
-//! keys, so it follows the call as people come and go; and a key back.
+//! of a Discord call by their place in it, so it follows the call as people
+//! come and go, and a key back. On a Stream Deck + they are on the dials
+//! alone, where the touch strip shows them; elsewhere on every key.
 //! OpenDeck lets no plugin but its own Starter Pack switch a deck's
 //! profile, so those two keys are the Starter Pack's Switch Profile,
 //! drawn as Pipedeck's keys are.
@@ -198,18 +199,18 @@ fn voice(place: usize) -> Slot {
     ))
 }
 
-/// The call's profile: a person on every dial and key, the last key back.
+/// The call's profile: a person on every dial, or on every key of a deck
+/// with none, and the last key back.
 fn call_layout(model: Model) -> Layout {
     let mut layout = Layout::new(model);
-    let mut place = 1;
-    for dial in layout.dials.iter_mut() {
-        *dial = voice(place);
-        place += 1;
-    }
     let last = layout.keys.len() - 1;
-    for key in layout.keys[..last].iter_mut() {
-        *key = voice(place);
-        place += 1;
+    let places: Vec<&mut Slot> = if layout.dials.is_empty() {
+        layout.keys[..last].iter_mut().collect()
+    } else {
+        layout.dials.iter_mut().collect()
+    };
+    for (place, slot) in places.into_iter().enumerate() {
+        *slot = voice(place + 1);
     }
     layout.keys[last] = call_page("mixer");
     layout
@@ -363,7 +364,7 @@ fn without_nulls(value: Value) -> Value {
 /// are.
 fn page_key(back: bool) -> String {
     let (name, look, below) = if back {
-        ("Mixer", ("pd-listen-symbolic", draw::WHITE), "Back")
+        ("Mixer", ("pd-back-symbolic", draw::WHITE), "Back")
     } else {
         ("Call", draw::look(Some("people"), false, false), "People")
     };
@@ -659,9 +660,13 @@ mod tests {
             .chain(&layout.keys)
             .filter_map(|slot| slot.as_ref()?.1["slot"].as_u64())
             .collect();
-        assert_eq!(places, (1..=11).collect::<Vec<_>>());
+        // On the touch strip alone, the keys left free but the way back.
+        assert_eq!(places, [1, 2, 3, 4]);
+        assert_eq!(layout.keys.iter().flatten().count(), 1);
         assert_eq!(layout.keys[7].as_ref().unwrap().1["page"], "mixer");
-        assert_eq!(call_layout(Model::Xl).keys.iter().flatten().count(), 32);
+        let xl = call_layout(Model::Xl);
+        assert_eq!(xl.keys.iter().flatten().count(), 32);
+        assert_eq!(xl.keys[30].as_ref().unwrap().1["slot"], 31);
     }
 
     #[test]

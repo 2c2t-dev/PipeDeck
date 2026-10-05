@@ -27,6 +27,7 @@ const ICONS: &[(&str, &str)] = icons!(
     "pd-4-symbolic",
     "pd-5-symbolic",
     "pd-aux-symbolic",
+    "pd-back-symbolic",
     "pd-browser-symbolic",
     "pd-fun-symbolic",
     "pd-game-symbolic",

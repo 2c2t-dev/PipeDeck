@@ -87,9 +87,11 @@ A microphone's effects, noise suppression and the like, get a Channel
 Effect key each on the keys left; a dial is not given one.
 
 Each has a **Call** key, which goes to a second profile, **Pipedeck
-Call**: a person of the call on every dial and key, by their place in it,
-so it follows the call as people come and go without being laid out again,
-and a key back to the mixer. OpenDeck lets no plugin but its own Starter
+Call**: the people of the call by their place in it, so it follows the
+call as people come and go without being laid out again, and a key back
+to the mixer, with an arrow. On a Stream Deck + they are on the dials,
+shown on the touch strip, and the keys are left free; on the others, on
+every key. OpenDeck lets no plugin but its own Starter
 Pack switch profiles, so these two keys are the Starter Pack's **Switch
 Profile**, drawn as Pipedeck's keys are; without the Starter Pack, they
 are left out.

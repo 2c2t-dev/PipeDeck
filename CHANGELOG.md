@@ -15,6 +15,9 @@ follow [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - A microphone's effects go on the keys left, no longer on a dial.
+- On a Stream Deck +, the call's profile puts its people on the dials
+  alone, shown on the touch strip, and the key back to the mixer wears an
+  arrow.
 
 ### Removed
 
