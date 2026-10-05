@@ -34,7 +34,7 @@ jobs:
         if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup
+            base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup unzip
           rustup default stable
           rustup component add clippy llvm-tools-preview
 
