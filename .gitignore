@@ -6,3 +6,5 @@
 /python-coverage.xml
 .coverage*
 __pycache__/
+# Editor settings, each contributor's own.
+/.vscode/
