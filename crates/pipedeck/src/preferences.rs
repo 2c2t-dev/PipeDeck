@@ -175,11 +175,7 @@ fn plugins_page(
     let install = adw::PreferencesGroup::new();
     install.set_title("Add one");
 
-    let status = gtk::Label::new(None);
-    status.add_css_class("caption");
-    status.set_wrap(true);
-    status.set_xalign(0.0);
-    status.set_visible(false);
+    let status = status_label();
 
     let bundle_row = adw::ActionRow::new();
     bundle_row.set_title("Import a bundle");
@@ -242,6 +238,22 @@ fn in_background(
     });
 }
 
+/// Something to run on a thread of its own, saying how it went.
+type Work = Box<dyn FnOnce() -> Result<String, String> + Send>;
+/// Start some work, with every button waiting until it ends, say how it
+/// went, then do what follows.
+type Start = Rc<dyn Fn(Work, Rc<dyn Fn()>)>;
+
+/// A line under a group, saying how what was started went.
+fn status_label() -> gtk::Label {
+    let status = gtk::Label::new(None);
+    status.add_css_class("caption");
+    status.set_wrap(true);
+    status.set_xalign(0.0);
+    status.set_visible(false);
+    status
+}
+
 /// Pipedeck's plugins for the Stream Deck applications that are here,
 /// installed, updated and removed from here, and OpenDeck's profiles laid
 /// out from the mixer.
@@ -249,18 +261,47 @@ fn stream_deck_group() -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Stream Deck");
 
-    let status = gtk::Label::new(None);
-    status.add_css_class("caption");
-    status.set_wrap(true);
-    status.set_xalign(0.0);
-    status.set_visible(false);
-
+    let status = status_label();
     let spinner = adw::Spinner::new();
     spinner.set_visible(false);
     // Every button here waits while one of them runs.
     let buttons: Rc<RefCell<Vec<gtk::Button>>> = Rc::default();
     let saved = Rc::new(RefCell::new(Settings::load()));
 
+    let (profiles, lay_out) = profiles_row(&saved);
+    buttons.borrow_mut().push(lay_out.clone());
+    let start = starter(&status, &spinner, &buttons);
+
+    let mut shows: Vec<Rc<dyn Fn()>> = Vec::new();
+    for app in [App::OpenDeck, App::StreamController] {
+        if streamdeck::state(app) == streamdeck::State::Missing {
+            continue;
+        }
+        let (row, show) = app_row(app, &profiles, &buttons, &start, &saved);
+        group.add(&row);
+        shows.push(show);
+    }
+    group.add(&profiles);
+    // On KDE, the application in front, for Add to Channel: a KWin script
+    // says which window has the focus.
+    if crate::kwin::available() {
+        group.add(&front_row(&status, &spinner));
+    }
+    let show_all: Rc<dyn Fn()> = Rc::new(move || shows.iter().for_each(|show| show()));
+    lay_out.connect_clicked(move |_| {
+        start(Box::new(streamdeck::lay_out_profiles), show_all.clone());
+    });
+
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    footer.append(&spinner);
+    footer.append(&status);
+    group.add(&footer);
+    group
+}
+
+/// Whether OpenDeck's profiles follow the mixer, and a button to lay them
+/// out now.
+fn profiles_row(saved: &Rc<RefCell<Settings>>) -> (adw::SwitchRow, gtk::Button) {
     let profiles = adw::SwitchRow::new();
     profiles.set_title("Pipedeck profiles follow the mixer");
     profiles
@@ -276,160 +317,266 @@ fn stream_deck_group() -> adw::PreferencesGroup {
     let lay_out = gtk::Button::with_label("Lay out now");
     lay_out.set_valign(gtk::Align::Center);
     profiles.add_suffix(&lay_out);
-    buttons.borrow_mut().push(lay_out.clone());
+    (profiles, lay_out)
+}
 
-    // Start something, with every button waiting until it ends, and say
-    // how it went.
-    let start = {
+fn starter(
+    status: &gtk::Label,
+    spinner: &adw::Spinner,
+    buttons: &Rc<RefCell<Vec<gtk::Button>>>,
+) -> Start {
+    let (status, spinner, buttons) = (status.clone(), spinner.clone(), buttons.clone());
+    Rc::new(move |work: Work, then: Rc<dyn Fn()>| {
+        for button in buttons.borrow().iter() {
+            button.set_sensitive(false);
+        }
+        spinner.set_visible(true);
+        status.set_visible(false);
         let (status, spinner, buttons) = (status.clone(), spinner.clone(), buttons.clone());
-        move |work: Box<dyn FnOnce() -> Result<String, String> + Send>, then: Rc<dyn Fn()>| {
+        in_background(work, move |result| {
             for button in buttons.borrow().iter() {
-                button.set_sensitive(false);
+                button.set_sensitive(true);
             }
-            spinner.set_visible(true);
-            status.set_visible(false);
-            let (status, spinner, buttons) = (status.clone(), spinner.clone(), buttons.clone());
-            in_background(work, move |result| {
-                for button in buttons.borrow().iter() {
-                    button.set_sensitive(true);
-                }
-                spinner.set_visible(false);
-                status.remove_css_class("error");
-                match result {
-                    Ok(said) => status.set_label(&said),
-                    Err(e) => {
-                        status.add_css_class("error");
-                        status.set_label(&format!("It did not work: {e}"));
-                    }
-                }
-                status.set_visible(true);
-                then();
-            });
-        }
-    };
-
-    let mut shows: Vec<Rc<dyn Fn()>> = Vec::new();
-    for app in [App::OpenDeck, App::StreamController] {
-        if streamdeck::state(app) == streamdeck::State::Missing {
-            continue;
-        }
-        let row = adw::ActionRow::new();
-        row.set_title(app.name());
-        let install = gtk::Button::new();
-        install.set_valign(gtk::Align::Center);
-        install.add_css_class("suggested-action");
-        row.add_suffix(&install);
-        let remove = gtk::Button::with_label("Remove");
-        remove.set_valign(gtk::Align::Center);
-        row.add_suffix(&remove);
-        buttons.borrow_mut().push(install.clone());
-        buttons.borrow_mut().push(remove.clone());
-        group.add(&row);
-
-        let show: Rc<dyn Fn()> = Rc::new({
-            let (row, install, remove, profiles) = (
-                row.clone(),
-                install.clone(),
-                remove.clone(),
-                profiles.clone(),
-            );
-            move || {
-                let state = streamdeck::state(app);
-                let installed = matches!(state, streamdeck::State::Installed { .. });
-                match (&state, streamdeck::can_install(app)) {
-                    (streamdeck::State::Installed { current: true }, _) => {
-                        row.set_subtitle("Up to date");
-                    }
-                    (streamdeck::State::Installed { .. }, Err(e)) => {
-                        row.set_subtitle(&format!("Installed. {e}"))
-                    }
-                    (streamdeck::State::Installed { .. }, Ok(())) => {
-                        row.set_subtitle("Update available");
-                    }
-                    (_, Err(e)) => row.set_subtitle(&e),
-                    _ => row.set_subtitle("Not installed"),
-                }
-                // Up to date, it can only be put back as it is.
-                let current = state == streamdeck::State::Installed { current: true };
-                install.set_label(match (installed, current) {
-                    (false, _) => "Install",
-                    (true, false) => "Update",
-                    (true, true) => "Reinstall",
-                });
-                if current {
-                    install.remove_css_class("suggested-action");
-                } else {
-                    install.add_css_class("suggested-action");
-                }
-                install.set_visible(streamdeck::can_install(app).is_ok());
-                remove.set_visible(installed);
-                profiles.set_visible(streamdeck::any_installed());
-            }
-        });
-        show();
-        shows.push(show.clone());
-
-        install.connect_clicked({
-            let (start, saved, show) = (start.clone(), saved.clone(), show.clone());
-            move |_| {
-                let lay_out = saved.borrow().stream_deck_profiles;
-                start(
-                    Box::new(move || streamdeck::install(app, lay_out)),
-                    show.clone(),
-                );
-            }
-        });
-        remove.connect_clicked({
-            let (start, show) = (start.clone(), show.clone());
-            move |_| start(Box::new(move || streamdeck::remove(app)), show.clone())
-        });
-    }
-    group.add(&profiles);
-    // On KDE, the application in front, for Add to Channel: a KWin script
-    // says which window has the focus.
-    if crate::kwin::available() {
-        let front = adw::SwitchRow::new();
-        front.set_title("Application in front");
-        front.set_subtitle("A KWin script tells Pipedeck which window has the focus");
-        front.set_active(crate::kwin::installed());
-        front.connect_active_notify({
-            let (status, spinner) = (status.clone(), spinner.clone());
-            move |row| {
-                if row.is_active() == crate::kwin::installed() {
-                    return;
-                }
-                let on = row.is_active();
-                let result = if on {
-                    crate::kwin::install()
-                } else {
-                    crate::kwin::remove()
-                };
-                spinner.set_visible(false);
-                if let Err(e) = result {
+            spinner.set_visible(false);
+            status.remove_css_class("error");
+            match result {
+                Ok(said) => status.set_label(&said),
+                Err(e) => {
                     status.add_css_class("error");
                     status.set_label(&format!("It did not work: {e}"));
-                    status.set_visible(true);
-                    row.set_active(crate::kwin::installed());
                 }
             }
+            status.set_visible(true);
+            then();
         });
-        group.add(&front);
-    }
-    let show_all: Rc<dyn Fn()> = Rc::new(move || shows.iter().for_each(|show| show()));
-    lay_out
-        .connect_clicked(move |_| start(Box::new(streamdeck::lay_out_profiles), show_all.clone()));
+    })
+}
 
-    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    footer.append(&spinner);
-    footer.append(&status);
-    group.add(&footer);
-    group
+/// A Stream Deck application's row, with its plugin's buttons, and what
+/// shows where its plugin stands again.
+fn app_row(
+    app: App,
+    profiles: &adw::SwitchRow,
+    buttons: &Rc<RefCell<Vec<gtk::Button>>>,
+    start: &Start,
+    saved: &Rc<RefCell<Settings>>,
+) -> (adw::ActionRow, Rc<dyn Fn()>) {
+    let row = adw::ActionRow::new();
+    row.set_title(app.name());
+    let install = gtk::Button::new();
+    install.set_valign(gtk::Align::Center);
+    install.add_css_class("suggested-action");
+    row.add_suffix(&install);
+    let remove = gtk::Button::with_label("Remove");
+    remove.set_valign(gtk::Align::Center);
+    row.add_suffix(&remove);
+    buttons.borrow_mut().push(install.clone());
+    buttons.borrow_mut().push(remove.clone());
+
+    let show: Rc<dyn Fn()> = Rc::new({
+        let (row, install, remove, profiles) = (
+            row.clone(),
+            install.clone(),
+            remove.clone(),
+            profiles.clone(),
+        );
+        move || show_plugin(app, &row, &install, &remove, &profiles)
+    });
+    show();
+
+    install.connect_clicked({
+        let (start, saved, show) = (start.clone(), saved.clone(), show.clone());
+        move |_| {
+            let lay_out = saved.borrow().stream_deck_profiles;
+            start(
+                Box::new(move || streamdeck::install(app, lay_out)),
+                show.clone(),
+            );
+        }
+    });
+    remove.connect_clicked({
+        let (start, show) = (start.clone(), show.clone());
+        move |_| start(Box::new(move || streamdeck::remove(app)), show.clone())
+    });
+    (row, show)
+}
+
+/// Where an application's plugin stands, and which of its buttons make
+/// sense.
+fn show_plugin(
+    app: App,
+    row: &adw::ActionRow,
+    install: &gtk::Button,
+    remove: &gtk::Button,
+    profiles: &adw::SwitchRow,
+) {
+    let state = streamdeck::state(app);
+    let installed = matches!(state, streamdeck::State::Installed { .. });
+    match (&state, streamdeck::can_install(app)) {
+        (streamdeck::State::Installed { current: true }, _) => {
+            row.set_subtitle("Up to date");
+        }
+        (streamdeck::State::Installed { .. }, Err(e)) => {
+            row.set_subtitle(&format!("Installed. {e}"))
+        }
+        (streamdeck::State::Installed { .. }, Ok(())) => {
+            row.set_subtitle("Update available");
+        }
+        (_, Err(e)) => row.set_subtitle(&e),
+        _ => row.set_subtitle("Not installed"),
+    }
+    // Up to date, it can only be put back as it is.
+    let current = state == streamdeck::State::Installed { current: true };
+    install.set_label(match (installed, current) {
+        (false, _) => "Install",
+        (true, false) => "Update",
+        (true, true) => "Reinstall",
+    });
+    if current {
+        install.remove_css_class("suggested-action");
+    } else {
+        install.add_css_class("suggested-action");
+    }
+    install.set_visible(streamdeck::can_install(app).is_ok());
+    remove.set_visible(installed);
+    profiles.set_visible(streamdeck::any_installed());
+}
+
+/// Whether the KWin script that says which window has the focus is
+/// installed, and installing or removing it.
+fn front_row(status: &gtk::Label, spinner: &adw::Spinner) -> adw::SwitchRow {
+    let front = adw::SwitchRow::new();
+    front.set_title("Application in front");
+    front.set_subtitle("A KWin script tells Pipedeck which window has the focus");
+    front.set_active(crate::kwin::installed());
+    front.connect_active_notify({
+        let (status, spinner) = (status.clone(), spinner.clone());
+        move |row| {
+            if row.is_active() == crate::kwin::installed() {
+                return;
+            }
+            let on = row.is_active();
+            let result = if on {
+                crate::kwin::install()
+            } else {
+                crate::kwin::remove()
+            };
+            spinner.set_visible(false);
+            if let Err(e) = result {
+                status.add_css_class("error");
+                status.set_label(&format!("It did not work: {e}"));
+                status.set_visible(true);
+                row.set_active(crate::kwin::installed());
+            }
+        }
+    });
+    front
 }
 
 /// What the plugin for Vesktop is doing, from the thread doing it.
-enum Work {
+enum Progress {
     Says(String),
     Done(Result<(), String>),
+}
+
+/// The Vesktop row's parts, which the work started from it changes.
+#[derive(Clone)]
+struct VesktopRow {
+    row: adw::ActionRow,
+    install: gtk::Button,
+    remove: gtk::Button,
+    spinner: adw::Spinner,
+    status: gtk::Label,
+}
+
+impl VesktopRow {
+    /// Where the plugin stands.
+    fn show(&self) {
+        let installed = vesktop::state() == vesktop::State::Installed;
+        self.row.set_title("Vesktop");
+        if installed {
+            self.row.set_subtitle(&match vesktop::stale() {
+                Some(stale) => stale.reason().to_owned(),
+                None => "Up to date".to_owned(),
+            });
+            self.install.set_label("Update");
+        } else {
+            self.row.set_subtitle("Not installed");
+            self.install.set_label("Install");
+        }
+        self.remove.set_visible(installed);
+    }
+
+    /// Wait for the work running, or stop waiting for it.
+    fn wait(&self, waiting: bool) {
+        self.install.set_sensitive(!waiting);
+        self.remove.set_sensitive(!waiting);
+        self.spinner.set_visible(waiting);
+    }
+
+    /// One started from a window closed since is still running: this one
+    /// says so rather than offering to start another.
+    fn follow_earlier_work(&self) {
+        self.wait(true);
+        self.status.set_label(
+            &vesktop::last_said()
+                .unwrap_or_else(|| "Already at it, from when the settings were last open.".into()),
+        );
+        self.status.set_visible(true);
+        let this = self.clone();
+        // What the work says reaches the window that started it; this one
+        // reads it from where the work keeps it, and how it ended.
+        gtk::glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
+            if let Some(said) = vesktop::last_said() {
+                this.status.set_label(&said);
+            }
+            if vesktop::busy() {
+                return gtk::glib::ControlFlow::Continue;
+            }
+            this.wait(false);
+            this.show();
+            gtk::glib::ControlFlow::Break
+        });
+    }
+
+    /// Install or remove the plugin. The work runs on a thread of its own,
+    /// since building takes a while and waiting for Vesktop to close takes
+    /// as long as the user does.
+    fn start(&self, removing: bool) {
+        self.wait(true);
+        self.status.set_visible(false);
+        let (tx, rx) = async_channel::unbounded::<Progress>();
+        std::thread::spawn(move || {
+            let say = |said: &str| {
+                let _ = tx.send_blocking(Progress::Says(said.to_owned()));
+            };
+            let result = if removing {
+                vesktop::remove(say)
+            } else {
+                vesktop::install(say)
+            };
+            let _ = tx.send_blocking(Progress::Done(result));
+        });
+        let this = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            while let Ok(progress) = rx.recv().await {
+                this.status.set_visible(true);
+                match progress {
+                    Progress::Says(said) => this.status.set_label(&said),
+                    Progress::Done(result) => {
+                        this.status.set_label(&vesktop::last_said().unwrap_or_else(
+                            || match result {
+                                Ok(()) => "Done.".to_owned(),
+                                Err(e) => format!("It did not work: {e}"),
+                            },
+                        ));
+                        this.wait(false);
+                        this.show();
+                    }
+                }
+            }
+        });
+    }
 }
 
 /// Pipedeck's plugin for Vesktop: installed, updated and removed from
@@ -454,133 +601,25 @@ fn vesktop_group() -> adw::PreferencesGroup {
     row.add_suffix(&remove);
     group.add(&row);
 
-    let status = gtk::Label::new(None);
-    status.add_css_class("caption");
-    status.set_wrap(true);
-    status.set_xalign(0.0);
-    status.set_visible(false);
+    let status = status_label();
     group.add(&status);
 
-    let show = {
-        let (row, install, remove) = (row.clone(), install.clone(), remove.clone());
-        move || {
-            let installed = vesktop::state() == vesktop::State::Installed;
-            if installed {
-                row.set_title("Vesktop");
-                row.set_subtitle(&match vesktop::stale() {
-                    Some(stale) => stale.reason().to_owned(),
-                    None => "Up to date".to_owned(),
-                });
-                install.set_label("Update");
-            } else {
-                row.set_title("Vesktop");
-                row.set_subtitle("Not installed");
-                install.set_label("Install");
-            }
-            remove.set_visible(installed);
-        }
+    let vesktop_row = VesktopRow {
+        row,
+        install: install.clone(),
+        remove: remove.clone(),
+        spinner,
+        status,
     };
-    show();
-    // One started from a window closed since is still running: this one
-    // says so rather than offering to start another.
+    vesktop_row.show();
     if vesktop::busy() {
-        install.set_sensitive(false);
-        remove.set_sensitive(false);
-        spinner.set_visible(true);
-        status.set_label(
-            &vesktop::last_said()
-                .unwrap_or_else(|| "Already at it, from when the settings were last open.".into()),
-        );
-        status.set_visible(true);
-        gtk::glib::timeout_add_local(std::time::Duration::from_secs(1), {
-            let (install, remove, spinner, status) = (
-                install.clone(),
-                remove.clone(),
-                spinner.clone(),
-                status.clone(),
-            );
-            let show = show.clone();
-            // What the work says reaches the window that started it; this
-            // one reads it from where the work keeps it, and how it ended.
-            move || {
-                if let Some(said) = vesktop::last_said() {
-                    status.set_label(&said);
-                }
-                if vesktop::busy() {
-                    return gtk::glib::ControlFlow::Continue;
-                }
-                install.set_sensitive(true);
-                remove.set_sensitive(true);
-                spinner.set_visible(false);
-                show();
-                gtk::glib::ControlFlow::Break
-            }
-        });
+        vesktop_row.follow_earlier_work();
     }
-
-    // The work runs on a thread of its own, since building takes a while
-    // and waiting for Vesktop to close takes as long as the user does.
-    let start = {
-        let (install, remove, spinner, status) = (
-            install.clone(),
-            remove.clone(),
-            spinner.clone(),
-            status.clone(),
-        );
-        let show = show.clone();
-        move |removing: bool| {
-            install.set_sensitive(false);
-            remove.set_sensitive(false);
-            spinner.set_visible(true);
-            status.set_visible(false);
-            let (tx, rx) = async_channel::unbounded::<Work>();
-            std::thread::spawn(move || {
-                let say = |said: &str| {
-                    let _ = tx.send_blocking(Work::Says(said.to_owned()));
-                };
-                let result = if removing {
-                    vesktop::remove(say)
-                } else {
-                    vesktop::install(say)
-                };
-                let _ = tx.send_blocking(Work::Done(result));
-            });
-            gtk::glib::spawn_future_local({
-                let (install, remove, spinner, status) = (
-                    install.clone(),
-                    remove.clone(),
-                    spinner.clone(),
-                    status.clone(),
-                );
-                let show = show.clone();
-                async move {
-                    while let Ok(work) = rx.recv().await {
-                        status.set_visible(true);
-                        match work {
-                            Work::Says(said) => status.set_label(&said),
-                            Work::Done(result) => {
-                                status.set_label(&vesktop::last_said().unwrap_or_else(|| {
-                                    match result {
-                                        Ok(()) => "Done.".to_owned(),
-                                        Err(e) => format!("It did not work: {e}"),
-                                    }
-                                }));
-                                spinner.set_visible(false);
-                                install.set_sensitive(true);
-                                remove.set_sensitive(true);
-                                show();
-                            }
-                        }
-                    }
-                }
-            });
-        }
-    };
     install.connect_clicked({
-        let start = start.clone();
-        move |_| start(false)
+        let vesktop_row = vesktop_row.clone();
+        move |_| vesktop_row.start(false)
     });
-    remove.connect_clicked(move |_| start(true));
+    remove.connect_clicked(move |_| vesktop_row.start(true));
     group
 }
 
@@ -658,11 +697,7 @@ fn stereotool_group(
     });
     group.add(key);
 
-    let status = gtk::Label::new(None);
-    status.add_css_class("caption");
-    status.set_wrap(true);
-    status.set_xalign(0.0);
-    status.set_visible(false);
+    let status = status_label();
 
     let import = adw::ActionRow::new();
     import.set_title("Import Stereo Tool");
