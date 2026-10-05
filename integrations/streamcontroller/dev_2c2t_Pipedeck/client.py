@@ -25,6 +25,17 @@ def socket_path() -> str:
     return os.path.join(runtime, "pipedeck", "control.sock")
 
 
+def trusted(path: str) -> bool:
+    """Is the socket's folder the user's own, and closed to others? Pipedeck
+    makes it so; without a runtime directory it is in the shared /tmp, where
+    one that is not was made by someone else."""
+    try:
+        folder = os.stat(os.path.dirname(path))
+    except OSError:
+        return False
+    return folder.st_uid == os.getuid() and folder.st_mode & 0o077 == 0
+
+
 class Pipedeck:
     """The mixer as last told, and a way to tell it things."""
 
@@ -105,6 +116,8 @@ class Pipedeck:
             time.sleep(self.RETRY)
 
     def _follow(self) -> None:
+        if not trusted(self.path):
+            raise PermissionError(f"{self.path} is not in a folder of this user's")
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             sock.connect(self.path)

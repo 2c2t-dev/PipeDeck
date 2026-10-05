@@ -317,7 +317,7 @@ impl Mixer {
 }
 
 fn follow(stream: &Arc<Mutex<Option<UnixStream>>>, changed: &Sender<News>) -> std::io::Result<()> {
-    let mut socket = UnixStream::connect(socket_path())?;
+    let mut socket = connect()?;
     socket.write_all(b"{\"subscribe\": true}\n{\"meters\": true}\n")?;
     if let Ok(mut stream) = stream.lock() {
         *stream = Some(socket.try_clone()?);
@@ -355,12 +355,31 @@ fn follow(stream: &Arc<Mutex<Option<UnixStream>>>, changed: &Sender<News>) -> st
 
 /// Ask the mixer once where things stand. `None` while it is not up yet.
 pub fn fetch() -> std::io::Result<Option<View>> {
-    let mut socket = UnixStream::connect(socket_path())?;
+    let mut socket = connect()?;
     socket.write_all(b"{\"get\": \"state\"}\n")?;
     let mut line = String::new();
     BufReader::new(socket).read_line(&mut line)?;
     let message: Value = serde_json::from_str(&line)?;
     Ok(serde_json::from_value(message["state"].clone())?)
+}
+
+/// Reach the mixer, if its socket is where Pipedeck makes it: in a folder
+/// that is the user's own and closed to others. Without a runtime
+/// directory it is in the shared temporary one, where a folder that is not
+/// was made by someone else, who could pose as the mixer.
+fn connect() -> std::io::Result<UnixStream> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let path = socket_path();
+    let folder = std::fs::symlink_metadata(path.parent().unwrap_or(&path))?;
+    // The process's own folder belongs to whoever runs it.
+    let me = std::fs::metadata("/proc/self")?.uid();
+    if !folder.is_dir() || folder.uid() != me || folder.permissions().mode() & 0o077 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{} is not in a folder of this user's", path.display()),
+        ));
+    }
+    UnixStream::connect(path)
 }
 
 fn socket_path() -> PathBuf {
