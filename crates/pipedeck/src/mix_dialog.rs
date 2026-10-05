@@ -186,7 +186,7 @@ impl MixDialog {
 
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
-        view.set_content(Some(&panes));
+        view.set_content(Some(&widgets::scrolling(&panes)));
         view.upcast()
     }
 

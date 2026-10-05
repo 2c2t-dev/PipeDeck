@@ -290,3 +290,14 @@ pub fn card_title(label: &str) -> (gtk::Box, gtk::Label) {
     row.append(&title);
     (row, title)
 }
+
+/// A dialog's content, scrolled when the window it opens over is shorter
+/// than it: a floating dialog does not shrink below what it holds, and
+/// libadwaita complains on every frame when that is more than the window
+/// has.
+pub fn scrolling(content: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroller.set_child(Some(content));
+    scroller
+}
