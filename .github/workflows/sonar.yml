@@ -35,7 +35,8 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup unzip \
-            pipewire pipewire-audio wireplumber dbus
+            pipewire pipewire-audio wireplumber dbus \
+            python python-pillow python-cairosvg python-coverage
           rustup default stable
           rustup component add clippy llvm-tools-preview
 
@@ -70,6 +71,15 @@ jobs:
           cargo llvm-cov --workspace --no-report
           cargo llvm-cov run -p pipedeck-engine --example smoke --no-report
           cargo llvm-cov report --lcov --output-path lcov.info
+      - name: The Python tests' coverage
+        if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
+        run: |
+          python -m coverage run -p --source=integrations/streamcontroller/dev_2c2t_Pipedeck \
+            -m unittest discover -s integrations/streamcontroller/tests
+          python -m coverage run -p --source=site --omit='site/tests/*' \
+            -m unittest discover -s site/tests
+          python -m coverage combine
+          python -m coverage xml -o python-coverage.xml
       - name: What PipeWire and WirePlumber said
         if: failure()
         run: tail -n 50 /tmp/runtime/logs/*.log

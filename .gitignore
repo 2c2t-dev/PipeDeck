@@ -3,3 +3,6 @@
 /_site
 /clippy.json
 /lcov.info
+/python-coverage.xml
+.coverage*
+__pycache__/

@@ -56,6 +56,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+For a change to the StreamController plugin or to the website, their
+tests run with Python's own `unittest` (the plugin's drawing needs
+`cairosvg` and Pillow, which StreamController has too):
+
+```sh
+python -m unittest discover -s integrations/streamcontroller/tests
+python -m unittest discover -s site/tests
+```
+
 For a change to the engine, also run the checks against the live PipeWire
 server. They run beside your own Pipedeck without touching it:
 

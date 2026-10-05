@@ -22,7 +22,8 @@ jobs:
       - name: Install the system libraries
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup
+            base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup \
+            python python-pillow python-cairosvg
           rustup default stable
           rustup component add clippy rustfmt
 
@@ -38,6 +39,13 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace
+
+      # The StreamController plugin's connection and drawing, and the
+      # website's build.
+      - name: Python tests
+        run: |
+          python -m unittest discover -s integrations/streamcontroller/tests
+          python -m unittest discover -s site/tests
 
       # The oldest Rust Pipedeck says it builds with, read where it says so.
       - name: Oldest supported Rust

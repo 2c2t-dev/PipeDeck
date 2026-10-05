@@ -23,8 +23,8 @@ ORIGIN = "https://pipedeck.2c2t.dev"
 LANGUAGES = ["en", "fr", "de", "es", "it"]
 # The page each language's folder opens on.
 HOME = "index.html"
-# Not copied as they are: what the pages are made from.
-SOURCES = {"pages", "i18n", "build.py"}
+# Not copied as they are: what the pages are made from, and its tests.
+SOURCES = {"pages", "i18n", "build.py", "tests", "__pycache__"}
 
 
 def prefix(lang):
