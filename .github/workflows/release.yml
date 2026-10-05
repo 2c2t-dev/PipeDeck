@@ -29,7 +29,7 @@ jobs:
       - run: packaging/package.sh deb dist
       - uses: actions/upload-artifact@v7
         with:
-          name: deb
+          name: release-deb
           path: dist/*.deb
 
   rpm:
@@ -48,7 +48,7 @@ jobs:
       - run: packaging/package.sh rpm dist
       - uses: actions/upload-artifact@v7
         with:
-          name: rpm
+          name: release-rpm
           path: dist/*.rpm
 
   appimage:
@@ -70,15 +70,22 @@ jobs:
       - run: packaging/package.sh appimage dist
       - uses: actions/upload-artifact@v7
         with:
-          name: appimage
+          name: release-appimage
           path: dist/*.AppImage
+
+  # The Flatpak, its bundle for the release and its repository for the
+  # site; see flatpak.yml.
+  flatpak:
+    uses: ./.github/workflows/flatpak.yml
+    secrets: inherit
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [deb, rpm, appimage]
+    needs: [deb, rpm, appimage, flatpak]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v7
       # The packages are named after Cargo.toml's version: a tag that says
@@ -109,6 +116,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: dist
+          pattern: release-*
           merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:
@@ -116,3 +124,11 @@ jobs:
           fail_on_unmatched_files: true
           body_path: notes.md
           generate_release_notes: true
+      # The site serves the latest release's Flatpak repository: it is
+      # published again with it. A release made with this workflow's token
+      # starts no workflow of its own, but asking for one does.
+      - name: Publish the site with the new Flatpak repository
+        if: hashFiles('dist/pipedeck-flatpak-repo.tar.gz') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run site.yml --repo "$GITHUB_REPOSITORY" --ref main

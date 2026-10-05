@@ -17,3 +17,10 @@
 # would leave unstyled.
 /sitemap.xml
   ! Content-Security-Policy
+
+# What adds the Flatpak repository, and what installs Pipedeck from it:
+# with their own types, a browser hands them to GNOME Software or Discover.
+/pipedeck.flatpakrepo
+  Content-Type: application/vnd.flatpak.repo
+/dev._2c2t.Pipedeck.flatpakref
+  Content-Type: application/vnd.flatpak.ref

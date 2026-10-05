@@ -43,6 +43,18 @@ jobs:
           mkdir -p _site/assets
           cp .github/mixer-*.png .github/equaliser-*.png .github/social-preview.png _site/assets/
           cp crates/pipedeck/data/dev._2c2t.Pipedeck.svg _site/assets/icon.svg
+      # The latest release's Flatpak repository, under /repo, with the
+      # .flatpakrepo and .flatpakref that point at it.
+      - name: Take the Flatpak repository
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release download --repo "$GITHUB_REPOSITORY" --pattern pipedeck-flatpak-repo.tar.gz --dir "$RUNNER_TEMP"; then
+            tar -xzf "$RUNNER_TEMP/pipedeck-flatpak-repo.tar.gz" -C _site
+          else
+            echo "::notice::The latest release has no Flatpak repository; the site serves none."
+          fi
       # The pictures as WebP, at the size they are shown and at twice that,
       # which the page offers before the full PNGs.
       - name: Draw the pictures smaller

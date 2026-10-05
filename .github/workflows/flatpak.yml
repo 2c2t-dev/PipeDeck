@@ -1,10 +1,20 @@
 name: Flatpak
 
-# Builds Pipedeck as a Flatpak, as Flathub would, and checks it against
-# Flathub's rules. Started by hand from the Actions tab, or by a change to
-# the manifest; the bundle is kept on the run, to install and try.
+# Builds Pipedeck as a Flatpak, as Flathub would, checks it against
+# Flathub's rules, and makes the signed repository pipedeck.2c2t.dev serves
+# it from, with the .flatpakrepo and .flatpakref that point at it. Started
+# by hand, by a change to the manifest, or by a release, which puts the
+# bundle on it and the repository on the site.
+#
+# The repository is signed with the FLATPAK_GPG_KEY secret, an armoured
+# private key without a passphrase. Without it, a key made for the run and
+# thrown away signs it, to try it, and a release publishes none.
 on:
   workflow_dispatch:
+  workflow_call:
+    secrets:
+      FLATPAK_GPG_KEY:
+        required: false
   push:
     branches: [main]
     paths:
@@ -34,12 +44,27 @@ jobs:
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
       options: --privileged
+    env:
+      FLATPAK_GPG_KEY: ${{ secrets.FLATPAK_GPG_KEY }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: cargo-sources
           path: packaging/flatpak
+      - name: Take the signing key
+        id: key
+        shell: bash
+        run: |
+          if [ -n "$FLATPAK_GPG_KEY" ]; then
+            printf '%s\n' "$FLATPAK_GPG_KEY" | gpg --batch --import
+            echo "real=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::FLATPAK_GPG_KEY is not set: a key made for this run signs the repository, which is not published."
+            gpg --batch --passphrase '' --quick-gen-key 'Pipedeck test <test@invalid>' rsa3072 sign never
+            echo "real=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "id=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')" >> "$GITHUB_OUTPUT"
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
           bundle: pipedeck.flatpak
@@ -47,7 +72,57 @@ jobs:
           cache-key: flatpak-builder-${{ github.sha }}
           # As Flathub's builds do, so its rules about screenshots hold.
           mirror-screenshots-url: https://dl.flathub.org/media
+          branch: stable
+          gpg-sign: ${{ steps.key.outputs.id }}
+          upload-artifact: false
       - name: Check against Flathub's rules
         run: |
           flatpak-builder-lint manifest packaging/flatpak/dev._2c2t.Pipedeck.yml
           flatpak-builder-lint repo repo
+      # The repository as the site serves it, under /repo, signed down to
+      # its summary, with what a user adds it and installs from by: the
+      # key is in both, so nothing else is to be fetched.
+      - name: Make the repository
+        shell: bash
+        run: |
+          key=${{ steps.key.outputs.id }}
+          flatpak build-update-repo --gpg-sign="$key" --generate-static-deltas --prune repo
+          key64=$(gpg --export "$key" | base64 -w0)
+          mkdir -p published
+          cp -r repo published/repo
+          cat > published/pipedeck.flatpakrepo <<EOF
+          [Flatpak Repo]
+          Title=Pipedeck
+          Url=https://pipedeck.2c2t.dev/repo/
+          Homepage=https://pipedeck.2c2t.dev/
+          Comment=The PipeWire mixer for Linux streamers
+          Icon=https://pipedeck.2c2t.dev/assets/icon.svg
+          GPGKey=$key64
+          EOF
+          cat > published/dev._2c2t.Pipedeck.flatpakref <<EOF
+          [Flatpak Ref]
+          Name=dev._2c2t.Pipedeck
+          Branch=stable
+          Title=Pipedeck
+          Url=https://pipedeck.2c2t.dev/repo/
+          SuggestRemoteName=pipedeck
+          RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+          IsRuntime=false
+          GPGKey=$key64
+          EOF
+          echo "$(find published -type f | wc -l) files, $(du -sh published | cut -f1)"
+          tar -czf pipedeck-flatpak-repo.tar.gz -C published .
+          version=${GITHUB_REF_NAME#v}
+          case "$GITHUB_REF" in refs/tags/*) ;; *) version=dev ;; esac
+          mkdir -p bundle
+          cp pipedeck.flatpak "bundle/Pipedeck-$version-x86_64.flatpak"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-flatpak
+          path: bundle/*.flatpak
+      # Only one signed with the real key may go on a release, and so on
+      # the site.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.key.outputs.real == 'true' && 'release-flatpak-repo' || 'flatpak-repo-test' }}
+          path: pipedeck-flatpak-repo.tar.gz
