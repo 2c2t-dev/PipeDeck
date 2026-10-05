@@ -39,15 +39,17 @@ modules:
   - name: pipedeck
     buildsystem: simple
     build-commands:
-      - cargo --offline build --release --locked -p pipedeck
-      # OpenDeck runs the plugin program outside the sandbox, on whatever
-      # libraries the system has: it is linked statically.
+      - cargo --offline build --release --locked -p pipedeck -p pipedeck-opendeck
+      # OpenDeck runs the plugin program outside the sandbox, on the
+      # system's glibc rather than the runtime's: it may ask for no glibc
+      # newer than 2.34, which Debian 12, Ubuntu 22.04 and Fedora 35 have.
       - >-
-        RUSTFLAGS="-C target-feature=+crt-static"
-        cargo --offline build --release --locked -p pipedeck-opendeck
-        --target x86_64-unknown-linux-gnu
+        newest=$(objdump -T target/release/pipedeck-opendeck
+        | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1);
+        echo "pipedeck-opendeck needs $newest";
+        test "$(printf '%s\nGLIBC_2.34\n' "$newest" | sort -V | tail -n 1)" = GLIBC_2.34
       - install -Dm755 target/release/pipedeck /app/bin/pipedeck
-      - install -Dm755 target/x86_64-unknown-linux-gnu/release/pipedeck-opendeck /app/bin/pipedeck-opendeck
+      - install -Dm755 target/release/pipedeck-opendeck /app/bin/pipedeck-opendeck
       - install -Dm644 crates/pipedeck/data/dev._2c2t.Pipedeck.desktop /app/share/applications/dev._2c2t.Pipedeck.desktop
       - install -Dm644 crates/pipedeck/data/dev._2c2t.Pipedeck.metainfo.xml /app/share/metainfo/dev._2c2t.Pipedeck.metainfo.xml
       - install -Dm644 crates/pipedeck/data/dev._2c2t.Pipedeck.svg /app/share/icons/hicolor/scalable/apps/dev._2c2t.Pipedeck.svg
