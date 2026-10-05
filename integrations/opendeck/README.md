@@ -85,12 +85,14 @@ with OpenDeck closed.
   column of mixes and a column of mixes to hear, the output device last.
 
 A microphone's effects, noise suppression and the like, get a Channel
-Effect key each in what is left: the keys first, then the dials.
+Effect key each on the keys left; a dial is not given one.
 
-Each has a **Call** key, which says how many are in the call and goes to a
-second profile, **Pipedeck Call**: a person of the call on every dial and
-key, by their place in it, so it follows the call as people come and go
-without being laid out again, and a key back to the mixer. With **Follow
+Each has a **Call** key, which goes to a second profile, **Pipedeck
+Call**: a person of the call on every dial and key, by their place in it,
+so it follows the call as people come and go without being laid out again,
+and a key back to the mixer. OpenDeck lets no plugin but its own Starter
+Pack switch profiles, so these two keys are the Starter Pack's **Switch
+Profile**, drawn as Pipedeck's keys are. With **Follow
 calls** ticked in a Call key's settings, every deck showing a Pipedeck
 profile goes to the call's as a call starts, and back as it ends; a deck on
 a profile of your own is left there.

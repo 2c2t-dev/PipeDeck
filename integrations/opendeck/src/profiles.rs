@@ -14,6 +14,9 @@
 //! Each has a Call key, to a second profile, "Pipedeck Call": the people
 //! of a Discord call by their place in it, on the dials first and then the
 //! keys, so it follows the call as people come and go; and a key back.
+//! OpenDeck lets no plugin but its own Starter Pack switch a deck's
+//! profile, so those two keys are the Starter Pack's Switch Profile,
+//! drawn as Pipedeck's keys are.
 //!
 //! StreamController gets the same, as pages: it keeps pages apart from
 //! decks, so there is a pair for each kind of deck, named after it, and a
@@ -28,7 +31,21 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 use crate::deck::{CALL_PROFILE, MIXER_PROFILE, PLUGIN};
+use crate::draw::{self, Picture, State};
 use crate::mixer::View;
+
+/// OpenDeck's Starter Pack, which comes with it, and its action that
+/// switches a deck's profile.
+const STARTER_PACK: &str = "com.amansprojects.starterpack";
+const SWITCH_PROFILE: &str = "com.amansprojects.starterpack.switchprofile";
+
+/// The manifests of the plugins a profile's actions come from. Without the
+/// Starter Pack, the Call key is Pipedeck's own, which OpenDeck does not
+/// let switch profiles.
+struct Manifests {
+    pipedeck: Value,
+    starter_pack: Option<Value>,
+}
 
 /// What a key or a dial is given: one of the plugin's actions, and its
 /// settings.
@@ -206,14 +223,10 @@ fn layout(model: Model, view: &View) -> Layout {
         Model::Plus => plus_layout(&mut layout, view),
         Model::Xl => xl_layout(&mut layout, view),
     }
-    // The microphone's effects in what is left: the keys first, then the
-    // dials.
+    // The microphone's effects on the keys left: switched off and on, they
+    // are worth a key, not a dial.
     let mut effects = microphone_effects(view).into_iter();
-    let free = layout
-        .keys
-        .iter_mut()
-        .chain(layout.dials.iter_mut())
-        .filter(|slot| slot.is_none());
+    let free = layout.keys.iter_mut().filter(|slot| slot.is_none());
     for (slot, effect) in free.zip(&mut effects) {
         *slot = effect;
     }
@@ -269,24 +282,42 @@ fn xl_layout(layout: &mut Layout, view: &View) {
 
 /// An action where OpenDeck keeps it in a profile: its manifest entry,
 /// where it is, and its settings.
-fn instance(manifest: &Value, controller: &str, position: usize, slot: &Slot) -> Value {
+fn instance(manifests: &Manifests, controller: &str, position: usize, slot: &Slot) -> Value {
     let Some((name, settings)) = slot else {
         return Value::Null;
     };
-    let uuid = format!("{PLUGIN}.{name}");
+    let (plugin, manifest, uuid, settings, image) = match &manifests.starter_pack {
+        Some(starter_pack) if *name == "call" => {
+            let back = settings["page"] == "mixer";
+            let profile = if back { MIXER_PROFILE } else { CALL_PROFILE };
+            (
+                STARTER_PACK,
+                starter_pack,
+                SWITCH_PROFILE.to_owned(),
+                json!({ "profile": profile }),
+                draw::data_url(&page_key(back)),
+            )
+        }
+        _ => (
+            PLUGIN,
+            &manifests.pipedeck,
+            format!("{PLUGIN}.{name}"),
+            settings.clone(),
+            format!("plugins/{PLUGIN}.sdPlugin/icons/{name}.svg"),
+        ),
+    };
     let Some(action) = manifest["Actions"]
         .as_array()
         .and_then(|actions| actions.iter().find(|a| a["UUID"] == uuid.as_str()))
     else {
         return Value::Null;
     };
-    let folder = format!("plugins/{PLUGIN}.sdPlugin");
-    let image = format!("{folder}/icons/{name}.svg");
+    let folder = format!("plugins/{plugin}.sdPlugin");
     json!({
         "action": {
             "name": action["Name"],
             "uuid": uuid,
-            "plugin": format!("{PLUGIN}.sdPlugin"),
+            "plugin": format!("{plugin}.sdPlugin"),
             "tooltip": action["Tooltip"],
             "icon": image,
             "disable_automatic_states": false,
@@ -311,10 +342,30 @@ fn instance(manifest: &Value, controller: &str, position: usize, slot: &Slot) ->
     })
 }
 
-fn profile(layout: &Layout, manifest: &Value) -> Value {
+/// The Call key's picture, or the key back's, as Pipedeck's own Call key
+/// draws them.
+fn page_key(back: bool) -> String {
+    let (name, look, below) = if back {
+        ("Mixer", ("pd-listen-symbolic", draw::WHITE), "Back")
+    } else {
+        ("Call", draw::look(Some("people"), false, false), "People")
+    };
+    draw::key(&Picture {
+        name,
+        look,
+        corner: None,
+        level: None,
+        meter: None,
+        state: State::default(),
+        below: (below, "#ffffff"),
+        avatar: None,
+    })
+}
+
+fn profile(layout: &Layout, manifests: &Manifests) -> Value {
     json!({
-        "keys": layout.keys.iter().enumerate().map(|(i, slot)| instance(manifest, "Keypad", i, slot)).collect::<Vec<_>>(),
-        "sliders": layout.dials.iter().enumerate().map(|(i, slot)| instance(manifest, "Encoder", i, slot)).collect::<Vec<_>>(),
+        "keys": layout.keys.iter().enumerate().map(|(i, slot)| instance(manifests, "Keypad", i, slot)).collect::<Vec<_>>(),
+        "sliders": layout.dials.iter().enumerate().map(|(i, slot)| instance(manifests, "Encoder", i, slot)).collect::<Vec<_>>(),
         "infobars": [],
     })
 }
@@ -352,12 +403,20 @@ pub fn write_all() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("cannot reach Pipedeck, is it running? ({e})"))?
         .ok_or("Pipedeck is not ready yet")?;
     let config = config_dir();
-    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(
-        config
+    let manifest = |plugin: &str| -> Result<Value, Box<dyn std::error::Error>> {
+        let path = config
             .join("plugins")
-            .join(format!("{PLUGIN}.sdPlugin"))
-            .join("manifest.json"),
-    )?)?;
+            .join(format!("{plugin}.sdPlugin"))
+            .join("manifest.json");
+        Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+    };
+    let manifests = Manifests {
+        pipedeck: manifest(PLUGIN)?,
+        starter_pack: manifest(STARTER_PACK).ok(),
+    };
+    if manifests.starter_pack.is_none() {
+        println!("OpenDeck's Starter Pack is not installed: the Call key cannot switch profiles");
+    }
     let mut written = 0;
     for device in std::fs::read_dir(config.join("profiles"))? {
         let device = device?.path();
@@ -376,7 +435,7 @@ pub fn write_all() -> Result<(), Box<dyn std::error::Error>> {
             let path = device.join(format!("{name}.json"));
             std::fs::write(
                 &path,
-                serde_json::to_string_pretty(&profile(&layout, &manifest))?,
+                serde_json::to_string_pretty(&profile(&layout, &manifests))?,
             )?;
             println!(
                 "{id}: {} profile written to {}",
@@ -555,12 +614,10 @@ mod tests {
             deck.keys[3].as_ref().unwrap().1["effect"],
             "Noise suppression"
         );
-        // A Stream Deck + has no key left: a dial takes it.
+        // A Stream Deck + has no key left, and a dial is no place for it.
         let plus = layout(Model::Plus, &view);
-        assert_eq!(
-            names(&plus.dials),
-            ["channel", "channel", "channel", "effect"]
-        );
+        assert_eq!(names(&plus.dials), ["channel", "channel", "channel", "-"]);
+        assert!(!names(&plus.keys).contains(&"effect"));
     }
 
     #[test]
@@ -614,9 +671,16 @@ mod tests {
 
     #[test]
     fn a_profile_is_as_opendeck_keeps_it() {
-        let manifest: Value =
-            serde_json::from_str(include_str!("../plugin/manifest.json")).unwrap();
-        let profile = profile(&layout(Model::Plus, &view()), &manifest);
+        let manifests = Manifests {
+            pipedeck: serde_json::from_str(include_str!("../plugin/manifest.json")).unwrap(),
+            starter_pack: Some(json!({ "Actions": [{
+                "Name": "Switch Profile",
+                "UUID": SWITCH_PROFILE,
+                "Controllers": ["Keypad", "Encoder"],
+                "PropertyInspectorPath": "propertyInspector/switchProfile.html",
+            }]})),
+        };
+        let profile = profile(&layout(Model::Plus, &view()), &manifests);
         assert_eq!(profile["keys"].as_array().unwrap().len(), 8);
         assert_eq!(profile["sliders"][0]["context"], "Encoder.0.0");
         assert_eq!(
@@ -625,5 +689,40 @@ mod tests {
         );
         assert_eq!(profile["sliders"][3], Value::Null);
         assert_eq!(profile["keys"][7]["settings"]["device2"], "speakers");
+    }
+
+    #[test]
+    fn the_call_key_and_the_key_back_are_the_starter_packs() {
+        let starter_pack =
+            json!({ "Actions": [{ "Name": "Switch Profile", "UUID": SWITCH_PROFILE }] });
+        let manifests = Manifests {
+            pipedeck: serde_json::from_str(include_str!("../plugin/manifest.json")).unwrap(),
+            starter_pack: Some(starter_pack),
+        };
+        let mixer = profile(&layout(Model::Plus, &view()), &manifests);
+        let call = &mixer["keys"][3];
+        assert_eq!(call["action"]["uuid"], SWITCH_PROFILE);
+        assert_eq!(
+            call["action"]["plugin"],
+            "com.amansprojects.starterpack.sdPlugin"
+        );
+        assert_eq!(call["settings"], json!({ "profile": CALL_PROFILE }));
+        assert!(call["states"][0]["image"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/svg+xml;base64,"));
+        let back = profile(&call_layout(Model::Plus), &manifests);
+        assert_eq!(
+            back["keys"][7]["settings"],
+            json!({ "profile": MIXER_PROFILE })
+        );
+
+        // Without it, the key is Pipedeck's own.
+        let alone = Manifests {
+            starter_pack: None,
+            ..manifests
+        };
+        let mixer = profile(&layout(Model::Plus, &view()), &alone);
+        assert_eq!(mixer["keys"][3]["action"]["uuid"], format!("{PLUGIN}.call"));
     }
 }
