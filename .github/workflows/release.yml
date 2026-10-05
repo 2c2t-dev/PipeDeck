@@ -92,14 +92,20 @@ jobs:
             exit 1
           fi
       # The release's notes: this version's section of the changelog, which
-      # GitHub's own list of what was merged follows.
+      # GitHub's own list of what was merged follows. Its lines are joined
+      # back up, since GitHub breaks a release's lines where the file does.
       - name: Take the notes from the changelog
         run: |
           awk -v v="${GITHUB_REF_NAME#v}" '
             index($0, "## [" v "]") == 1 { on = 1; next }
             on && (/^## \[/ || /^\[[^]]+\]: /) { exit }
             on { print }
-          ' CHANGELOG.md | sed '/./,$!d' > notes.md
+          ' CHANGELOG.md | sed '/./,$!d' | awk '
+            /^$/ || /^#/ { if (line != "") print line; print; line = ""; next }
+            /^- / { if (line != "") print line; line = $0; next }
+            { sub(/^ +/, ""); line = line == "" ? $0 : line " " $0 }
+            END { if (line != "") print line }
+          ' > notes.md
       - uses: actions/download-artifact@v8
         with:
           path: dist
