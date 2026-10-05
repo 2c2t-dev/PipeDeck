@@ -572,7 +572,6 @@ impl Model {
     /// The commands an action comes to, with the model moved on.
     fn decide(&mut self, action: Action) -> Result<Vec<Command>, String> {
         let state = self.state.as_mut().ok_or("the mixer is not up yet")?;
-        let mut commands = Vec::new();
         match action {
             Action::Channel { id, change } => {
                 let source = state
@@ -580,16 +579,12 @@ impl Model {
                     .iter_mut()
                     .find(|source| source.id.0 == id)
                     .ok_or(format!("no channel {id}"))?;
-                let (gain, muted) = apply(change, source.gain, source.muted);
+                let (gain, muted) = changed(change, &mut source.gain, &mut source.muted);
                 let id = SourceId(id);
-                if gain != source.gain {
-                    source.gain = gain;
-                    commands.push(Command::SetSourceGain { id, gain });
-                }
-                if muted != source.muted {
-                    source.muted = muted;
-                    commands.push(Command::SetSourceMute { id, muted });
-                }
+                Ok(both(
+                    gain.map(|gain| Command::SetSourceGain { id, gain }),
+                    muted.map(|muted| Command::SetSourceMute { id, muted }),
+                ))
             }
             Action::Mix { id, change } => {
                 let mix = state
@@ -597,16 +592,12 @@ impl Model {
                     .iter_mut()
                     .find(|mix| mix.id.0 == id)
                     .ok_or(format!("no mix {id}"))?;
-                let (gain, muted) = apply(change, mix.gain, mix.muted);
+                let (gain, muted) = changed(change, &mut mix.gain, &mut mix.muted);
                 let id = MixId(id);
-                if gain != mix.gain {
-                    mix.gain = gain;
-                    commands.push(Command::SetMixGain { id, gain });
-                }
-                if muted != mix.muted {
-                    mix.muted = muted;
-                    commands.push(Command::SetMixMute { id, muted });
-                }
+                Ok(both(
+                    gain.map(|gain| Command::SetMixGain { id, gain }),
+                    muted.map(|muted| Command::SetMixMute { id, muted }),
+                ))
             }
             Action::Cell {
                 channel,
@@ -618,16 +609,12 @@ impl Model {
                     .iter_mut()
                     .find(|link| link.source.0 == channel && link.mix.0 == mix)
                     .ok_or(format!("channel {channel} does not feed mix {mix}"))?;
-                let (gain, muted) = apply(change, link.gain, link.muted);
+                let (gain, muted) = changed(change, &mut link.gain, &mut link.muted);
                 let (source, mix) = (SourceId(channel), MixId(mix));
-                if gain != link.gain {
-                    link.gain = gain;
-                    commands.push(Command::SetLinkGain { source, mix, gain });
-                }
-                if muted != link.muted {
-                    link.muted = muted;
-                    commands.push(Command::SetLinkMute { source, mix, muted });
-                }
+                Ok(both(
+                    gain.map(|gain| Command::SetLinkGain { source, mix, gain }),
+                    muted.map(|muted| Command::SetLinkMute { source, mix, muted }),
+                ))
             }
             Action::Voice {
                 channel,
@@ -640,88 +627,31 @@ impl Model {
                     .find(|source| source.id.0 == channel)
                     .and_then(|source| source.voices.iter_mut().find(|voice| voice.id == user))
                     .ok_or(format!("nobody called {user} on channel {channel}"))?;
-                let (gain, muted) = apply(change, voice.gain, voice.muted);
+                let (gain, muted) = changed(change, &mut voice.gain, &mut voice.muted);
                 let id = SourceId(channel);
-                if gain != voice.gain {
-                    voice.gain = gain;
-                    commands.push(Command::SetVoiceGain {
+                Ok(both(
+                    gain.map(|gain| Command::SetVoiceGain {
                         id,
                         user: user.clone(),
                         gain,
-                    });
-                }
-                if muted != voice.muted {
-                    voice.muted = muted;
-                    commands.push(Command::SetVoiceMute { id, user, muted });
-                }
+                    }),
+                    muted.map(|muted| Command::SetVoiceMute { id, user, muted }),
+                ))
             }
             Action::Hear {
                 mix,
                 listening,
                 only,
-            } => {
-                if !state.mixes.iter().any(|m| m.id.0 == mix) {
-                    return Err(format!("no mix {mix}"));
-                }
-                // Where the engine will hear it: see `Graph::set_listening`.
-                let device = state
-                    .listen_device
-                    .clone()
-                    .or_else(|| self.outputs.first().map(|d| d.name.clone()))
-                    .ok_or("there is no device to listen on")?;
-                state.listen_device = Some(device.clone());
-                for cfg in &mut state.mixes {
-                    let now = heard(cfg, Some(&device));
-                    let wanted = if cfg.id.0 == mix {
-                        match listening {
-                            Some(switch) => switch.turn(now),
-                            None => only || now,
-                        }
-                    } else {
-                        now && !only
-                    };
-                    if wanted == now {
-                        continue;
-                    }
-                    match cfg.outputs.iter_mut().find(|o| o.device == device) {
-                        Some(output) => output.enabled = wanted,
-                        None => cfg
-                            .outputs
-                            .push(crate::types::MixOutput::new(device.clone())),
-                    }
-                    commands.push(Command::SetListening {
-                        id: cfg.id,
-                        listening: wanted,
-                    });
-                }
-            }
+            } => hear(state, &self.outputs, mix, listening, only),
             Action::Listen { device } => {
                 state.listen_device = Some(device.clone());
-                commands.push(Command::SetListenDevice(device));
+                Ok(vec![Command::SetListenDevice(device)])
             }
             Action::Effect {
                 channel,
                 index,
                 bypass,
-            } => {
-                let effect = state
-                    .sources
-                    .iter_mut()
-                    .find(|source| source.id.0 == channel)
-                    .ok_or(format!("no channel {channel}"))?
-                    .effects
-                    .get_mut(index)
-                    .ok_or(format!("channel {channel} has no effect {index}"))?;
-                let bypassed = bypass.turn(effect.bypassed);
-                if bypassed != effect.bypassed {
-                    effect.bypassed = bypassed;
-                    commands.push(Command::SetEffectBypass {
-                        id: SourceId(channel),
-                        index,
-                        bypassed,
-                    });
-                }
-            }
+            } => bypass_effect(state, channel, index, bypass),
             Action::App {
                 app,
                 focused,
@@ -740,26 +670,122 @@ impl Model {
                         .ok_or("no application playing in the window in front")?,
                     _ => return Err("an application, or the one in front".into()),
                 };
-                let id = SourceId(channel);
-                if release {
-                    if let Some(source) = state.sources.iter_mut().find(|s| s.id == id) {
-                        source.apps.retain(|key| *key != app);
-                    }
-                    commands.push(Command::ReleaseApp { id, app });
-                } else {
-                    // An application is on one channel at a time.
-                    for source in &mut state.sources {
-                        source.apps.retain(|key| *key != app);
-                    }
-                    if let Some(source) = state.sources.iter_mut().find(|s| s.id == id) {
-                        source.apps.push(app.clone());
-                    }
-                    commands.push(Command::AssignApp { id, app });
-                }
+                Ok(move_app(state, app, channel, release))
             }
         }
-        Ok(commands)
     }
+}
+
+/// A level and a mute after a change, written into them: what is new of
+/// each, if anything.
+fn changed(change: Change, gain: &mut f32, muted: &mut bool) -> (Option<f32>, Option<bool>) {
+    let (new_gain, new_muted) = apply(change, *gain, *muted);
+    let gain_changed = (new_gain != *gain).then(|| {
+        *gain = new_gain;
+        new_gain
+    });
+    let muted_changed = (new_muted != *muted).then(|| {
+        *muted = new_muted;
+        new_muted
+    });
+    (gain_changed, muted_changed)
+}
+
+/// The commands for a level and a mute, whichever changed.
+fn both(gain: Option<Command>, muted: Option<Command>) -> Vec<Command> {
+    gain.into_iter().chain(muted).collect()
+}
+
+/// Hear a mix in the headphones, or not, or it alone.
+fn hear(
+    state: &mut StateSnapshot,
+    outputs: &[Device],
+    mix: u32,
+    listening: Option<Switch>,
+    only: bool,
+) -> Result<Vec<Command>, String> {
+    if !state.mixes.iter().any(|m| m.id.0 == mix) {
+        return Err(format!("no mix {mix}"));
+    }
+    // Where the engine will hear it: see `Graph::set_listening`.
+    let device = state
+        .listen_device
+        .clone()
+        .or_else(|| outputs.first().map(|d| d.name.clone()))
+        .ok_or("there is no device to listen on")?;
+    state.listen_device = Some(device.clone());
+    let mut commands = Vec::new();
+    for cfg in &mut state.mixes {
+        let now = heard(cfg, Some(&device));
+        let wanted = if cfg.id.0 == mix {
+            match listening {
+                Some(switch) => switch.turn(now),
+                None => only || now,
+            }
+        } else {
+            now && !only
+        };
+        if wanted == now {
+            continue;
+        }
+        match cfg.outputs.iter_mut().find(|o| o.device == device) {
+            Some(output) => output.enabled = wanted,
+            None => cfg
+                .outputs
+                .push(crate::types::MixOutput::new(device.clone())),
+        }
+        commands.push(Command::SetListening {
+            id: cfg.id,
+            listening: wanted,
+        });
+    }
+    Ok(commands)
+}
+
+/// Switch one of a channel's effects off or on.
+fn bypass_effect(
+    state: &mut StateSnapshot,
+    channel: u32,
+    index: usize,
+    bypass: Switch,
+) -> Result<Vec<Command>, String> {
+    let effect = state
+        .sources
+        .iter_mut()
+        .find(|source| source.id.0 == channel)
+        .ok_or(format!("no channel {channel}"))?
+        .effects
+        .get_mut(index)
+        .ok_or(format!("channel {channel} has no effect {index}"))?;
+    let bypassed = bypass.turn(effect.bypassed);
+    if bypassed == effect.bypassed {
+        return Ok(Vec::new());
+    }
+    effect.bypassed = bypassed;
+    Ok(vec![Command::SetEffectBypass {
+        id: SourceId(channel),
+        index,
+        bypassed,
+    }])
+}
+
+/// Put an application on a channel, or take it off.
+fn move_app(state: &mut StateSnapshot, app: String, channel: u32, release: bool) -> Vec<Command> {
+    let id = SourceId(channel);
+    if release {
+        if let Some(source) = state.sources.iter_mut().find(|s| s.id == id) {
+            source.apps.retain(|key| *key != app);
+        }
+        return vec![Command::ReleaseApp { id, app }];
+    }
+    // An application is on one channel at a time.
+    for source in &mut state.sources {
+        source.apps.retain(|key| *key != app);
+    }
+    if let Some(source) = state.sources.iter_mut().find(|s| s.id == id) {
+        source.apps.push(app.clone());
+    }
+    vec![Command::AssignApp { id, app }]
 }
 
 /// A level and a mute after a change: set, moved and kept in range, muted
@@ -912,14 +938,196 @@ struct Done {
     error: Option<String>,
 }
 
+/// The mixer as the model tells it now.
+fn view_of(model: &Arc<Mutex<Model>>) -> Option<View> {
+    model.lock().ok().and_then(|model| model.view())
+}
+
+/// One client, and what it is owed when it goes.
+struct Client {
+    writer: Arc<Mutex<UnixStream>>,
+    commands: pw::channel::Sender<Command>,
+    model: Arc<Mutex<Model>>,
+    /// Whether it said who is in a call, which ends with it.
+    in_call: bool,
+}
+
+impl Client {
+    /// Do what one line asks. False once the client or the engine is gone.
+    fn handle(&mut self, message: Message) -> bool {
+        if let Some(members) = message.call {
+            if !self.call(members) {
+                return false;
+            }
+        }
+        if message.get.as_deref() == Some("state")
+            && !say(
+                &self.writer,
+                &StateLine {
+                    state: view_of(&self.model),
+                },
+            )
+        {
+            return false;
+        }
+        if message.subscribe == Some(true) && !self.subscribe() {
+            return false;
+        }
+        if message.meters == Some(true) {
+            self.meters();
+        }
+        match message.action {
+            Some(action) => self.act(action),
+            None => true,
+        }
+    }
+
+    /// Who is in the call: passed on, and answered with how each is shown.
+    fn call(&mut self, members: Vec<CallMember>) -> bool {
+        let labels = voice_labels(&members);
+        let answer = Answer {
+            labels: members
+                .iter()
+                .map(|member| member.id.clone())
+                .zip(labels)
+                .collect(),
+        };
+        self.in_call = !members.is_empty();
+        self.commands.send(Command::SetCall { members }).is_ok() && say(&self.writer, &answer)
+    }
+
+    /// Told now, and then on a thread of its own after every change, as one
+    /// line however many changes came meanwhile.
+    fn subscribe(&self) -> bool {
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut model) = self.model.lock() {
+            model.subscribers.push(tx);
+        }
+        let told = view_of(&self.model);
+        if !say(
+            &self.writer,
+            &StateLine {
+                state: told.clone(),
+            },
+        ) {
+            return false;
+        }
+        let (writer, model) = (self.writer.clone(), self.model.clone());
+        let _ = std::thread::Builder::new()
+            .name("pipedeck-subscriber".into())
+            .spawn(move || follow_state(&rx, &writer, &model, told));
+        true
+    }
+
+    /// The meters, on a thread of their own.
+    fn meters(&self) {
+        let (tx, rx) = mpsc::channel::<Peaks>();
+        if let Ok(mut model) = self.model.lock() {
+            model.meter_listeners.push(tx);
+        }
+        let writer = self.writer.clone();
+        let _ = std::thread::Builder::new()
+            .name("pipedeck-meters".into())
+            .spawn(move || pass_meters(&rx, &writer));
+    }
+
+    /// Do an action, and say whether it was done.
+    fn act(&self, action: Action) -> bool {
+        let acted = self
+            .model
+            .lock()
+            .map_err(|_| "the mixer's state is poisoned".to_owned())
+            .and_then(|mut model| {
+                let commands = model.act(action)?;
+                model.tell();
+                Ok(commands)
+            });
+        let done = match acted {
+            Ok(acts) => {
+                if acts
+                    .into_iter()
+                    .any(|command| self.commands.send(command).is_err())
+                {
+                    return false;
+                }
+                Done {
+                    ok: Some(true),
+                    error: None,
+                }
+            }
+            Err(e) => Done {
+                ok: None,
+                error: Some(e),
+            },
+        };
+        say(&self.writer, &done)
+    }
+}
+
+/// Tell a subscriber the mixer after every change, until it goes.
+fn follow_state(
+    changes: &mpsc::Receiver<()>,
+    writer: &Mutex<UnixStream>,
+    model: &Arc<Mutex<Model>>,
+    mut told: Option<View>,
+) {
+    while changes.recv().is_ok() {
+        while changes.try_recv().is_ok() {}
+        // A change made here is told once when made and again when the
+        // engine says it was done.
+        let now = view_of(model);
+        if now == told {
+            continue;
+        }
+        if !say(writer, &StateLine { state: now.clone() }) {
+            break;
+        }
+        told = now;
+    }
+}
+
+/// Measured twenty times a second; passed on ten times, the loudest of each
+/// pair, which a key redrawn over USB keeps up with. Silence is said once,
+/// not again until it is broken.
+fn pass_meters(peaks_in: &mpsc::Receiver<Peaks>, writer: &Mutex<UnixStream>) {
+    let mut quiet = false;
+    loop {
+        std::thread::sleep(METER_PACE);
+        let mut peaks = Peaks::default();
+        loop {
+            match peaks_in.try_recv() {
+                Ok(read) => peaks.merge(read),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return,
+            }
+        }
+        let silent = peaks.silent();
+        if silent && quiet {
+            continue;
+        }
+        quiet = silent;
+        if !say(
+            writer,
+            &LevelsLine {
+                levels: peaks.rounded(),
+            },
+        ) {
+            return;
+        }
+    }
+}
+
 /// Answer one client until it goes.
 fn serve(stream: UnixStream, commands: pw::channel::Sender<Command>, model: Arc<Mutex<Model>>) {
     let Ok(writer) = stream.try_clone() else {
         return;
     };
-    let writer = Arc::new(Mutex::new(writer));
-    let view = |model: &Arc<Mutex<Model>>| model.lock().ok().and_then(|model| model.view());
-    let mut in_call = false;
+    let mut client = Client {
+        writer: Arc::new(Mutex::new(writer)),
+        commands,
+        model,
+        in_call: false,
+    };
     for line in BufReader::new(stream).lines() {
         let Ok(line) = line else {
             break;
@@ -927,153 +1135,20 @@ fn serve(stream: UnixStream, commands: pw::channel::Sender<Command>, model: Arc<
         if line.trim().is_empty() {
             continue;
         }
-        let message: Message = match serde_json::from_str(&line) {
-            Ok(message) => message,
+        let keep_going = match serde_json::from_str::<Message>(&line) {
+            Ok(message) => client.handle(message),
             Err(e) => {
                 log::warn!("a client said something unclear: {e}");
                 let error = Some(format!("not understood: {e}"));
-                if !say(&writer, &Done { ok: None, error }) {
-                    break;
-                }
-                continue;
+                say(&client.writer, &Done { ok: None, error })
             }
         };
-
-        if let Some(members) = message.call {
-            let labels = voice_labels(&members);
-            let answer = Answer {
-                labels: members
-                    .iter()
-                    .map(|member| member.id.clone())
-                    .zip(labels)
-                    .collect(),
-            };
-            in_call = !members.is_empty();
-            if commands.send(Command::SetCall { members }).is_err() || !say(&writer, &answer) {
-                break;
-            }
-        }
-
-        if message.get.as_deref() == Some("state")
-            && !say(
-                &writer,
-                &StateLine {
-                    state: view(&model),
-                },
-            )
-        {
+        if !keep_going {
             break;
         }
-
-        if message.subscribe == Some(true) {
-            // Told now, and then on a thread of its own after every change,
-            // as one line however many changes came meanwhile.
-            let (tx, rx) = mpsc::channel();
-            if let Ok(mut model) = model.lock() {
-                model.subscribers.push(tx);
-            }
-            let mut told = view(&model);
-            if !say(
-                &writer,
-                &StateLine {
-                    state: told.clone(),
-                },
-            ) {
-                break;
-            }
-            let (writer, model) = (writer.clone(), model.clone());
-            let _ = std::thread::Builder::new()
-                .name("pipedeck-subscriber".into())
-                .spawn(move || {
-                    while rx.recv().is_ok() {
-                        while rx.try_recv().is_ok() {}
-                        // A change made here is told once when made and
-                        // again when the engine says it was done.
-                        let now = view(&model);
-                        if now == told {
-                            continue;
-                        }
-                        if !say(&writer, &StateLine { state: now.clone() }) {
-                            break;
-                        }
-                        told = now;
-                    }
-                });
-        }
-
-        if message.meters == Some(true) {
-            // Measured twenty times a second; passed on ten times, the
-            // loudest of each pair, which a key redrawn over USB keeps up
-            // with. Silence is said once, not again until it is broken.
-            let (tx, rx) = mpsc::channel::<Peaks>();
-            if let Ok(mut model) = model.lock() {
-                model.meter_listeners.push(tx);
-            }
-            let writer = writer.clone();
-            let _ = std::thread::Builder::new()
-                .name("pipedeck-meters".into())
-                .spawn(move || {
-                    let mut quiet = false;
-                    loop {
-                        std::thread::sleep(METER_PACE);
-                        let mut peaks = Peaks::default();
-                        loop {
-                            match rx.try_recv() {
-                                Ok(read) => peaks.merge(read),
-                                Err(mpsc::TryRecvError::Empty) => break,
-                                Err(mpsc::TryRecvError::Disconnected) => return,
-                            }
-                        }
-                        let silent = peaks.silent();
-                        if silent && quiet {
-                            continue;
-                        }
-                        quiet = silent;
-                        if !say(
-                            &writer,
-                            &LevelsLine {
-                                levels: peaks.rounded(),
-                            },
-                        ) {
-                            return;
-                        }
-                    }
-                });
-        }
-
-        if let Some(action) = message.action {
-            let acted = model
-                .lock()
-                .map_err(|_| "the mixer's state is poisoned".to_owned())
-                .and_then(|mut model| {
-                    let commands = model.act(action)?;
-                    model.tell();
-                    Ok(commands)
-                });
-            let done = match acted {
-                Ok(acts) => {
-                    for command in acts {
-                        if commands.send(command).is_err() {
-                            return;
-                        }
-                    }
-                    Done {
-                        ok: Some(true),
-                        error: None,
-                    }
-                }
-                Err(e) => Done {
-                    ok: None,
-                    error: Some(e),
-                },
-            };
-            if !say(&writer, &done) {
-                break;
-            }
-        }
     }
-    if in_call {
-        let _ = commands.send(Command::SetCall {
+    if client.in_call {
+        let _ = client.commands.send(Command::SetCall {
             members: Vec::new(),
         });
     }
