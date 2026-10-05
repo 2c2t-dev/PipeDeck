@@ -63,6 +63,11 @@ server. They run beside your own Pipedeck without touching it:
 cargo run -p pipedeck-engine --example smoke
 ```
 
+The smoke test also runs after every push to `main`, in a container,
+against a PipeWire with no sound card that
+`.github/scripts/headless-pipewire.sh` starts; sourced in a container of
+your own, it gives you the same.
+
 The other checks, each run with `cargo run -p pipedeck-engine --example
 <name>`:
 

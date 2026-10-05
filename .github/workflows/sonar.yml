@@ -34,7 +34,8 @@ jobs:
         if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup unzip
+            base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup unzip \
+            pipewire pipewire-audio wireplumber dbus
           rustup default stable
           rustup component add clippy llvm-tools-preview
 
@@ -57,9 +58,21 @@ jobs:
       - name: Clippy's findings
         if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
         run: cargo clippy --workspace --all-targets --message-format=json > clippy.json
-      - name: The tests' coverage
+      # The tests, and the smoke test against a PipeWire with no sound card,
+      # which is what runs the engine's graph for real: their coverage
+      # together.
+      - name: The tests' coverage, the smoke test's included
         if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          source .github/scripts/headless-pipewire.sh
+          cargo llvm-cov --workspace --no-report
+          cargo llvm-cov run -p pipedeck-engine --example smoke --no-report
+          cargo llvm-cov report --lcov --output-path lcov.info
+      - name: What PipeWire and WirePlumber said
+        if: failure()
+        run: tail -n 50 /tmp/runtime/logs/*.log
 
       - uses: SonarSource/sonarqube-scan-action@v8
         if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''

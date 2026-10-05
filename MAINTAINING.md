@@ -50,7 +50,9 @@ it publishes nothing.
 
 The *Sonar* workflow analyses the repository on 2c2t's SonarQube Server
 after every push to `main`: the Rust, with Clippy's findings and the
-tests' coverage, the plugins, the website and the workflows. It needs the
+coverage of the tests and of the smoke test, run against a PipeWire with
+no sound card in the workflow's container; the plugins, the website and
+the workflows. It needs the
 `SONAR_TOKEN` and `SONAR_HOST_URL` secrets; the project's key is in
 `sonar-project.properties`.
 
