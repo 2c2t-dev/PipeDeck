@@ -67,6 +67,8 @@
   "deb_for": "Debian 13, Ubuntu 25.04 e successivi",
   "rpm_for": "Fedora 42 e successivi",
   "appimage_for": "Altre distribuzioni con glibc 2.41 o successiva",
+  "flatpak_for": "Qualsiasi distribuzione, aggiornato insieme alle Sue altre applicazioni.",
+  "flatpak_oneclick": "Oppure lo installi con un clic.",
   "source_title": "Dal codice sorgente",
   "source_text": "Con gli header di PipeWire, GTK e libadwaita, clang, pkg-config e Rust 1.92 o successivo:",
   "copy": "Copia",
