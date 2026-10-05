@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-05
+
 ### Added
 
 - The mixer can be exported to a file and imported from one, in the
@@ -17,6 +19,14 @@ follow [Semantic Versioning](https://semver.org/).
   started by hand around installing its plugin and laying out its
   profiles; StreamController's and Vesktop's plugins are installed from
   outside; and the application in front, which needs KWin, is left out.
+
+### Fixed
+
+- A channel's and a mix's windows scroll when the mixer's window is too
+  short for them, rather than spilling out of it.
+- When building Vesktop's plugin fails, Pipedeck says which step failed and
+  why, and keeps all of what it printed in
+  `~/.cache/pipedeck/vencord-build.log`.
 
 ## [0.1.1] - 2026-10-05
 
@@ -74,6 +84,7 @@ The first release.
   closed, and starting with the session.
 - .deb, .rpm and AppImage packages.
 
-[Unreleased]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/2c2t-dev/PipeDeck/releases/tag/v0.1.0

@@ -79,6 +79,16 @@
   </requires>
 
   <releases>
+    <release version="0.1.2" date="2026-10-05">
+      <description>
+        <ul>
+          <li>The mixer can be exported to a file and imported from one, in the settings, without the Stereo Tool key</li>
+          <li>Pipedeck runs as a Flatpak</li>
+          <li>A channel's and a mix's windows scroll when the mixer's window is too short for them</li>
+          <li>When building Vesktop's plugin fails, Pipedeck says which step failed and why</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-10-05">
       <description>
         <ul>
