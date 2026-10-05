@@ -33,10 +33,22 @@ jobs:
       - name: Install the system libraries
         if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
         run: |
-          pacman -Syu --noconfirm --needed \
-            base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup unzip \
-            pipewire pipewire-audio wireplumber dbus \
-            python python-pillow python-cairosvg python-coverage
+          # A mirror that drops a download fails the whole install: others are
+          # kept behind it, which pacman turns to file by file, and the install
+          # is tried again a couple of times.
+          printf 'Server = %s\n' \
+            'https://geo.mirror.pkgbuild.com/$repo/os/$arch' \
+            'https://mirrors.kernel.org/archlinux/$repo/os/$arch' \
+            'https://mirror.rackspace.com/archlinux/$repo/os/$arch' >> /etc/pacman.d/mirrorlist
+          for attempt in 1 2 3; do
+            pacman -Syu --noconfirm --needed \
+              base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup unzip \
+              pipewire pipewire-audio wireplumber dbus \
+              python python-pillow python-cairosvg python-coverage && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "::warning::Installing the packages failed; trying again"
+            sleep 15
+          done
           rustup default stable
           rustup component add clippy llvm-tools-preview
 

@@ -21,9 +21,21 @@ jobs:
     steps:
       - name: Install the system libraries
         run: |
-          pacman -Syu --noconfirm --needed \
-            base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup \
-            python python-pillow python-cairosvg dbus appstream
+          # A mirror that drops a download fails the whole install: others are
+          # kept behind it, which pacman turns to file by file, and the install
+          # is tried again a couple of times.
+          printf 'Server = %s\n' \
+            'https://geo.mirror.pkgbuild.com/$repo/os/$arch' \
+            'https://mirrors.kernel.org/archlinux/$repo/os/$arch' \
+            'https://mirror.rackspace.com/archlinux/$repo/os/$arch' >> /etc/pacman.d/mirrorlist
+          for attempt in 1 2 3; do
+            pacman -Syu --noconfirm --needed \
+              base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup \
+              python python-pillow python-cairosvg dbus appstream && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "::warning::Installing the packages failed; trying again"
+            sleep 15
+          done
           rustup default stable
           rustup component add clippy rustfmt
 
