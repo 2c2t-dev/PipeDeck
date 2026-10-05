@@ -207,17 +207,23 @@ fn build_and_point(say: &impl Fn(&str)) -> Result<(), String> {
     let _ = std::fs::remove_file(dist().join(MARKER));
     if dir.join(".git").is_dir() {
         say("Updating Vencord…");
-        run(crate::launcher::host_command("git")
-            .args(["pull", "--ff-only", "--quiet"])
-            .current_dir(&dir))?;
+        run(
+            "Updating Vencord",
+            crate::launcher::host_command("git")
+                .args(["pull", "--ff-only", "--quiet"])
+                .current_dir(&dir),
+        )?;
     } else {
         say("Downloading Vencord…");
         if let Some(parent) = dir.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        run(crate::launcher::host_command("git")
-            .args(["clone", "--quiet", "--depth", "1", VENCORD_REPO])
-            .arg(&dir))?;
+        run(
+            "Downloading Vencord",
+            crate::launcher::host_command("git")
+                .args(["clone", "--quiet", "--depth", "1", VENCORD_REPO])
+                .arg(&dir),
+        )?;
     }
 
     let plugin = dir.join("src").join("userplugins").join(PLUGIN_DIR);
@@ -229,13 +235,19 @@ fn build_and_point(say: &impl Fn(&str)) -> Result<(), String> {
     // Vencord is built with the pnpm its package names, fetched by npx.
     let pnpm = format!("pnpm@{}", pnpm_version(&dir)?);
     say("Fetching what Vencord is built with…");
-    run(crate::launcher::host_command("npx")
-        .args(["--yes", &pnpm, "install", "--frozen-lockfile", "--silent"])
-        .current_dir(&dir))?;
+    run(
+        "Fetching what Vencord is built with",
+        crate::launcher::host_command("npx")
+            .args(["--yes", &pnpm, "install", "--frozen-lockfile", "--silent"])
+            .current_dir(&dir),
+    )?;
     say("Building Vencord with the plugin…");
-    run(crate::launcher::host_command("npx")
-        .args(["--yes", &pnpm, "build"])
-        .current_dir(&dir))?;
+    run(
+        "Building Vencord",
+        crate::launcher::host_command("npx")
+            .args(["--yes", &pnpm, "build"])
+            .current_dir(&dir),
+    )?;
     let renderer = std::fs::read_to_string(dist().join("vencordDesktopRenderer.js"))
         .map_err(|e| format!("the build left no Vesktop files: {e}"))?;
     if !renderer.contains(PLUGIN_NAME) {
@@ -413,15 +425,43 @@ fn pnpm_version(dir: &Path) -> Result<String, String> {
         .ok_or_else(|| "Vencord's package names no pnpm".into())
 }
 
-/// Run a program, and say what it said if it failed.
-fn run(command: &mut Command) -> Result<(), String> {
-    let output = command.output().map_err(|e| e.to_string())?;
+/// Run one step of the build, and say which failed and why if one does.
+/// What a program prints when it fails ends as often in a stack or an
+/// object as in its reason, so the line naming the error is what is said,
+/// and the whole of it is kept in a log beside Vencord.
+fn run(step: &str, command: &mut Command) -> Result<(), String> {
+    let output = command.output().map_err(|e| format!("{step}: {e}"))?;
     if output.status.success() {
         return Ok(());
     }
-    let said = String::from_utf8_lossy(&output.stderr);
-    let last: Vec<&str> = said.lines().rev().take(4).collect();
-    Err(last.into_iter().rev().collect::<Vec<_>>().join("\n"))
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log = build_log();
+    let kept = std::fs::write(&log, &said).is_ok();
+    let mut reason = reason_in(&said);
+    if kept {
+        reason.push_str(&format!(" (all of it is in {})", log.display()));
+    }
+    Err(format!("{step} failed: {reason}"))
+}
+
+/// Where the output of a failed step is kept.
+fn build_log() -> PathBuf {
+    vencord_dir().with_file_name("vencord-build.log")
+}
+
+/// The line of a failed program's output that names what went wrong: the
+/// first that says error, or else the last that says anything.
+fn reason_in(said: &str) -> String {
+    let lines = || said.lines().map(str::trim).filter(|line| !line.is_empty());
+    lines()
+        .find(|line| line.to_lowercase().contains("error"))
+        .or_else(|| lines().next_back())
+        .unwrap_or("it said nothing")
+        .to_owned()
 }
 
 fn read_json(path: &Path) -> Result<Value, String> {
@@ -447,6 +487,22 @@ fn edit_json(path: &Path, change: impl FnOnce(&mut Value)) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_is_said_by_the_line_naming_it() {
+        let node = "node:internal/modules/cjs/loader:1234\n  throw err;\n\n\
+                    Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:x\n\
+                    at Module._load (node:internal)\n{\n  code: 'ERR_UNKNOWN_BUILTIN_MODULE'\n}\n";
+        assert_eq!(
+            reason_in(node),
+            "Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:x"
+        );
+        assert_eq!(
+            reason_in("fatal: not a git repository\n"),
+            "fatal: not a git repository"
+        );
+        assert_eq!(reason_in("\n  \n"), "it said nothing");
+    }
 
     #[test]
     fn the_plugin_is_carried_whole() {
