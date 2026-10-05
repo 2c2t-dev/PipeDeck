@@ -13,6 +13,7 @@ Nothing here knows about StreamController, so it can be tried on its own:
 import json
 import os
 import socket
+import tempfile
 import threading
 import time
 import weakref
@@ -21,14 +22,17 @@ from typing import Callable, Optional
 
 
 def socket_path() -> str:
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    """Where Pipedeck listens: in the runtime directory, or failing one in
+    the temporary directory, which the engine and the other plugins pick
+    the same way."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
     return os.path.join(runtime, "pipedeck", "control.sock")
 
 
 def trusted(path: str) -> bool:
     """Is the socket's folder the user's own, and closed to others? Pipedeck
-    makes it so; without a runtime directory it is in the shared /tmp, where
-    one that is not was made by someone else."""
+    makes it so; without a runtime directory it is in the shared temporary
+    directory, where one that is not was made by someone else."""
     try:
         folder = os.stat(os.path.dirname(path))
     except OSError:
