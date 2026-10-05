@@ -370,43 +370,20 @@ impl EqGraph {
             }
         });
 
-        // Hovering says which band, or which zone, is under the pointer.
         let motion = gtk::EventControllerMotion::new();
         motion.connect_motion({
             let this = Rc::downgrade(self);
             move |_, x, y| {
-                let Some(this) = this.upgrade() else {
-                    return;
-                };
-                if this.dragging() {
-                    return;
-                }
-                let near = this.nearest(x, y);
-                let zone = if near.is_some() {
-                    None
-                } else {
-                    let freq = x_to_freq(x, f64::from(this.area.width()));
-                    ZONES.iter().position(|z| freq >= z.from && freq < z.to)
-                };
-                if near != this.hovered.get() || zone != this.zone.get() {
-                    this.hovered.set(near);
-                    this.zone.set(zone);
-                    this.say();
-                    this.area.queue_draw();
+                if let Some(this) = this.upgrade() {
+                    this.hover(x, y);
                 }
             }
         });
         motion.connect_leave({
             let this = Rc::downgrade(self);
             move |_| {
-                let Some(this) = this.upgrade() else {
-                    return;
-                };
-                if !this.dragging() {
-                    this.hovered.set(None);
-                    this.zone.set(None);
-                    this.say();
-                    this.area.queue_draw();
+                if let Some(this) = this.upgrade() {
+                    this.leave();
                 }
             }
         });
@@ -421,34 +398,18 @@ impl EqGraph {
             let this = Rc::downgrade(self);
             let grabbed = grabbed.clone();
             move |_, x, y| {
-                let Some(this) = this.upgrade() else {
-                    return;
-                };
-                let near = this.nearest(x, y);
-                grabbed.set(near.map(|band| {
-                    let (hx, hy) = this.handle(band);
-                    (band, hx, hy)
-                }));
-                if let Some(band) = near {
-                    this.select(band);
+                if let Some(this) = this.upgrade() {
+                    grabbed.set(this.grab(x, y));
                 }
-                this.hovered.set(near);
-                this.zone.set(None);
-                this.say();
-                this.area.queue_draw();
             }
         });
         drag.connect_drag_update({
             let this = Rc::downgrade(self);
             let grabbed = grabbed.clone();
             move |_, dx, dy| {
-                let Some(this) = this.upgrade() else {
-                    return;
-                };
-                let Some((band, x, y)) = grabbed.get() else {
-                    return;
-                };
-                this.move_band(band, x + dx, y + dy);
+                if let (Some(this), Some((band, x, y))) = (this.upgrade(), grabbed.get()) {
+                    this.move_band(band, x + dx, y + dy);
+                }
             }
         });
         drag.connect_drag_end({
@@ -457,62 +418,113 @@ impl EqGraph {
         });
         self.area.add_controller(drag);
 
-        // Scrolling over a bell makes it wider or narrower.
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         scroll.connect_scroll({
             let this = Rc::downgrade(self);
             move |_, _, dy| {
-                let Some(this) = this.upgrade() else {
-                    return gtk::glib::Propagation::Proceed;
-                };
-                let Some(band) = this.hovered.get() else {
-                    return gtk::glib::Propagation::Proceed;
-                };
-                let Some(q) = BAND_LAYOUT[band].q else {
-                    return gtk::glib::Propagation::Proceed;
-                };
-                let factor = if dy > 0.0 { 1.0 / 1.15 } else { 1.15 };
-                let spec = &PARAMS[q];
-                {
-                    let mut values = this.values.borrow_mut();
-                    values[q] = (values[q] * factor).clamp(spec.min, spec.max);
-                }
-                this.after_change(band);
-                gtk::glib::Propagation::Stop
+                this.upgrade()
+                    .map_or(gtk::glib::Propagation::Proceed, |this| this.widen(dy))
             }
         });
         self.area.add_controller(scroll);
 
-        // A double-click puts a band back flat.
         let click = gtk::GestureClick::new();
         click.connect_pressed({
             let this = Rc::downgrade(self);
             move |_, presses, x, y| {
-                let Some(this) = this.upgrade() else {
-                    return;
-                };
-                if presses != 2 {
-                    return;
-                }
-                let Some(band) = this.nearest(x, y) else {
-                    return;
-                };
-                let layout = BAND_LAYOUT[band];
-                {
-                    let mut values = this.values.borrow_mut();
-                    match layout.gain {
-                        Some(gain) => values[gain] = 0.0,
-                        // The low cut has no gain: flat is off.
-                        None => values[layout.freq] = LOW_CUT_OFF,
-                    }
-                    if let Some(q) = layout.q {
-                        values[q] = PARAMS[q].default;
+                if let Some(this) = this.upgrade() {
+                    if presses == 2 {
+                        this.flatten_at(x, y);
                     }
                 }
-                this.after_change(band);
             }
         });
         self.area.add_controller(click);
+    }
+
+    /// Hovering says which band, or which zone, is under the pointer.
+    fn hover(&self, x: f64, y: f64) {
+        if self.dragging() {
+            return;
+        }
+        let near = self.nearest(x, y);
+        let zone = if near.is_some() {
+            None
+        } else {
+            let freq = x_to_freq(x, f64::from(self.area.width()));
+            ZONES.iter().position(|z| freq >= z.from && freq < z.to)
+        };
+        if near != self.hovered.get() || zone != self.zone.get() {
+            self.hovered.set(near);
+            self.zone.set(zone);
+            self.say();
+            self.area.queue_draw();
+        }
+    }
+
+    fn leave(&self) {
+        if !self.dragging() {
+            self.hovered.set(None);
+            self.zone.set(None);
+            self.say();
+            self.area.queue_draw();
+        }
+    }
+
+    /// Take the band under the pointer, if any: which, and where its
+    /// handle was.
+    fn grab(&self, x: f64, y: f64) -> Option<(usize, f64, f64)> {
+        let near = self.nearest(x, y);
+        let grabbed = near.map(|band| {
+            let (hx, hy) = self.handle(band);
+            (band, hx, hy)
+        });
+        if let Some(band) = near {
+            self.select(band);
+        }
+        self.hovered.set(near);
+        self.zone.set(None);
+        self.say();
+        self.area.queue_draw();
+        grabbed
+    }
+
+    /// Scrolling over a bell makes it wider or narrower.
+    fn widen(&self, dy: f64) -> gtk::glib::Propagation {
+        let Some(band) = self.hovered.get() else {
+            return gtk::glib::Propagation::Proceed;
+        };
+        let Some(q) = BAND_LAYOUT[band].q else {
+            return gtk::glib::Propagation::Proceed;
+        };
+        let factor = if dy > 0.0 { 1.0 / 1.15 } else { 1.15 };
+        let spec = &PARAMS[q];
+        {
+            let mut values = self.values.borrow_mut();
+            values[q] = (values[q] * factor).clamp(spec.min, spec.max);
+        }
+        self.after_change(band);
+        gtk::glib::Propagation::Stop
+    }
+
+    /// A double-click puts a band back flat.
+    fn flatten_at(&self, x: f64, y: f64) {
+        let Some(band) = self.nearest(x, y) else {
+            return;
+        };
+        let layout = BAND_LAYOUT[band];
+        {
+            let mut values = self.values.borrow_mut();
+            match layout.gain {
+                Some(gain) => values[gain] = 0.0,
+                // The low cut has no gain: flat is off.
+                None => values[layout.freq] = LOW_CUT_OFF,
+            }
+            if let Some(q) = layout.q {
+                values[q] = PARAMS[q].default;
+            }
+        }
+        self.after_change(band);
     }
 
     fn dragging(&self) -> bool {
