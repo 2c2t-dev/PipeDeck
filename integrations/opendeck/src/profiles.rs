@@ -313,33 +313,50 @@ fn instance(manifests: &Manifests, controller: &str, position: usize, slot: &Slo
         return Value::Null;
     };
     let folder = format!("plugins/{plugin}.sdPlugin");
-    json!({
-        "action": {
-            "name": action["Name"],
-            "uuid": uuid,
-            "plugin": format!("{plugin}.sdPlugin"),
-            "tooltip": action["Tooltip"],
-            "icon": image,
-            "disable_automatic_states": false,
-            "visible_in_action_list": true,
-            "supported_in_multi_actions": true,
-            "property_inspector": format!("{folder}/{}", action["PropertyInspectorPath"].as_str().unwrap_or_default()),
-            "controllers": action["Controllers"],
-            "encoder": {
-                "icon": if plugin == PLUGIN { format!("icons/{name}") } else { image.clone() },
-                "stack_color": "",
-                "trigger_description": action["Encoder"]["TriggerDescription"],
-                "background": "",
-                "layout": action["Encoder"]["layout"],
-            },
-            "states": [{ "image": image }],
+    // What a manifest leaves out is left out here too: OpenDeck takes a
+    // null for a wrong type and throws the whole profile away.
+    let action = without_nulls(json!({
+        "name": action["Name"],
+        "uuid": uuid,
+        "plugin": format!("{plugin}.sdPlugin"),
+        "tooltip": action["Tooltip"],
+        "icon": image,
+        "disable_automatic_states": false,
+        "visible_in_action_list": true,
+        "supported_in_multi_actions": true,
+        "property_inspector": format!("{folder}/{}", action["PropertyInspectorPath"].as_str().unwrap_or_default()),
+        "controllers": action["Controllers"],
+        "encoder": {
+            "icon": if plugin == PLUGIN { format!("icons/{name}") } else { image.clone() },
+            "stack_color": "",
+            "trigger_description": action["Encoder"]["TriggerDescription"],
+            "background": "",
+            "layout": action["Encoder"]["layout"],
         },
+        "states": [{ "image": image }],
+    }));
+    json!({
+        "action": action,
         "context": format!("{controller}.{position}.0"),
         "states": [{ "image": image }],
         "current_state": 0,
         "settings": settings,
         "children": null,
     })
+}
+
+/// A value with its null fields taken out, all the way down.
+fn without_nulls(value: Value) -> Value {
+    match value {
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, without_nulls(v)))
+                .collect(),
+        ),
+        other => other,
+    }
 }
 
 /// The Call key's picture, or the key back's, drawn as Pipedeck's keys
@@ -711,6 +728,17 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("data:image/svg+xml;base64,"));
+        // A manifest's action with no dial says nothing of one, which
+        // OpenDeck must not be given as null.
+        fn nulls(value: &Value) -> bool {
+            match value {
+                Value::Null => true,
+                Value::Object(fields) => fields.values().any(nulls),
+                Value::Array(items) => items.iter().any(nulls),
+                _ => false,
+            }
+        }
+        assert!(!nulls(&call["action"]), "{}", call["action"]);
         let back = profile(&call_layout(Model::Plus), &manifests);
         assert_eq!(
             back["keys"][7]["settings"],
