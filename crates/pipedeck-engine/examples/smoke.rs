@@ -1455,6 +1455,66 @@ fn main() -> ExitCode {
         });
         settle();
 
+        // With two channels made for voice chat, which one is meant cannot
+        // be told: Vesktop is put on neither, and the user is told.
+        engine
+            .send(Command::ReleaseApp {
+                id: source,
+                app: VOICE_APP.into(),
+            })
+            .unwrap();
+        wait_state(&rx, "Vesktop on no channel", |s| {
+            s.sources.iter().all(|row| row.apps.is_empty())
+        });
+        engine
+            .send(Command::AddSource {
+                name: "Second chat".into(),
+                device: None,
+                icon: Some("voice".into()),
+            })
+            .unwrap();
+        let second = wait_state(&rx, "a second voice chat", |s| s.sources.len() == 2)
+            .sources
+            .iter()
+            .find(|row| row.id != source)
+            .map(|row| row.id)
+            .expect("the second voice chat");
+        drain(&rx);
+        engine
+            .send(Command::SetCall {
+                members: vec![pipedeck_engine::CallMember {
+                    id: "444".into(),
+                    name: "Dave".into(),
+                    avatar: None,
+                }],
+            })
+            .unwrap();
+        let told = wait_for(
+            &rx,
+            "told to put Vesktop on a channel",
+            |e| matches!(e, Event::Notice(said) if said.contains("on no channel")),
+        );
+        check(
+            matches!(told, Event::Notice(_)),
+            "a call with two voice chats puts Vesktop on neither, and says so",
+            &mut failures,
+        );
+        engine
+            .send(Command::SetCall {
+                members: Vec::new(),
+            })
+            .unwrap();
+        engine.send(Command::RemoveSource(second)).unwrap();
+        let state = wait_state(&rx, "the second voice chat removed", |s| {
+            s.sources.len() == 1
+        });
+        check(
+            state.sources.iter().all(|row| row.apps.is_empty()),
+            "nor is Vesktop put anywhere when there is no telling where",
+            &mut failures,
+        );
+        settle();
+
         engine
             .send(Command::AssignApp {
                 id: source,
@@ -2103,6 +2163,19 @@ fn main() -> ExitCode {
          [[link]]\nsource = 7\nmix = 5\n",
     )
     .expect("cannot write the mixer to import");
+    // A file that is not there is said so, and changes nothing.
+    drain(&rx);
+    engine
+        .send(Command::ImportConfig(dir.join("nothing.toml")))
+        .unwrap();
+    let said = wait_for(&rx, "the missing file said", |e| {
+        matches!(e, Event::Error(_))
+    });
+    check(
+        matches!(&said, Event::Error(e) if e.contains("nothing.toml")),
+        &format!("importing a file that is not there says so: {said:?}"),
+        &mut failures,
+    );
     drain(&rx);
     engine.send(Command::ImportConfig(file.clone())).unwrap();
     wait_for(
