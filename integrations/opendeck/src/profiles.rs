@@ -202,58 +202,69 @@ fn call_layout(model: Model) -> Layout {
 fn layout(model: Model, view: &View) -> Layout {
     let mut layout = Layout::new(model);
     match model {
-        Model::StreamDeck => {
-            for i in 0..5 {
-                layout.put(model, 0, i, channel(view, i));
-            }
-            for i in 0..4 {
-                layout.put(model, 1, i, monitor(view, i));
-                layout.put(model, 2, i, mix_level(view, i));
-            }
-            layout.put(model, 1, 4, output(view));
-            layout.put(model, 2, 4, call_page("call"));
-        }
-        Model::Plus => {
-            for i in 0..4 {
-                layout.dials[i] = channel(view, i);
-            }
-            for i in 0..3 {
-                layout.put(model, 0, i, mix_level(view, i));
-                layout.put(model, 1, i, monitor(view, i));
-            }
-            layout.put(model, 0, 3, call_page("call"));
-            layout.put(model, 1, 3, output(view));
-        }
-        Model::Xl => {
-            // The grid: a channel's own level, then its level in each mix.
-            for c in 0..6 {
-                layout.put(model, 0, c, channel(view, c));
-                for m in 0..3 {
-                    layout.put(model, m + 1, c, cell(view, c, m));
-                }
-            }
-            for m in 0..3 {
-                layout.put(model, m, 6, mix_level(view, m));
-            }
-            layout.put(model, 3, 6, call_page("call"));
-            for m in 0..3 {
-                layout.put(model, m, 7, monitor(view, m));
-            }
-            layout.put(model, 3, 7, output(view));
-        }
+        Model::StreamDeck => stream_deck_layout(&mut layout, view),
+        Model::Plus => plus_layout(&mut layout, view),
+        Model::Xl => xl_layout(&mut layout, view),
     }
     // The microphone's effects in what is left: the keys first, then the
     // dials.
     let mut effects = microphone_effects(view).into_iter();
-    for slot in layout.keys.iter_mut().chain(layout.dials.iter_mut()) {
-        if slot.is_none() {
-            match effects.next() {
-                Some(effect) => *slot = effect,
-                None => break,
-            }
-        }
+    let free = layout
+        .keys
+        .iter_mut()
+        .chain(layout.dials.iter_mut())
+        .filter(|slot| slot.is_none());
+    for (slot, effect) in free.zip(&mut effects) {
+        *slot = effect;
     }
     layout
+}
+
+/// Mutes along the top, the mixes heard and their levels under them.
+fn stream_deck_layout(layout: &mut Layout, view: &View) {
+    let model = Model::StreamDeck;
+    for i in 0..5 {
+        layout.put(model, 0, i, channel(view, i));
+    }
+    for i in 0..4 {
+        layout.put(model, 1, i, monitor(view, i));
+        layout.put(model, 2, i, mix_level(view, i));
+    }
+    layout.put(model, 1, 4, output(view));
+    layout.put(model, 2, 4, call_page("call"));
+}
+
+/// The channels on the dials, the mixes on the keys.
+fn plus_layout(layout: &mut Layout, view: &View) {
+    let model = Model::Plus;
+    for i in 0..4 {
+        layout.dials[i] = channel(view, i);
+    }
+    for i in 0..3 {
+        layout.put(model, 0, i, mix_level(view, i));
+        layout.put(model, 1, i, monitor(view, i));
+    }
+    layout.put(model, 0, 3, call_page("call"));
+    layout.put(model, 1, 3, output(view));
+}
+
+/// The grid: a channel's own level, then its level in each mix.
+fn xl_layout(layout: &mut Layout, view: &View) {
+    let model = Model::Xl;
+    for c in 0..6 {
+        layout.put(model, 0, c, channel(view, c));
+        for m in 0..3 {
+            layout.put(model, m + 1, c, cell(view, c, m));
+        }
+    }
+    for m in 0..3 {
+        layout.put(model, m, 6, mix_level(view, m));
+    }
+    layout.put(model, 3, 6, call_page("call"));
+    for m in 0..3 {
+        layout.put(model, m, 7, monitor(view, m));
+    }
+    layout.put(model, 3, 7, output(view));
 }
 
 /// An action where OpenDeck keeps it in a profile: its manifest entry,
