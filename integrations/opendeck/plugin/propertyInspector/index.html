@@ -189,9 +189,11 @@
 
 			function show() {
 				$("offline").hidden = mixer !== null;
-				const channels = mixer?.channels ?? [];
-				const mixes = mixer?.mixes ?? [];
-				const outputs = mixer?.outputs ?? [];
+				const view = {
+					channels: mixer?.channels ?? [],
+					mixes: mixer?.mixes ?? [],
+					outputs: mixer?.outputs ?? [],
+				};
 				const level = action === "channel" || action === "mix" || action === "voice";
 
 				$("channel-rows").hidden = action !== "channel";
@@ -203,90 +205,99 @@
 				$("effect-rows").hidden = action !== "effect";
 				$("app-rows").hidden = action !== "app";
 				$("follow").checked = globals.follow_call === true;
-				if (action === "effect") {
-					fill($("effect-channel"), channels.map((c) => [String(c.id), c.name]), settings.channel, settings.label);
-					const channel = channels.find((c) => c.id === settings.channel);
-					const effects = (channel?.effects ?? []).map((name, index) => [String(index), name]);
-					const chosen = settings.effect !== undefined && channel ? channel.effects.indexOf(settings.effect) : -1;
-					fill($("effect"), effects, chosen >= 0 ? chosen : settings.index, settings.effect);
-				}
-				if (action === "app") {
-					// What plays now, and what is on a channel already.
-					const apps = new Map((mixer?.apps ?? []).map((a) => [a.key, a.name]));
-					for (const c of channels) for (const key of c.apps ?? []) if (!apps.has(key)) apps.set(key, key);
-					fill($("app"), [["@front", "The application in front"], ...[...apps].map(([key, name]) => [key, name])], settings.app, settings.label);
-					fill($("app-channel"), channels.map((c) => [String(c.id), c.name]), settings.channel);
-				}
-				if (action === "voice") {
-					// English ordinals: 1st, 2nd, 3rd, but 11th to 13th, and 21st again.
-					const suffixes = { 1: "st", 2: "nd", 3: "rd" };
-					const places = [];
-					for (let n = 1; n <= 24; n++) {
-						const suffix = n >= 11 && n <= 13 ? "th" : (suffixes[n % 10] ?? "th");
-						places.push([String(n), `${n}${suffix} in the call`]);
-					}
-					fill($("slot"), places, settings.slot ?? 1);
-				}
-				if (action === "call") $("page").value = settings.page === "mixer" ? "mixer" : "call";
+				panels[action]?.(view);
+				if (level) showLevel();
+			}
 
-				if (action === "channel") {
-					const options = [];
-					for (const channel of channels) {
-						options.push([`c:${channel.id}`, channel.name]);
-						for (const voice of channel.voices) options.push([`v:${channel.id}:${voice.user}`, `${channel.name} › ${voice.name}`]);
-					}
-					let chosen = null;
-					if (settings.channel !== undefined && settings.user) chosen = `v:${settings.channel}:${settings.user}`;
-					else if (settings.channel !== undefined) chosen = `c:${settings.channel}`;
-					fill($("channel"), options, chosen, settings.label);
-					// A person of a call has one level; a channel has its own and
-					// one in each mix it feeds.
-					$("in-row").hidden = !!settings.user || settings.channel === undefined;
-					const fed = mixes.filter((mix) => (mixer?.cells ?? []).some(([c, m]) => c === settings.channel && m === mix.id));
-					fill($("in"), [["", "Main level"], ...fed.map((mix) => [String(mix.id), `In ${mix.name}`])], settings.mix ?? "");
-				}
+			// What each action's page shows, by action.
+			const panels = {
+				effect: showEffect,
+				app: showApp,
+				voice: showVoice,
+				call: () => ($("page").value = settings.page === "mixer" ? "mixer" : "call"),
+				channel: showChannel,
+				mix: ({ mixes }) => fill($("mix"), mixes.map((mix) => [String(mix.id), mix.name]), settings.mix, settings.label),
+				monitor: showSwitch,
+				output: showSwitch,
+			};
 
-				if (action === "mix") {
-					fill($("mix"), mixes.map((mix) => [String(mix.id), mix.name]), settings.mix, settings.label);
-				}
+			function showEffect({ channels }) {
+				fill($("effect-channel"), channels.map((c) => [String(c.id), c.name]), settings.channel, settings.label);
+				const channel = channels.find((c) => c.id === settings.channel);
+				const effects = (channel?.effects ?? []).map((name, index) => [String(index), name]);
+				const chosen = settings.effect !== undefined && channel ? channel.effects.indexOf(settings.effect) : -1;
+				fill($("effect"), effects, chosen >= 0 ? chosen : settings.index, settings.effect);
+			}
 
-				if (level) {
-					const mode = settings.mode || "mute";
-					$("display").value = settings.display === "volume" ? "volume" : "meter";
-					$("mode-row").hidden = dial;
-					$("mode").value = mode;
-					$("volume-row").hidden = dial || mode !== "set";
-					$("fade-row").hidden = dial || mode !== "set";
-					$("volume").value = settings.volume ?? 100;
-					$("volume-shown").textContent = `${$("volume").value}%`;
-					$("fade").value = String(settings.fade ?? 0);
-					const stepped = dial || mode === "adjust";
-					$("step-row").hidden = !stepped;
-					$("step-note").hidden = !stepped;
-					$("step").value = settings.step ?? 5;
-					$("step-note").textContent = dial
-						? "How far each notch of the dial moves the level. Pressing or touching it mutes."
-						: "How far a press moves the level; below zero lowers it.";
-				}
+			function showApp({ channels }) {
+				// What plays now, and what is on a channel already.
+				const apps = new Map((mixer?.apps ?? []).map((a) => [a.key, a.name]));
+				for (const c of channels) for (const key of c.apps ?? []) if (!apps.has(key)) apps.set(key, key);
+				fill($("app"), [["@front", "The application in front"], ...[...apps].map(([key, name]) => [key, name])], settings.app, settings.label);
+				fill($("app-channel"), channels.map((c) => [String(c.id), c.name]), settings.channel);
+			}
 
-				if (action === "monitor" || action === "output") {
-					const toggle = settings.mode === "toggle";
-					$("switch").value = toggle ? "toggle" : "select";
-					$("second-row").hidden = !toggle;
-					if (action === "monitor") {
-						$("first-label").textContent = toggle ? "First mix" : "Mix";
-						$("second-label").textContent = "Second mix";
-						const options = mixes.map((mix) => [String(mix.id), mix.name]);
-						fill($("first"), options, settings.mix, settings.label);
-						fill($("second"), options, settings.mix2);
-					} else {
-						$("first-label").textContent = toggle ? "First device" : "Device";
-						$("second-label").textContent = "Second device";
-						const options = outputs.map((output) => [output.name, output.description]);
-						fill($("first"), options, settings.device, settings.label);
-						fill($("second"), options, settings.device2);
-					}
+			function showVoice() {
+				// English ordinals: 1st, 2nd, 3rd, but 11th to 13th, and 21st again.
+				const suffixes = { 1: "st", 2: "nd", 3: "rd" };
+				const places = [];
+				for (let n = 1; n <= 24; n++) {
+					const suffix = n >= 11 && n <= 13 ? "th" : (suffixes[n % 10] ?? "th");
+					places.push([String(n), `${n}${suffix} in the call`]);
 				}
+				fill($("slot"), places, settings.slot ?? 1);
+			}
+
+			function showChannel({ channels, mixes }) {
+				const options = [];
+				for (const channel of channels) {
+					options.push([`c:${channel.id}`, channel.name]);
+					for (const voice of channel.voices) options.push([`v:${channel.id}:${voice.user}`, `${channel.name} › ${voice.name}`]);
+				}
+				let chosen = null;
+				if (settings.channel !== undefined && settings.user) chosen = `v:${settings.channel}:${settings.user}`;
+				else if (settings.channel !== undefined) chosen = `c:${settings.channel}`;
+				fill($("channel"), options, chosen, settings.label);
+				// A person of a call has one level; a channel has its own and
+				// one in each mix it feeds.
+				$("in-row").hidden = !!settings.user || settings.channel === undefined;
+				const fed = mixes.filter((mix) => (mixer?.cells ?? []).some(([c, m]) => c === settings.channel && m === mix.id));
+				fill($("in"), [["", "Main level"], ...fed.map((mix) => [String(mix.id), `In ${mix.name}`])], settings.mix ?? "");
+			}
+
+			function showLevel() {
+				const mode = settings.mode || "mute";
+				$("display").value = settings.display === "volume" ? "volume" : "meter";
+				$("mode-row").hidden = dial;
+				$("mode").value = mode;
+				$("volume-row").hidden = dial || mode !== "set";
+				$("fade-row").hidden = dial || mode !== "set";
+				$("volume").value = settings.volume ?? 100;
+				$("volume-shown").textContent = `${$("volume").value}%`;
+				$("fade").value = String(settings.fade ?? 0);
+				const stepped = dial || mode === "adjust";
+				$("step-row").hidden = !stepped;
+				$("step-note").hidden = !stepped;
+				$("step").value = settings.step ?? 5;
+				$("step-note").textContent = dial
+					? "How far each notch of the dial moves the level. Pressing or touching it mutes."
+					: "How far a press moves the level; below zero lowers it.";
+			}
+
+			// One mix or device, or two to switch between.
+			function showSwitch({ mixes, outputs }) {
+				const toggle = settings.mode === "toggle";
+				$("switch").value = toggle ? "toggle" : "select";
+				$("second-row").hidden = !toggle;
+				const monitor = action === "monitor";
+				const what = monitor ? "mix" : "device";
+				$("first-label").textContent = toggle ? `First ${what}` : what[0].toUpperCase() + what.slice(1);
+				$("second-label").textContent = `Second ${what}`;
+				const options = monitor
+					? mixes.map((mix) => [String(mix.id), mix.name])
+					: outputs.map((output) => [output.name, output.description]);
+				fill($("first"), options, monitor ? settings.mix : settings.device, settings.label);
+				fill($("second"), options, monitor ? settings.mix2 : settings.device2);
 			}
 
 			$("channel").onchange = () => {
