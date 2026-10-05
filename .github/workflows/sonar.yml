@@ -1,0 +1,65 @@
+name: Sonar
+
+# The analysis of the whole repository on 2c2t's SonarQube Server: the
+# Rust, with Clippy's findings and the tests' coverage, the plugins in
+# Python and TypeScript, the website and the workflows. It needs the
+# SONAR_TOKEN and SONAR_HOST_URL secrets; without them, it says so and
+# analyses nothing.
+#
+# main only: the analysis of pull requests needs a paid edition of the
+# server.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyse:
+    runs-on: ubuntu-latest
+    # GTK, libadwaita and PipeWire as recent as Pipedeck needs, as in CI.
+    container: archlinux:latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+    steps:
+      - name: Check for Sonar's secrets
+        if: env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == ''
+        run: echo "::notice::SONAR_TOKEN or SONAR_HOST_URL is not set; nothing is analysed."
+
+      - name: Install the system libraries
+        if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup
+          rustup default stable
+          rustup component add clippy llvm-tools-preview
+
+      # The whole history, which Sonar reads to tell new code from old.
+      - uses: actions/checkout@v7
+        if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
+        with:
+          fetch-depth: 0
+      - name: Trust the checkout, which the container's user does not own
+        if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: Swatinem/rust-cache@v2
+        if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
+      - uses: taiki-e/install-action@v2
+        if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Clippy's findings
+        if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
+        run: cargo clippy --workspace --all-targets --message-format=json > clippy.json
+      - name: The tests' coverage
+        if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      - uses: SonarSource/sonarqube-scan-action@v8
+        if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
