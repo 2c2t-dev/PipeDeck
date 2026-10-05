@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- What software centres show of Pipedeck. Each release adds a <release>
+     at the top of <releases>, from its section of CHANGELOG.md. -->
+<component type="desktop-application">
+  <id>dev._2c2t.Pipedeck</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Pipedeck</name>
+  <summary>Mix what plays into mixes to hear, record and stream</summary>
+  <developer id="dev.2c2t">
+    <name>Fabien MILLET</name>
+  </developer>
+
+  <description>
+    <p>
+      A PipeWire mixer for Linux streamers, in the spirit of Elgato Wave
+      Link. Send each application to a channel, then decide how loud every
+      channel is in each mix: what you hear, what goes to the stream and
+      what goes to the call are separate balances.
+    </p>
+    <ul>
+      <li>A matrix mixer: channels are rows, mixes are columns, and each cell has its own fader and mute</li>
+      <li>Effects per channel: noise suppression, equaliser, de-esser and compressor built in, plus VST3 plug-ins and Thimeo's Stereo Tool</li>
+      <li>Meters on every channel, mix and cell</li>
+      <li>Stream Deck support through OpenDeck or StreamController, with keys and dials that look like the mixer</li>
+      <li>Discord calls split into one track per person, with Vesktop</li>
+      <li>Lives through PipeWire and WirePlumber restarts</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">dev._2c2t.Pipedeck.desktop</launchable>
+  <provides>
+    <binary>pipedeck</binary>
+  </provides>
+
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Mixer</category>
+  </categories>
+  <keywords>
+    <keyword>mixer</keyword>
+    <keyword>audio</keyword>
+    <keyword>pipewire</keyword>
+    <keyword>stream deck</keyword>
+    <keyword>streaming</keyword>
+  </keywords>
+
+  <url type="homepage">https://pipedeck.2c2t.dev/</url>
+  <url type="bugtracker">https://github.com/2c2t-dev/PipeDeck/issues</url>
+  <url type="vcs-browser">https://github.com/2c2t-dev/PipeDeck</url>
+  <url type="contribute">https://github.com/2c2t-dev/PipeDeck/blob/main/CONTRIBUTING.md</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>The mixer: channels in rows, mixes in columns, a fader in each cell that links them</caption>
+      <image>https://pipedeck.2c2t.dev/assets/mixer-light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>A channel's equaliser</caption>
+      <image>https://pipedeck.2c2t.dev/assets/equaliser-light.png</image>
+    </screenshot>
+  </screenshots>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#f3c6e2</color>
+    <color type="primary" scheme_preference="dark">#6d2357</color>
+  </branding>
+
+  <content_rating type="oars-1.1"/>
+
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <releases>
+    <release version="0.1.1" date="2026-10-05">
+      <description>
+        <ul>
+          <li>On OpenDeck, the Call key goes to the call's profile and back</li>
+          <li>On a Stream Deck +, the call's people are on the dials alone, shown on the touch strip, and the key back to the mixer wears an arrow</li>
+          <li>A microphone's effects go on the keys left, no longer on a dial</li>
+          <li>The OpenDeck plugin no longer offers the Call action and Follow calls, which OpenDeck does not let switch profiles</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-10-05">
+      <description>
+        <p>The first release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

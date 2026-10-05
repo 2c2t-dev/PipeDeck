@@ -23,7 +23,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup \
-            python python-pillow python-cairosvg dbus
+            python python-pillow python-cairosvg dbus appstream
           rustup default stable
           rustup component add clippy rustfmt
 
@@ -39,6 +39,10 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace
+
+      # What software centres read of Pipedeck, as they read it.
+      - name: Software centre listing
+        run: appstreamcli validate --no-net crates/pipedeck/data/dev._2c2t.Pipedeck.metainfo.xml
 
       # The StreamController plugin's connection and drawing, and the
       # website's build.

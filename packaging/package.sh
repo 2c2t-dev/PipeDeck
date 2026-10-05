@@ -39,6 +39,8 @@ appimage)
     install -Dm755 "$target/release/pipedeck-opendeck" "$appdir/usr/bin/pipedeck-opendeck"
     install -Dm644 "$data/dev._2c2t.Pipedeck.desktop" \
         "$appdir/usr/share/applications/dev._2c2t.Pipedeck.desktop"
+    install -Dm644 "$data/dev._2c2t.Pipedeck.metainfo.xml" \
+        "$appdir/usr/share/metainfo/dev._2c2t.Pipedeck.metainfo.xml"
     install -Dm644 "$data/dev._2c2t.Pipedeck.svg" \
         "$appdir/usr/share/icons/hicolor/scalable/apps/dev._2c2t.Pipedeck.svg"
     install -Dm644 "$data/dev._2c2t.Pipedeck-symbolic.svg" \

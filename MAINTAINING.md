@@ -8,7 +8,10 @@ pictures up to date.
 1. Set `version` in the root `Cargo.toml` and in the two plugins'
    manifests, `integrations/opendeck/plugin/manifest.json` and
    `integrations/streamcontroller/dev_2c2t_Pipedeck/manifest.json`, and
-   move the changelog's *Unreleased* section under the new version.
+   move the changelog's *Unreleased* section under the new version. Add
+   the version, with what it changes, at the top of the releases in
+   `crates/pipedeck/data/dev._2c2t.Pipedeck.metainfo.xml`, which software
+   centres show; a test fails while its newest is not `Cargo.toml`'s.
 2. Commit, and tag that commit: `git tag -a v0.2.0 -m "Pipedeck 0.2.0"`.
 3. Push the commit, then the tag: `git push origin main v0.2.0`.
 
