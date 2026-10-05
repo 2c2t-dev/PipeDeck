@@ -38,7 +38,7 @@ use pipewire::core::CoreRc;
 use pipewire::link::Link;
 use pipewire::metadata::Metadata;
 use pipewire::node::{Node, NodeListener};
-use pipewire::properties::properties;
+use pipewire::properties::{properties, PropertiesBox};
 use pipewire::proxy::{ProxyListener, ProxyT};
 use pipewire::registry::{GlobalObject, RegistryRc};
 use pipewire::types::ObjectType;
@@ -390,6 +390,17 @@ pub struct Graph {
     /// says whether it is ours, which its name cannot: another mixer's
     /// nodes answer to the same names.
     own_clients: std::collections::HashSet<u32>,
+    /// Which process each client is, as the server says. In a Flatpak,
+    /// that is how this process's own clients are found.
+    client_pids: HashMap<u32, String>,
+    /// The client that made each of the mixer's nodes, by the node's id.
+    node_clients: HashMap<u32, u32>,
+    /// This process as the server knows it: its own number outside a
+    /// Flatpak; inside, where it has one of the sandbox's, learnt from a
+    /// node it made, and unknown until then.
+    own_pid: Option<String>,
+    /// Stages announced before `own_pid` was known, bound once it is.
+    waiting_stages: Vec<(StageRef, GlobalObject<PropertiesBox>)>,
     registry: RegistryRc,
     core: CoreRc,
     context: ContextRc,
@@ -444,6 +455,12 @@ impl Graph {
             link_owner: HashMap::new(),
             voice_link_owner: HashMap::new(),
             own_clients: std::collections::HashSet::new(),
+            client_pids: HashMap::new(),
+            node_clients: HashMap::new(),
+            own_pid: flatpak_instance()
+                .is_none()
+                .then(|| std::process::id().to_string()),
+            waiting_stages: Vec::new(),
             registry,
             core,
             context,
@@ -767,6 +784,7 @@ impl Graph {
         for (name, global_id) in self.bound_sinks.borrow_mut().drain(..) {
             self.sink_ids.insert(name, global_id);
         }
+        self.learn_own_pid();
 
         let mixes: Vec<MixId> = self.config.mixes.iter().map(|mix| mix.id).collect();
         for id in mixes {
@@ -1972,22 +1990,59 @@ impl Graph {
 
     /// Keep the clients of this process, which made the nodes that are ours.
     fn remember_client(&mut self, global: &GlobalObject<&DictRef>) {
-        let Some(props) = global.props else {
+        // The server fills this in from the socket, so it cannot be claimed
+        // by anyone else.
+        let Some(pid) = global.props.and_then(|p| p.get("pipewire.sec.pid")) else {
             return;
         };
-        // The server fills these in from the socket and the sandbox, so
-        // they cannot be claimed by anyone else. In a Flatpak, the process
-        // has a number of the sandbox's own, which the server does not
-        // know it by: there it goes by the sandbox's instance.
-        let ours = match flatpak_instance() {
-            Some(instance) => {
-                props.get("pipewire.access.portal.instance_id") == Some(instance.as_str())
-            }
-            None => props.get("pipewire.sec.pid") == Some(std::process::id().to_string().as_str()),
-        };
-        if ours {
+        self.client_pids.insert(global.id, pid.to_owned());
+        if self.own_pid.as_deref() == Some(pid) {
             self.own_clients.insert(global.id);
         }
+    }
+
+    /// In a Flatpak, learn which process this is to the server: the one
+    /// whose client made a node this one made. Then bind the stages that
+    /// waited for it.
+    fn learn_own_pid(&mut self) {
+        if self.own_pid.is_some() {
+            return;
+        }
+        let made: Vec<u32> = self
+            .bound_sinks
+            .borrow()
+            .iter()
+            .map(|(_, id)| *id)
+            .chain(self.sink_ids.values().copied())
+            .collect();
+        let Some(pid) = made.iter().find_map(|node| {
+            let client = self.node_clients.get(node)?;
+            self.client_pids.get(client).cloned()
+        }) else {
+            return;
+        };
+        log::debug!("this process is {pid} to the server");
+        self.own_clients.extend(
+            self.client_pids
+                .iter()
+                .filter(|(_, client_pid)| **client_pid == pid)
+                .map(|(id, _)| *id),
+        );
+        self.own_pid = Some(pid);
+        for (owner, global) in std::mem::take(&mut self.waiting_stages) {
+            if self.made_by_us(global.props.as_ref().map(|p| p.as_ref())) {
+                self.bind_stage(owner, &global);
+            }
+        }
+    }
+
+    /// Whether a node's properties say one of this process's clients made
+    /// it.
+    fn made_by_us(&self, props: Option<&DictRef>) -> bool {
+        props
+            .and_then(|p| p.get("client.id"))
+            .and_then(|id| id.parse::<u32>().ok())
+            .is_some_and(|client| self.own_clients.contains(&client))
     }
 
     /// A node: one of our stages, an application playing, or a device.
@@ -1999,22 +2054,27 @@ impl Graph {
             return;
         };
 
+        let ours_by_name = name.starts_with(NODE_PREFIX) || name.starts_with(node_prefix());
+        if ours_by_name {
+            if let Some(client) = props.get("client.id").and_then(|id| id.parse().ok()) {
+                self.node_clients.insert(global.id, client);
+            }
+            self.learn_own_pid();
+        }
         if let Some(&owner) = self.stage_index.get(name) {
             // Another mixer on the same graph answers to the same names, and a
             // stage bound to its node would set its levels — and link it —
             // from here. A node says which client made it, and the server
             // says which process each client is, so ours are the ones made
             // by a client of this process.
-            let ours = props
-                .get("client.id")
-                .and_then(|id| id.parse::<u32>().ok())
-                .is_some_and(|client| self.own_clients.contains(&client));
-            if ours {
+            if self.made_by_us(Some(props)) {
                 self.bind_stage(owner, global);
+            } else if self.own_pid.is_none() {
+                self.waiting_stages.push((owner, global.to_owned()));
             }
             return;
         }
-        if name.starts_with(NODE_PREFIX) || name.starts_with(node_prefix()) {
+        if ours_by_name {
             return;
         }
 
@@ -2089,7 +2149,7 @@ impl Graph {
         self.streams_dirty = true;
     }
 
-    fn bind_stage(&mut self, owner: StageRef, global: &GlobalObject<&DictRef>) {
+    fn bind_stage<P: AsRef<DictRef>>(&mut self, owner: StageRef, global: &GlobalObject<P>) {
         let stage = match owner {
             StageRef::Cell(source, mix) => self.links.get_mut(&(source, mix)),
             StageRef::Output(mix, index) => self
@@ -2300,6 +2360,10 @@ impl Graph {
 
     pub fn on_global_remove(&mut self, global_id: u32) {
         self.own_clients.remove(&global_id);
+        self.client_pids.remove(&global_id);
+        self.node_clients.remove(&global_id);
+        self.waiting_stages
+            .retain(|(_, global)| global.id != global_id);
         if self.metadata_id == Some(global_id) {
             // WirePlumber has gone, or is making it again. The proxy is dead
             // either way; the next one announced is bound in its place.
