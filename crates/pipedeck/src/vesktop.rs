@@ -127,8 +127,15 @@ fn dist() -> PathBuf {
 }
 
 fn on_path(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+    which(program).is_some()
+}
+
+/// Where a program is found on the PATH, as running it would find it.
+fn which(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Where Vesktop stands now.
@@ -454,9 +461,13 @@ fn node_new_enough(dir: &Path, pnpm: &str) -> Result<(), String> {
         (_, 0) => format!("{major}.{minor}"),
         _ => format!("{major}.{minor}.{patch}"),
     };
+    // Named by its path: the Node.js a terminal finds is often another,
+    // put on its PATH by a version manager that the desktop does not run.
+    let found = which("node").map_or_else(|| "node".to_owned(), |path| path.display().to_string());
     Err(format!(
-        "Building Vencord needs Node.js {} or newer, and this system has {}. \
-         Install a newer Node.js, then try again.",
+        "Building Vencord needs Node.js {} or newer, and the one Pipedeck finds, {found}, \
+         is {}. Install a newer one there, or start Pipedeck from a terminal where \
+         node --version says a newer one, then try again.",
         shown(needs),
         shown(have)
     ))
