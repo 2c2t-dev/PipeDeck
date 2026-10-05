@@ -565,18 +565,7 @@ fn serve(
             return (rx, Ending::Unreachable, config);
         }
     };
-    // What the desktop shows for Pipedeck's streams: its name and its icon,
-    // not those of the program's file.
-    let identity = pw::properties::properties! {
-        *pw::keys::APP_NAME => "Pipedeck",
-        *pw::keys::APP_ICON_NAME => "dev._2c2t.Pipedeck",
-    };
-    let connected = ContextRc::new(&mainloop, Some(identity)).and_then(|context| {
-        let core = context.connect_rc(None)?;
-        let registry = core.get_registry_rc()?;
-        Ok((context, core, registry))
-    });
-    let (context, core, registry) = match connected {
+    let (context, core, registry) = match connect(&mainloop) {
         Ok(parts) => parts,
         Err(e) => {
             log::warn!("cannot reach PipeWire: {e}");
@@ -596,77 +585,9 @@ fn serve(
 
     // Losing the server ends the session the same way being asked to stop
     // does, and the thread decides which of the two it was.
-    let _core_listener = {
-        let mainloop = mainloop.clone();
-        let events = events.clone();
-        let ending = ending.clone();
-        core.add_listener_local()
-            .error(move |id, seq, res, message| {
-                log::warn!("core error: id {id} seq {seq} res {res}: {message}");
-                if id == pw::core::PW_ID_CORE && res == -libc_epipe() {
-                    ending.set(Ending::Lost);
-                    events(Event::Error(
-                        "PipeWire went away; putting the mixer back when it returns".into(),
-                    ));
-                    mainloop.quit();
-                }
-            })
-            .register()
-    };
-
-    let _registry_listener = {
-        let weak = Rc::downgrade(&graph);
-        let weak_remove = weak.clone();
-        registry
-            .add_listener_local()
-            .global(move |global| {
-                if let Some(graph) = weak.upgrade() {
-                    graph.borrow_mut().on_global(global);
-                }
-            })
-            .global_remove(move |id| {
-                if let Some(graph) = weak_remove.upgrade() {
-                    graph.borrow_mut().on_global_remove(id);
-                }
-            })
-            .register()
-    };
-
-    {
-        let mut g = graph.borrow_mut();
-        let snapshot = g.snapshot();
-        for mix in &snapshot.mixes {
-            if let Err(e) = g.create_mix(mix) {
-                log::error!("cannot create mix {}: {e}", mix.name);
-                events(Event::Error(format!("cannot create mix {}: {e}", mix.name)));
-            }
-        }
-        for source in &snapshot.sources {
-            if let Err(e) = g.create_source(source) {
-                log::error!("cannot create source {}: {e}", source.name);
-                events(Event::Error(format!(
-                    "cannot create source {}: {e}",
-                    source.name
-                )));
-            }
-        }
-        for link in &snapshot.links {
-            if let Err(e) = g.create_link(link) {
-                log::error!(
-                    "cannot link source {} to mix {}: {e}",
-                    link.source,
-                    link.mix
-                );
-                events(Event::Error(e.to_string()));
-            }
-        }
-        g.emit_state();
-        g.emit_devices();
-        g.emit_apps();
-        g.emit_plugins();
-        g.refresh_stereotool();
-        g.emit_stereotool();
-    }
+    let _core_listener = watch_core(&core, &mainloop, events, &ending);
+    let _registry_listener = watch_registry(&registry, &graph);
+    put_on_graph(&mut graph.borrow_mut(), events);
 
     let receiver = {
         let graph = graph.clone();
@@ -710,26 +631,7 @@ fn serve(
     // and left there it keeps an application aimed at a sink that is about
     // to go — or at one of another mixer's that answers to the same name.
     if ending.get() == Ending::Asked && graph.borrow().release_streams() {
-        let _done = {
-            let mainloop = mainloop.clone();
-            core.add_listener_local()
-                .done(move |id, _| {
-                    if id == pw::core::PW_ID_CORE {
-                        mainloop.quit();
-                    }
-                })
-                .register()
-        };
-        // The server answers within a moment; a second is plenty, and the
-        // mixer closes then whatever it said.
-        let fallback = {
-            let quit = mainloop.clone();
-            mainloop.loop_().add_timer(move |_| quit.quit())
-        };
-        fallback.update_timer(Some(Duration::from_secs(1)), None);
-        if core.sync(0).is_ok() {
-            mainloop.run();
-        }
+        wait_for_the_server_to_hear(&mainloop, &core);
     }
 
     // The mixer is not the graph: what it was goes to the next session.
@@ -743,6 +645,127 @@ fn serve(
     // Locals drop in reverse order: the timers first, then the listeners,
     // then `graph` (modules, proxies) while context and core are still
     // alive, then core disconnects.
+}
+
+/// Reach the server, as Pipedeck: the desktop shows Pipedeck's streams
+/// under its name and its icon, not those of the program's file.
+fn connect(
+    mainloop: &MainLoopRc,
+) -> Result<(ContextRc, pw::core::CoreRc, pw::registry::RegistryRc), pw::Error> {
+    let identity = pw::properties::properties! {
+        *pw::keys::APP_NAME => "Pipedeck",
+        *pw::keys::APP_ICON_NAME => "dev._2c2t.Pipedeck",
+    };
+    let context = ContextRc::new(mainloop, Some(identity))?;
+    let core = context.connect_rc(None)?;
+    let registry = core.get_registry_rc()?;
+    Ok((context, core, registry))
+}
+
+/// Losing the server ends the session the same way being asked to stop
+/// does, and the thread decides which of the two it was.
+fn watch_core(
+    core: &pw::core::CoreRc,
+    mainloop: &MainLoopRc,
+    events: &Rc<dyn Fn(Event)>,
+    ending: &Rc<StdCell<Ending>>,
+) -> pw::core::Listener {
+    let (mainloop, events, ending) = (mainloop.clone(), events.clone(), ending.clone());
+    core.add_listener_local()
+        .error(move |id, seq, res, message| {
+            log::warn!("core error: id {id} seq {seq} res {res}: {message}");
+            if id == pw::core::PW_ID_CORE && res == -libc_epipe() {
+                ending.set(Ending::Lost);
+                events(Event::Error(
+                    "PipeWire went away; putting the mixer back when it returns".into(),
+                ));
+                mainloop.quit();
+            }
+        })
+        .register()
+}
+
+/// Tell the graph of every object that comes and goes on the server.
+fn watch_registry(
+    registry: &pw::registry::RegistryRc,
+    graph: &Rc<RefCell<Graph>>,
+) -> pw::registry::Listener {
+    let weak = Rc::downgrade(graph);
+    let weak_remove = weak.clone();
+    registry
+        .add_listener_local()
+        .global(move |global| {
+            if let Some(graph) = weak.upgrade() {
+                graph.borrow_mut().on_global(global);
+            }
+        })
+        .global_remove(move |id| {
+            if let Some(graph) = weak_remove.upgrade() {
+                graph.borrow_mut().on_global_remove(id);
+            }
+        })
+        .register()
+}
+
+/// Make the mixes, the channels and the cells the config holds, and tell
+/// the clients everything there is to know.
+fn put_on_graph(g: &mut Graph, events: &Rc<dyn Fn(Event)>) {
+    let snapshot = g.snapshot();
+    for mix in &snapshot.mixes {
+        if let Err(e) = g.create_mix(mix) {
+            log::error!("cannot create mix {}: {e}", mix.name);
+            events(Event::Error(format!("cannot create mix {}: {e}", mix.name)));
+        }
+    }
+    for source in &snapshot.sources {
+        if let Err(e) = g.create_source(source) {
+            log::error!("cannot create source {}: {e}", source.name);
+            events(Event::Error(format!(
+                "cannot create source {}: {e}",
+                source.name
+            )));
+        }
+    }
+    for link in &snapshot.links {
+        if let Err(e) = g.create_link(link) {
+            log::error!(
+                "cannot link source {} to mix {}: {e}",
+                link.source,
+                link.mix
+            );
+            events(Event::Error(e.to_string()));
+        }
+    }
+    g.emit_state();
+    g.emit_devices();
+    g.emit_apps();
+    g.emit_plugins();
+    g.refresh_stereotool();
+    g.emit_stereotool();
+}
+
+/// Run the loop until the server has answered what was sent last. It
+/// answers within a moment; a second is plenty, and the mixer closes then
+/// whatever it said.
+fn wait_for_the_server_to_hear(mainloop: &MainLoopRc, core: &pw::core::CoreRc) {
+    let _done = {
+        let mainloop = mainloop.clone();
+        core.add_listener_local()
+            .done(move |id, _| {
+                if id == pw::core::PW_ID_CORE {
+                    mainloop.quit();
+                }
+            })
+            .register()
+    };
+    let fallback = {
+        let quit = mainloop.clone();
+        mainloop.loop_().add_timer(move |_| quit.quit())
+    };
+    fallback.update_timer(Some(Duration::from_secs(1)), None);
+    if core.sync(0).is_ok() {
+        mainloop.run();
+    }
 }
 
 /// Wait for a server to come back, and answer the client meanwhile.
