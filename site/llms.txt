@@ -11,4 +11,5 @@
 ## Download
 
 - [Latest release](https://github.com/2c2t-dev/PipeDeck/releases/latest): .deb, .rpm and AppImage
+- [Flatpak](https://flatpak.2c2t.dev/): from 2c2t's repository, `flatpak install 2c2t dev._2c2t.Pipedeck` once it is added
 - [Source](https://github.com/2c2t-dev/PipeDeck)
