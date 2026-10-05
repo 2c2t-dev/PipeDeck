@@ -2043,6 +2043,80 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
+    // A mixer imported from a file takes this one's place, cells and all;
+    // exported, it comes out as the file had it.
+    let file = dir.join("imported.toml");
+    std::fs::write(
+        &file,
+        "[[mix]]\nid = 5\nname = \"Imported\"\n\n\
+         [[source]]\nid = 7\nname = \"Brought in\"\n\n\
+         [[link]]\nsource = 7\nmix = 5\n",
+    )
+    .expect("cannot write the mixer to import");
+    drain(&rx);
+    engine.send(Command::ImportConfig(file.clone())).unwrap();
+    wait_for(
+        &rx,
+        "the import said",
+        |e| matches!(e, Event::Notice(said) if said.contains("imported")),
+    );
+    let state = wait_state(&rx, "the imported mixer", |s| {
+        s.sources.len() == 1 && s.mixes.len() == 1 && s.links.len() == 1
+    });
+    check(
+        state.sources[0].name == "Brought in" && state.mixes[0].id == MixId(5),
+        &format!(
+            "an imported mixer is the file's: {:?}, {:?}",
+            state.sources[0].name, state.mixes[0].id
+        ),
+        &mut failures,
+    );
+    // A new session looks for plug-ins again before it is on the graph.
+    let wanted = [
+        "pipedeck-smoke.src.7",
+        "pipedeck-smoke.mix.5",
+        "pipedeck-smoke.link.7.5",
+    ];
+    let on_graph = |dump: &[serde_json::Value]| {
+        let names = node_names(dump);
+        wanted.iter().all(|name| names.iter().any(|n| n == name))
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !on_graph(&pw_dump()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    settle();
+    let dump = pw_dump();
+    let names = node_names(&dump);
+    check(
+        on_graph(&dump),
+        &format!("an imported mixer is put on the graph: {names:?}"),
+        &mut failures,
+    );
+    let joined = node_id(&dump, "pipedeck-smoke.link.7.5")
+        .zip(node_id(&dump, "pipedeck-smoke.mix.5"))
+        .is_some_and(|ends| links(&dump).contains(&ends));
+    check(
+        joined,
+        "an imported cell is linked into its mix",
+        &mut failures,
+    );
+    let exported = dir.join("exported.toml");
+    engine
+        .send(Command::ExportConfig(exported.clone()))
+        .unwrap();
+    wait_for(
+        &rx,
+        "the export said",
+        |e| matches!(e, Event::Notice(said) if said.contains("exported")),
+    );
+    let written = std::fs::read_to_string(&exported).unwrap_or_default();
+    check(
+        written.contains("Brought in") && written.contains("Imported"),
+        "the mixer exported is the one running",
+        &mut failures,
+    );
+
     engine.shutdown();
     wait_for(&rx, "Stopped", |e| matches!(e, Event::Stopped));
     settle();

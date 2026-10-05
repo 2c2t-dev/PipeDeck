@@ -147,12 +147,40 @@ impl Config {
                 })
             }
         };
-        let config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
+        Self::parse(&text, path)
+    }
+
+    /// Read a mixer exported from this Pipedeck or another, which unlike
+    /// the config itself has to be there.
+    pub fn import(path: &Path) -> Result<Self, ConfigError> {
+        let text = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+            path: path.to_owned(),
+            source,
+        })?;
+        Self::parse(&text, path)
+    }
+
+    /// Write the mixer to a file, to keep or to give: without the Stereo
+    /// Tool key, which is the user's own. Written in place, since a file
+    /// the desktop's portal hands over has no folder around it to put a
+    /// temporary file in.
+    pub fn export(&self, path: &Path) -> Result<(), ConfigError> {
+        let mut shared = self.clone();
+        shared.stereotool_license = None;
+        let text = toml::to_string_pretty(&shared)?;
+        fs::write(path, text).map_err(|source| ConfigError::Write {
+            path: path.to_owned(),
+            source,
+        })
+    }
+
+    fn parse(text: &str, path: &Path) -> Result<Self, ConfigError> {
+        let config: Config = toml::from_str(text).map_err(|source| ConfigError::Parse {
             path: path.to_owned(),
             source,
         })?;
         if config.mixes.is_empty() && config.links.is_empty() {
-            if let Ok(legacy) = toml::from_str::<LegacyConfig>(&text) {
+            if let Ok(legacy) = toml::from_str::<LegacyConfig>(text) {
                 if legacy.is_legacy() {
                     log::info!("converting the pre-matrix config at {}", path.display());
                     return Ok(Self::from_legacy(legacy, config.latency));
@@ -339,6 +367,33 @@ mod tests {
         assert!(loaded.mixes.is_empty());
         assert_eq!(loaded.sources, cfg.sources);
         assert_eq!(loaded.stereotool_license.as_deref(), Some("KEY"));
+    }
+
+    #[test]
+    fn an_exported_mixer_leaves_the_key_behind_and_comes_back_whole() {
+        let mut cfg = Config::fresh();
+        cfg.sources
+            .push(SourceConfig::input(SourceId(2), "Mic", "alsa_input.x"));
+        cfg.links.push(LinkConfig::new(SourceId(2), MixId(1)));
+        cfg.stereotool_license = Some("KEY".into());
+        let dir = std::env::temp_dir().join(format!("pipedeck-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mixer.toml");
+        cfg.export(&path).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let imported = Config::import(&path);
+        let missing = Config::import(&dir.join("nothing.toml"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(!written.contains("KEY"), "the key stays the user's own");
+        let imported = imported.unwrap();
+        assert_eq!(imported.stereotool_license, None);
+        assert_eq!(
+            (imported.mixes, imported.sources, imported.links),
+            (cfg.mixes, cfg.sources, cfg.links)
+        );
+        // A file that is not there is not a fresh mixer.
+        assert!(matches!(missing, Err(ConfigError::Read { .. })));
     }
 
     #[test]

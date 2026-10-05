@@ -239,6 +239,12 @@ pub enum Command {
     SetLatency {
         latency: String,
     },
+    /// Write the mixer to a file, without the Stereo Tool key, to keep or
+    /// to give.
+    ExportConfig(PathBuf),
+    /// Put the mixer a file holds in place of this one: the session is
+    /// closed and made again from it. The Stereo Tool key is kept.
+    ImportConfig(PathBuf),
     /// Tear the graph down and stop the thread.
     Shutdown,
 }
@@ -539,6 +545,9 @@ enum Ending {
     Lost,
     /// There was no server to begin with.
     Unreachable,
+    /// The mixer was replaced by one imported, which a new session puts on
+    /// the graph.
+    Replaced,
 }
 
 /// Put the whole mixer on the graph from the config, and keep it there.
@@ -589,16 +598,33 @@ fn serve(
     let _registry_listener = watch_registry(&registry, &graph);
     put_on_graph(&mut graph.borrow_mut(), events);
 
+    // A mixer imported, waiting for this session to end.
+    let replacement: Rc<RefCell<Option<Config>>> = Rc::default();
+
     let receiver = {
         let graph = graph.clone();
         let loop_owner = mainloop.clone();
         let events = events.clone();
         let ending = ending.clone();
-        rx.attach(mainloop.loop_(), move |cmd| {
-            if matches!(cmd, Command::Shutdown) {
-                ending.set(Ending::Asked);
+        let replacement = replacement.clone();
+        rx.attach(mainloop.loop_(), move |cmd| match cmd {
+            Command::ImportConfig(path) => match imported(&graph.borrow(), &path) {
+                Ok(config) => {
+                    *replacement.borrow_mut() = Some(config);
+                    ending.set(Ending::Replaced);
+                    loop_owner.quit();
+                }
+                Err(e) => {
+                    log::error!("{e}");
+                    events(Event::Error(e.to_string()));
+                }
+            },
+            cmd => {
+                if matches!(cmd, Command::Shutdown) {
+                    ending.set(Ending::Asked);
+                }
+                handle_command(&graph, &loop_owner, &events, cmd)
             }
-            handle_command(&graph, &loop_owner, &events, cmd)
         })
     };
 
@@ -630,16 +656,18 @@ fn serve(
     // heard so. A move lives in the server's metadata, not in the mixer,
     // and left there it keeps an application aimed at a sink that is about
     // to go — or at one of another mixer's that answers to the same name.
-    if ending.get() == Ending::Asked && graph.borrow().release_streams() {
+    if matches!(ending.get(), Ending::Asked | Ending::Replaced) && graph.borrow().release_streams()
+    {
         wait_for_the_server_to_hear(&mainloop, &core);
     }
 
-    // The mixer is not the graph: what it was goes to the next session.
-    let saved = {
+    // The mixer is not the graph: what it was goes to the next session,
+    // unless another was imported in its place.
+    let saved = replacement.take().unwrap_or_else(|| {
         let mut g = graph.borrow_mut();
         g.flush_config();
         g.config().clone()
-    };
+    });
     let rx = receiver.deattach();
     (rx, ending.get(), saved)
     // Locals drop in reverse order: the timers first, then the listeners,
@@ -832,6 +860,15 @@ fn run(
         config = saved;
         match ending {
             Ending::Asked => break,
+            // Straight into a session made from the mixer imported.
+            Ending::Replaced => {
+                if let Err(e) = config.save(&config_path) {
+                    log::error!("{e}");
+                    events(Event::Error(e.to_string()));
+                }
+                events(Event::Notice("The mixer was imported".into()));
+                continue;
+            }
             // A session that ran has already said what happened to it.
             Ending::Lost => {}
             Ending::Unreachable => events(Event::Notice(
@@ -1019,6 +1056,25 @@ fn handle_command(
             Ok(())
         }
         Command::SetLatency { latency } => g.set_latency(latency),
+        Command::ExportConfig(path) => {
+            structural = false;
+            g.config()
+                .export(&path)
+                .map_err(EngineError::from)
+                .map(|()| {
+                    // Its name alone: in a Flatpak, the path is the portal's.
+                    let name = path.file_name().unwrap_or(path.as_os_str());
+                    events(Event::Notice(format!(
+                        "The mixer was exported to {}",
+                        name.to_string_lossy()
+                    )));
+                })
+        }
+        // The session takes it before it comes here, to end itself.
+        Command::ImportConfig(_) => {
+            structural = false;
+            Ok(())
+        }
         Command::Shutdown => {
             structural = false;
             mainloop.quit();
@@ -1032,6 +1088,14 @@ fn handle_command(
     if structural {
         g.emit_state();
     }
+}
+
+/// The mixer a file holds, to put in place of this one's: the Stereo Tool
+/// key, which an export leaves behind, is this one's.
+fn imported(g: &Graph, path: &std::path::Path) -> Result<Config, EngineError> {
+    let mut config = Config::import(path)?;
+    config.stereotool_license = g.config().stereotool_license.clone();
+    Ok(config)
 }
 
 fn add_mix(g: &mut Graph) -> Result<(), EngineError> {
