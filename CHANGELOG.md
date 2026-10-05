@@ -6,6 +6,16 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Software centres such as GNOME Software and Discover describe Pipedeck,
+  with its screenshots and what each release changed.
+- Pipedeck builds as a Flatpak, for Flathub. In the sandbox, starting with
+  the session goes through the desktop's portal; OpenDeck is closed and
+  started by hand around installing its plugin and laying out its
+  profiles; StreamController's and Vesktop's plugins are installed from
+  outside; and the application in front, which needs KWin, is left out.
+
 ## [0.1.1] - 2026-10-05
 
 ### Changed

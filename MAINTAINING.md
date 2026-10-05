@@ -1,7 +1,7 @@
 # Maintaining Pipedeck
 
-For the maintainers: making a release, and keeping the website and the
-pictures up to date.
+For the maintainers: making a release, the Flatpak, and keeping the
+website and the pictures up to date.
 
 ## Making a release
 
@@ -24,6 +24,60 @@ from the Actions tab: it builds all three and keeps them on the run, with no
 release. `packaging/package.sh deb|rpm|appimage` builds one into `dist` on
 your own machine, on the system it is for: Debian 13 for the .deb and the
 AppImage, Fedora 42 for the .rpm.
+
+## The Flatpak
+
+`packaging/flatpak/dev._2c2t.Pipedeck.yml` builds Pipedeck on GNOME 51. A
+Flatpak builds offline, so the crates `Cargo.lock` names are listed first
+in `cargo-sources.json`, by
+[flatpak-builder-tools](https://github.com/flatpak/flatpak-builder-tools)'
+`cargo/flatpak-cargo-generator.py`. The *Flatpak* workflow does both when
+the manifest changes, or when started by hand, and checks the result
+against Flathub's rules with `flatpak-builder-lint`; the bundle is kept on
+the run.
+
+To try it, quit your own Pipedeck first, which answers to the same id and
+node names, then:
+
+```sh
+flatpak install --user pipedeck.flatpak
+flatpak run dev._2c2t.Pipedeck
+flatpak uninstall --user dev._2c2t.Pipedeck
+```
+
+Its settings and mixer are its own, in
+`~/.var/app/dev._2c2t.Pipedeck/config/pipedeck`.
+
+The sandbox sees neither the system's programs nor its processes, and
+`launcher::sandboxed()` is how the code tells. Starting with the session
+goes through the Background portal; OpenDeck is closed and started by the
+user, and its profiles are not laid out by themselves; StreamController's
+plugin and Vesktop's are installed from outside; the KWin script is left
+out, since Flathub lets no application speak to KWin. Inside the sandbox
+the process has a number of its own, so the engine learns which clients
+are its own from a node it made rather than from its process id. Each
+permission in the manifest says what it is for, which Flathub's reviewers
+ask.
+
+### On Flathub
+
+The first time:
+
+1. Fork [flathub/flathub](https://github.com/flathub/flathub) and branch
+   from its `new-pr` branch.
+2. Put the manifest there, with the `dir` source replaced by the release:
+   `type: git`, `url: https://github.com/2c2t-dev/PipeDeck.git`, and the
+   release's `tag` and `commit`.
+3. Beside it, the crates of that release:
+   `python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json`,
+   with the tag checked out.
+4. Open a pull request against `new-pr`, and answer the review there.
+
+Once it is in, Flathub makes a repository for Pipedeck,
+`flathub/dev._2c2t.Pipedeck`. Each release then goes there as a pull
+request: the new tag and commit, and `cargo-sources.json` made again. To
+have Pipedeck marked as verified, Flathub asks for a token at
+`https://2c2t.dev/.well-known/org.flathub.VerifiedApps.txt`.
 
 ## The website
 

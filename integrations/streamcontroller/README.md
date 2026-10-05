@@ -41,7 +41,9 @@ loads plugins when it starts, so restart it; the actions are then under
 settings.
 
 Or by hand, from a checkout: `integrations/streamcontroller/install.sh`
-(or with `$STREAMCONTROLLER_DATA` for another data folder).
+(or with `$STREAMCONTROLLER_DATA` for another data folder). That is the
+way from Pipedeck's Flatpak, whose sandbox does not reach
+StreamController's folder.
 
 ## Ready-made pages
 

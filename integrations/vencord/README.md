@@ -38,6 +38,11 @@ The plugin's sources are built into Pipedeck, so it installs them from
 wherever it runs. `build.sh` does the build alone, from this directory, for
 working on the plugin.
 
+Pipedeck's Flatpak cannot run git and Node.js from its sandbox. Run
+`build.sh` from a copy of Pipedeck's sources instead, then, in Vesktop,
+point **Vencord Location** (Settings, Vesktop Settings) at the folder it
+prints, and turn on **PipedeckVoices** among Vencord's plugins.
+
 Client mods are against Discord's terms, and an update of Discord can break
 the plugin at any time. Taking other people's voices apart is for their ears
 with their agreement.

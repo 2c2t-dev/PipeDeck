@@ -45,6 +45,11 @@ integrations/opendeck/install.sh
 
 builds the plugin and copies it there; restart OpenDeck.
 
+From Pipedeck's Flatpak, Install puts the plugin in all the same, but the
+sandbox does not see OpenDeck running: quit OpenDeck before **Install** or
+**Lay out now**, and start it again after. For the same reason, the
+profiles are not laid out again by themselves as the mixer changes.
+
 OpenDeck and StreamController cannot both hold a Stream Deck: use one.
 StreamController reaches the decks through libusb and takes them from the
 kernel, which OpenDeck reads them through; after stopping StreamController,
