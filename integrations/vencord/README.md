@@ -12,7 +12,9 @@ code, out of reach, which is why this is for Vesktop only.
 The plugin tells Pipedeck who is in the voice channel you are in, over
 Pipedeck's control socket (`$XDG_RUNTIME_DIR/pipedeck/control.sock`).
 Pipedeck makes a sink for each of them on the channel Vesktop is assigned
-to, and the plugin sends each person's element to theirs rather than to the
+to (when a call starts with Vesktop on none, Pipedeck puts it on the
+channel made for voice chat, the one with the voice icon, if there is
+just one, and says so otherwise), and the plugin sends each person's element to theirs rather than to the
 output Discord chose. Their volume and mute in Discord still apply; when
 Pipedeck is not running, or has no sink for someone, their voice goes where
 Discord sends it. What it does is written down in

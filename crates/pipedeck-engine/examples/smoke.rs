@@ -1405,6 +1405,56 @@ fn main() -> ExitCode {
         // A call in Vesktop: the channel Vesktop is assigned to gets a sink for
         // each person, playing into its own, and loses them when the call ends.
         let voice = |user: &str| format!("pipedeck-smoke.voice.{source}.{user}");
+
+        // A call that starts with Vesktop on no channel puts it on the one
+        // made for voice chat, and says so.
+        engine
+            .send(Command::SetSourceIcon {
+                id: source,
+                icon: Some("voice".into()),
+            })
+            .unwrap();
+        drain(&rx);
+        engine
+            .send(Command::SetCall {
+                members: vec![pipedeck_engine::CallMember {
+                    id: "333".into(),
+                    name: "Carol".into(),
+                    avatar: None,
+                }],
+            })
+            .unwrap();
+        wait_for(
+            &rx,
+            "Vesktop put on the voice chat",
+            |e| matches!(e, Event::Notice(said) if said.contains("Vesktop is on")),
+        );
+        let state = wait_state(&rx, "Vesktop on the channel", |s| {
+            s.sources
+                .iter()
+                .any(|row| row.apps.iter().any(|app| app == VOICE_APP))
+        });
+        check(
+            state
+                .sources
+                .iter()
+                .find(|row| row.id == source)
+                .is_some_and(|row| row.apps.iter().any(|app| app == VOICE_APP)),
+            "a call with Vesktop on no channel puts it on the voice chat's",
+            &mut failures,
+        );
+        engine
+            .send(Command::SetCall {
+                members: Vec::new(),
+            })
+            .unwrap();
+        wait_state(&rx, "Carol's call over", |s| {
+            s.sources
+                .iter()
+                .all(|row| row.voices.iter().all(|v| !v.present))
+        });
+        settle();
+
         engine
             .send(Command::AssignApp {
                 id: source,

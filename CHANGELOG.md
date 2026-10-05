@@ -8,6 +8,10 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A Discord call with Vesktop on no channel split into nobody: Vesktop is
+  now put on the voice chat's channel when there is one, and Pipedeck says
+  so, or says to put it on one.
+
 - Building Vesktop's plugin with a Node.js older than Vencord's pnpm needs
   says so, with both versions, rather than failing inside pnpm.
 

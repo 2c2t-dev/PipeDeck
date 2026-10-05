@@ -18,11 +18,16 @@ use pipewire::spa::utils::dict::DictRef;
 
 use super::meter::Meter;
 use super::{apply_props, Graph};
+use crate::engine::Event;
 use crate::error::EngineError;
 use crate::types::{
     node_prefix, today, voice_app, voice_labels, voice_node_prefix, CallMember, ChainState,
     SourceId, VoiceConfig, FORGET_AFTER_DAYS,
 };
+
+/// The look of a channel made for a voice chat, the one Vesktop is put on
+/// when a call starts with it on none.
+const VOICE_ICON: &str = "voice";
 
 /// Streams whose target was just read, and that target. See
 /// `Graph::stream_targets`.
@@ -188,14 +193,53 @@ impl Graph {
     /// whenever it reconnects, and the same call again is no news.
     pub fn set_call(&mut self, members: Vec<CallMember>) -> bool {
         let changed = members != self.call;
+        let started = self.call.is_empty() && !members.is_empty();
         if changed {
             log::info!("{} in the call", members.len());
         }
         self.call = members;
+        if started && self.call_row().is_none() {
+            self.find_call_row();
+        }
         // Even the same call again: a sink that could not be made last time
         // is tried again.
         self.sync_voices();
         changed
+    }
+
+    /// A call started with Vesktop on no channel, where nobody in it can be
+    /// given a level of their own: Vesktop is put on the one channel made
+    /// for voice chat, or the user is told to put it on one when there is
+    /// not exactly one such.
+    fn find_call_row(&mut self) {
+        let chats: Vec<(SourceId, String)> = self
+            .config
+            .sources
+            .iter()
+            .filter(|source| !source.is_input() && source.icon.as_deref() == Some(VOICE_ICON))
+            .map(|source| (source.id, source.name.clone()))
+            .collect();
+        let [(id, name)] = chats.as_slice() else {
+            self.emit(Event::Notice(
+                "A Discord call is going on, but Vesktop is on no channel: put it on one \
+                 to give each person of the call a level of their own"
+                    .into(),
+            ));
+            return;
+        };
+        let (id, name) = (*id, name.clone());
+        for source in &mut self.config.sources {
+            source.apps.retain(|app| app != voice_app());
+        }
+        if let Some(source) = self.config.source_mut(id) {
+            source.apps.push(voice_app().to_owned());
+        }
+        self.dirty = true;
+        self.move_app(voice_app(), Some(id));
+        log::info!("Vesktop put on {name} for the call");
+        self.emit(Event::Notice(format!(
+            "Vesktop is on {name} now, so each person of the call has a level of their own"
+        )));
     }
 
     /// The row the call is heard through: the one Vesktop is assigned to,
