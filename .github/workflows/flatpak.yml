@@ -45,6 +45,8 @@ jobs:
           bundle: pipedeck.flatpak
           manifest-path: packaging/flatpak/dev._2c2t.Pipedeck.yml
           cache-key: flatpak-builder-${{ github.sha }}
+          # As Flathub's builds do, so its rules about screenshots hold.
+          mirror-screenshots-url: https://dl.flathub.org/media
       - name: Check against Flathub's rules
         run: |
           flatpak-builder-lint manifest packaging/flatpak/dev._2c2t.Pipedeck.yml
