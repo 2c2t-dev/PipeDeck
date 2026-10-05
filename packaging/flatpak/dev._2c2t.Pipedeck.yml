@@ -3,7 +3,7 @@
 # The crates are fetched ahead into cargo-sources.json, which the workflow
 # makes from Cargo.lock with flatpak-builder-tools' cargo generator: a
 # Flatpak builds offline. Flathub's copy of this file takes the sources
-# from a release tag rather than from this folder; see MAINTAINING.md.
+# from a release tag rather than from this folder.
 id: dev._2c2t.Pipedeck
 runtime: org.gnome.Platform
 runtime-version: '51'
