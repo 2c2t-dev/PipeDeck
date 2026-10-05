@@ -71,6 +71,39 @@ fn remember(voices: &mut Vec<VoiceConfig>, today: u64) -> bool {
 /// How long a person's sink outlives their leaving the call.
 const VOICE_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// One person of the call, as the config keeps them: present, seen today,
+/// under the name and picture they have now, and known from now on if they
+/// were not. Says whether anything changed.
+fn meet(voices: &mut Vec<VoiceConfig>, member: &CallMember, today: u64) -> bool {
+    let Some(voice) = voices.iter_mut().find(|voice| voice.id == member.id) else {
+        voices.push(VoiceConfig {
+            id: member.id.clone(),
+            name: member.name.clone(),
+            avatar: member.avatar.clone(),
+            gain: 1.0,
+            muted: false,
+            seen: Some(today),
+            present: true,
+        });
+        return true;
+    };
+    voice.present = true;
+    let mut changed = false;
+    if voice.seen != Some(today) {
+        voice.seen = Some(today);
+        changed = true;
+    }
+    if voice.name != member.name {
+        voice.name = member.name.clone();
+        changed = true;
+    }
+    if member.avatar.is_some() && voice.avatar != member.avatar {
+        voice.avatar = member.avatar.clone();
+        changed = true;
+    }
+    changed
+}
+
 impl Graph {
     /// Bind a stream to read where it was sent, and queue that for the tick.
     pub(super) fn watch_stream_target(
@@ -179,11 +212,25 @@ impl Graph {
     /// person in it on the call's row, none for anyone else.
     pub(super) fn sync_voices(&mut self) {
         let row = self.call_row();
-        let labels = voice_labels(&self.call);
+        self.note_call(row);
+        // On the graph: what is wanted, labelled as the client was told.
+        let wanted: Vec<((SourceId, String), String)> = match row {
+            Some(row) => self
+                .call
+                .iter()
+                .zip(voice_labels(&self.call))
+                .map(|(member, label)| ((row, member.id.clone()), label))
+                .collect(),
+            None => Vec::new(),
+        };
+        self.drop_departed(&wanted);
+        self.add_arrived(wanted);
+    }
 
-        // Who is present, in the config: the level a person had last time
-        // is theirs again. Someone not seen for long is forgotten, and
-        // someone known from before days were counted is counted from now.
+    /// Who is present, in the config: the level a person had last time is
+    /// theirs again. Someone not seen for long is forgotten, and someone
+    /// known from before days were counted is counted from now.
+    fn note_call(&mut self, row: Option<SourceId>) {
         let today = today();
         for source in &mut self.config.sources {
             if remember(&mut source.voices, today) {
@@ -192,54 +239,19 @@ impl Graph {
         }
         if let Some(cfg) = row.and_then(|id| self.config.source_mut(id)) {
             for member in &self.call {
-                match cfg.voices.iter_mut().find(|voice| voice.id == member.id) {
-                    Some(voice) => {
-                        voice.present = true;
-                        if voice.seen != Some(today) {
-                            voice.seen = Some(today);
-                            self.dirty = true;
-                        }
-                        if voice.name != member.name {
-                            voice.name = member.name.clone();
-                            self.dirty = true;
-                        }
-                        if member.avatar.is_some() && voice.avatar != member.avatar {
-                            voice.avatar = member.avatar.clone();
-                            self.dirty = true;
-                        }
-                    }
-                    None => {
-                        cfg.voices.push(VoiceConfig {
-                            id: member.id.clone(),
-                            name: member.name.clone(),
-                            avatar: member.avatar.clone(),
-                            gain: 1.0,
-                            muted: false,
-                            seen: Some(today),
-                            present: true,
-                        });
-                        self.dirty = true;
-                    }
+                if meet(&mut cfg.voices, member, today) {
+                    self.dirty = true;
                 }
             }
         }
+    }
 
-        // On the graph: what is wanted, labelled as the client was told.
-        let wanted: Vec<((SourceId, String), String)> = match row {
-            Some(row) => self
-                .call
-                .iter()
-                .zip(labels)
-                .map(|(member, label)| ((row, member.id.clone()), label))
-                .collect(),
-            None => Vec::new(),
-        };
-        // Someone gone from the call keeps their sink a while; one whose
-        // name changed gets a new one at once, since the client looks
-        // their output up by it.
-        // A sink kept for someone who left goes at once when someone in the
-        // call needs its name: two outputs called the same, and the client
-        // could pick the one nobody listens to.
+    /// Someone gone from the call keeps their sink a while; one whose name
+    /// changed gets a new one at once, since the client looks their output
+    /// up by it. A sink kept for someone who left goes at once when someone
+    /// in the call needs its name: two outputs called the same, and the
+    /// client could pick the one nobody listens to.
+    fn drop_departed(&mut self, wanted: &[((SourceId, String), String)]) {
         let now = std::time::Instant::now();
         let mut gone: Vec<(SourceId, String)> = Vec::new();
         for (key, voice) in &mut self.voices {
@@ -260,6 +272,11 @@ impl Graph {
                 log::info!("{label} left the call");
             }
         }
+    }
+
+    /// A sink for each person in the call who has none yet, at the level
+    /// the config keeps for them.
+    fn add_arrived(&mut self, wanted: Vec<((SourceId, String), String)>) {
         for ((row, user), label) in wanted {
             if self.voices.contains_key(&(row, user.clone())) {
                 continue;
