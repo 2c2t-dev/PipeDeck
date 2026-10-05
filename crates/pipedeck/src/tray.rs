@@ -71,6 +71,7 @@ const QUIT: i32 = 2;
 
 /// What is on the bus while the icon shows.
 struct Shown {
+    connection: gio::DBusConnection,
     registrations: Vec<gio::RegistrationId>,
     name: gio::OwnerId,
 }
@@ -133,12 +134,16 @@ pub fn show(app: &adw::Application, on: bool) {
         return;
     }
     if !on {
-        hide(app);
+        hide();
         return;
     }
-    let Some(connection) = app.dbus_connection() else {
-        return;
-    };
+    if let Some(connection) = app.dbus_connection() {
+        show_on(app, &connection);
+    }
+}
+
+/// Put the icon and its menu on a bus.
+fn show_on(app: &adw::Application, connection: &gio::DBusConnection) {
     let (Some(item), Some(menu)) = (
         gio::DBusNodeInfo::for_xml(ITEM_XML)
             .ok()
@@ -184,7 +189,7 @@ pub fn show(app: &adw::Application, on: bool) {
     // watcher is told of it once it is ours.
     let service = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
     let name = gio::bus_own_name_on_connection(
-        &connection,
+        connection,
         &service,
         gio::BusNameOwnerFlags::NONE,
         {
@@ -195,6 +200,7 @@ pub fn show(app: &adw::Application, on: bool) {
     );
     SHOWN.with(|shown| {
         *shown.borrow_mut() = Some(Shown {
+            connection: connection.clone(),
             registrations: vec![item_registration, menu_registration],
             name,
         });
@@ -202,16 +208,14 @@ pub fn show(app: &adw::Application, on: bool) {
 }
 
 /// Take the icon away: release its name and its objects.
-fn hide(app: &adw::Application) {
+fn hide() {
     SHOWN.with(|shown| {
         let Some(shown) = shown.borrow_mut().take() else {
             return;
         };
         gio::bus_unown_name(shown.name);
-        if let Some(connection) = app.dbus_connection() {
-            for id in shown.registrations {
-                let _ = connection.unregister_object(id);
-            }
+        for id in shown.registrations {
+            let _ = shown.connection.unregister_object(id);
         }
     });
 }
@@ -327,6 +331,9 @@ fn tell_watcher(connection: &gio::DBusConnection, service: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
     use super::*;
 
     #[test]
@@ -392,6 +399,218 @@ mod tests {
             Some("dev._2c2t.Pipedeck")
         );
         assert_eq!(menu_property("Version").get::<u32>(), Some(3));
+    }
+
+    /// A bus of the test's own, so nothing reaches the desktop's: a
+    /// dbus-daemon, stopped once the test is done with it.
+    struct PrivateBus {
+        daemon: std::process::Child,
+        address: String,
+    }
+
+    impl PrivateBus {
+        fn start() -> Option<Self> {
+            use std::io::BufRead;
+            let mut daemon = std::process::Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--print-address"])
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .ok()?;
+            let mut address = String::new();
+            std::io::BufReader::new(daemon.stdout.take()?)
+                .read_line(&mut address)
+                .ok()?;
+            Some(PrivateBus {
+                daemon,
+                address: address.trim().to_owned(),
+            })
+        }
+
+        fn connect(&self) -> gio::DBusConnection {
+            gio::DBusConnection::for_address_sync(
+                &self.address,
+                gio::DBusConnectionFlags::AUTHENTICATION_CLIENT
+                    | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION,
+                None,
+                gio::Cancellable::NONE,
+            )
+            .expect("the private bus answers")
+        }
+    }
+
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            let _ = self.daemon.kill();
+            let _ = self.daemon.wait();
+        }
+    }
+
+    const WATCHER_XML: &str = r#"<node>
+      <interface name="org.kde.StatusNotifierWatcher">
+        <method name="RegisterStatusNotifierItem"><arg type="s" direction="in"/></method>
+      </interface>
+    </node>"#;
+
+    fn call(
+        connection: &gio::DBusConnection,
+        to: &str,
+        path: &str,
+        interface: &str,
+        method: &str,
+        args: glib::Variant,
+    ) -> glib::Variant {
+        connection
+            .call_sync(
+                Some(to),
+                path,
+                interface,
+                method,
+                Some(&args),
+                None,
+                gio::DBusCallFlags::NONE,
+                5000,
+                gio::Cancellable::NONE,
+            )
+            .unwrap_or_else(|e| panic!("{interface}.{method}: {e}"))
+    }
+
+    /// What the notification area makes of the icon: who told it, the
+    /// icon's id and menu, and how many entries the menu has.
+    type Seen = (String, String, String, usize);
+
+    /// A notification area, on a thread of its own as it is a process of
+    /// its own on a desktop: it waits to be told of an icon, then reads it.
+    fn notification_area(address: String, ready: mpsc::Sender<()>, seen: mpsc::Sender<Seen>) {
+        let context = glib::MainContext::new();
+        context
+            .with_thread_default(|| {
+                let connection = gio::DBusConnection::for_address_sync(
+                    &address,
+                    gio::DBusConnectionFlags::AUTHENTICATION_CLIENT
+                        | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION,
+                    None,
+                    gio::Cancellable::NONE,
+                )
+                .unwrap();
+                let told = std::rc::Rc::new(RefCell::new(None::<String>));
+                let watcher = gio::DBusNodeInfo::for_xml(WATCHER_XML).unwrap();
+                let _registration = connection
+                    .register_object(
+                        "/StatusNotifierWatcher",
+                        &watcher
+                            .lookup_interface("org.kde.StatusNotifierWatcher")
+                            .unwrap(),
+                    )
+                    .method_call({
+                        let told = told.clone();
+                        move |_, _, _, _, _, params, invocation| {
+                            *told.borrow_mut() = params.child_value(0).get();
+                            invocation.return_value(None);
+                        }
+                    })
+                    .build()
+                    .unwrap();
+                call(
+                    &connection,
+                    "org.freedesktop.DBus",
+                    "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus",
+                    "RequestName",
+                    ("org.kde.StatusNotifierWatcher", 0u32).to_variant(),
+                );
+                ready.send(()).unwrap();
+
+                let end = Instant::now() + Duration::from_secs(10);
+                while told.borrow().is_none() && Instant::now() < end {
+                    context.iteration(false);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let Some(service) = told.take() else {
+                    return;
+                };
+                let property = |name: &str| {
+                    call(
+                        &connection,
+                        &service,
+                        ITEM_PATH,
+                        "org.freedesktop.DBus.Properties",
+                        "Get",
+                        ("org.kde.StatusNotifierItem", name).to_variant(),
+                    )
+                    .child_value(0)
+                    .as_variant()
+                    .unwrap()
+                };
+                let id: String = property("Id").get().unwrap();
+                let menu = property("Menu").str().unwrap().to_owned();
+                let layout = call(
+                    &connection,
+                    &service,
+                    &menu,
+                    "com.canonical.dbusmenu",
+                    "GetLayout",
+                    (0i32, -1i32, Vec::<String>::new()).to_variant(),
+                );
+                let entries = layout.child_value(1).child_value(2).n_children();
+                seen.send((service, id, menu, entries)).unwrap();
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn the_icon_is_put_on_a_bus_and_taken_off_it() {
+        let Some(bus) = PrivateBus::start() else {
+            eprintln!("no dbus-daemon here: skipped");
+            return;
+        };
+        let (ready, is_ready) = mpsc::channel();
+        let (seen, has_seen) = mpsc::channel();
+        let area = {
+            let address = bus.address.clone();
+            std::thread::spawn(move || notification_area(address, ready, seen))
+        };
+        is_ready.recv().unwrap();
+
+        let context = glib::MainContext::new();
+        context
+            .with_thread_default(|| {
+                let connection = bus.connect();
+                let app = adw::Application::builder()
+                    .application_id("dev._2c2t.PipedeckTrayTest")
+                    .build();
+                show_on(&app, &connection);
+
+                // The name is taken, the area told and the icon read while
+                // this thread answers.
+                let end = Instant::now() + Duration::from_secs(10);
+                let seen = loop {
+                    context.iteration(false);
+                    if let Ok(seen) = has_seen.try_recv() {
+                        break seen;
+                    }
+                    assert!(Instant::now() < end, "the notification area saw nothing");
+                    std::thread::sleep(Duration::from_millis(5));
+                };
+                let service = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
+                assert_eq!(
+                    seen,
+                    (service.clone(), "pipedeck".into(), MENU_PATH.into(), 2)
+                );
+
+                hide();
+                let owned = call(
+                    &connection,
+                    "org.freedesktop.DBus",
+                    "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus",
+                    "NameHasOwner",
+                    (service,).to_variant(),
+                );
+                assert_eq!(owned.child_value(0).get::<bool>(), Some(false));
+                assert!(SHOWN.with(|shown| shown.borrow().is_none()));
+            })
+            .unwrap();
+        area.join().unwrap();
     }
 
     #[test]
