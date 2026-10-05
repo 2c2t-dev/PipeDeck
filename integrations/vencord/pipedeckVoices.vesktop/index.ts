@@ -145,7 +145,7 @@ function watch(pc: RTCPeerConnection) {
     if (watched.has(pc)) return;
     watched.add(pc);
     pc.addEventListener("track", event => {
-        const { track, streams } = event as RTCTrackEvent;
+        const { track, streams } = event;
         const user = streams.map(stream => named(stream.id)).find(Boolean);
         if (user) learn(track.id, user);
     });
@@ -231,7 +231,7 @@ async function route(element: HTMLMediaElement) {
         return;
     }
     const { output } = entry;
-    if (output && output.device === device && output.track === track.id) return;
+    if (output?.device === device && output.track === track.id) return;
     release(element, entry);
     try {
         // The sink is given with the context, which has an output of its

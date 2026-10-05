@@ -8,12 +8,12 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 import { IpcMainInvokeEvent } from "electron";
-import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "fs";
-import { createConnection, Socket } from "net";
-import { homedir, tmpdir } from "os";
-import { dirname, join } from "path";
+import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { createConnection, Socket } from "node:net";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 const logDir = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "pipedeck");
 const logFile = join(logDir, "vencord-voices.log");
