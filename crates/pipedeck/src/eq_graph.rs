@@ -622,31 +622,33 @@ impl EqGraph {
     fn draw(&self, cr: &gtk::cairo::Context, width: f64, height: f64) {
         let values = self.values.borrow();
         let fg = self.area.color();
-        let set = |cr: &gtk::cairo::Context, color: &gtk::gdk::RGBA, alpha: f64| {
-            cr.set_source_rgba(
-                color.red().into(),
-                color.green().into(),
-                color.blue().into(),
-                alpha,
-            );
-        };
-        let colour = |cr: &gtk::cairo::Context, (r, g, b): (f64, f64, f64), alpha: f64| {
-            cr.set_source_rgba(r, g, b, alpha);
-        };
-        let top = ZONE_BAR;
 
         // The ground.
         rounded(cr, 0.0, 0.0, width, height, 10.0);
-        set(cr, &fg, 0.04);
+        paint(cr, &fg, 0.04);
         let _ = cr.fill();
 
-        // The zones: every other one shaded, the one pointed at more, each
-        // named along the top.
+        self.draw_zones(cr, &fg, width, height);
+        let flat = draw_grid(cr, &fg, width, height);
+        const POINTS: usize = 240;
+        let xs: Vec<f64> = (0..=POINTS)
+            .map(|i| MARGIN + (width - 2.0 * MARGIN) * i as f64 / POINTS as f64)
+            .collect();
+        self.draw_bands(cr, &values, &xs, flat, width, height);
+        draw_curve(cr, &fg, &values, &xs, width, height);
+        self.draw_handles(cr, &fg, &values, width, height);
+    }
+
+    /// The zones: every other one shaded, the one pointed at more, each
+    /// named along the top.
+    fn draw_zones(&self, cr: &gtk::cairo::Context, fg: &gtk::gdk::RGBA, width: f64, height: f64) {
+        let top = ZONE_BAR;
         cr.set_font_size(10.0);
         for (index, zone) in ZONES.iter().enumerate() {
             let from = freq_to_x(zone.from, width);
             let to = freq_to_x(zone.to, width);
-            let alpha = if self.zone.get() == Some(index) {
+            let pointed = self.zone.get() == Some(index);
+            let alpha = if pointed {
                 0.07
             } else if index % 2 == 1 {
                 0.025
@@ -655,115 +657,153 @@ impl EqGraph {
             };
             if alpha > 0.0 {
                 cr.rectangle(from, top, to - from, height - top - MARGIN);
-                set(cr, &fg, alpha);
+                paint(cr, fg, alpha);
                 let _ = cr.fill();
             }
-            if let Ok(extents) = cr.text_extents(zone.name) {
-                let x = (from + to) / 2.0 - extents.width() / 2.0;
-                if extents.width() < to - from - 4.0 {
-                    cr.move_to(x, top - 5.0);
-                    let emphasis = if self.zone.get() == Some(index) {
-                        0.85
-                    } else {
-                        0.4
-                    };
-                    set(cr, &fg, emphasis);
-                    let _ = cr.show_text(zone.name);
-                }
+            let Ok(extents) = cr.text_extents(zone.name) else {
+                continue;
+            };
+            if extents.width() < to - from - 4.0 {
+                cr.move_to((from + to) / 2.0 - extents.width() / 2.0, top - 5.0);
+                paint(cr, fg, if pointed { 0.85 } else { 0.4 });
+                let _ = cr.show_text(zone.name);
             }
         }
+    }
 
-        // Decades and the usual landmarks across, decibels along.
-        cr.set_line_width(1.0);
-        for freq in [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0] {
-            let x = freq_to_x(freq, width).round() + 0.5;
-            cr.move_to(x, top);
-            cr.line_to(x, height - MARGIN);
-        }
-        set(cr, &fg, 0.06);
-        let _ = cr.stroke();
-        for db in [-12.0, -6.0, 6.0, 12.0] {
-            let y = db_to_y(db, height).round() + 0.5;
-            cr.move_to(MARGIN, y);
-            cr.line_to(width - MARGIN, y);
-        }
-        set(cr, &fg, 0.05);
-        let _ = cr.stroke();
-        let flat = db_to_y(0.0, height).round() + 0.5;
-        cr.move_to(MARGIN, flat);
-        cr.line_to(width - MARGIN, flat);
-        set(cr, &fg, 0.18);
-        let _ = cr.stroke();
-
-        set(cr, &fg, 0.45);
-        for (freq, text) in [(100.0, "100"), (1000.0, "1k"), (10000.0, "10k")] {
-            let x = freq_to_x(freq, width);
-            cr.move_to(x + 3.0, height - MARGIN - 3.0);
-            let _ = cr.show_text(text);
-        }
-        for (db, text) in [(12.0, "+12"), (-12.0, "-12")] {
-            cr.move_to(MARGIN + 3.0, db_to_y(db, height) - 3.0);
-            let _ = cr.show_text(text);
-        }
-
-        // Each band's own shape, in its colour, the picked one plainer.
-        const POINTS: usize = 240;
-        let xs: Vec<f64> = (0..=POINTS)
-            .map(|i| MARGIN + (width - 2.0 * MARGIN) * i as f64 / POINTS as f64)
-            .collect();
-        let filters = eq::design(&values);
+    /// Each band's own shape, in its colour, the picked one plainer.
+    fn draw_bands(
+        &self,
+        cr: &gtk::cairo::Context,
+        values: &[f32],
+        xs: &[f64],
+        flat: f64,
+        width: f64,
+        height: f64,
+    ) {
+        let filters = eq::design(values);
         for (band, filter) in filters.iter().enumerate() {
-            if !band_on(&values, band) {
+            if !band_on(values, band) {
                 continue;
             }
             let picked = self.selected.get() == band || self.hovered.get() == Some(band);
             cr.move_to(xs[0], flat);
-            for x in &xs {
+            for x in xs {
                 let db = filter.response_db(x_to_freq(*x, width));
                 cr.line_to(*x, db_to_y(db, height));
             }
-            cr.line_to(xs[POINTS], flat);
+            cr.line_to(xs[xs.len() - 1], flat);
             cr.close_path();
-            colour(cr, BAND_COLOURS[band], if picked { 0.22 } else { 0.1 });
+            tint(cr, BAND_COLOURS[band], if picked { 0.22 } else { 0.1 });
             let _ = cr.fill_preserve();
             cr.set_line_width(1.0);
-            colour(cr, BAND_COLOURS[band], if picked { 0.7 } else { 0.35 });
+            tint(cr, BAND_COLOURS[band], if picked { 0.7 } else { 0.35 });
             let _ = cr.stroke();
         }
+    }
 
-        // The curve all the bands make together.
-        for (i, x) in xs.iter().enumerate() {
-            let db = eq::response(&values, x_to_freq(*x, width));
-            let y = db_to_y(db, height);
-            if i == 0 {
-                cr.move_to(*x, y);
-            } else {
-                cr.line_to(*x, y);
-            }
-        }
-        cr.set_line_width(2.5);
-        set(cr, &fg, 0.92);
-        let _ = cr.stroke();
-
-        // The handles, each in its colour, the one pointed at larger.
+    /// The handles, each in its colour, the one pointed at larger.
+    fn draw_handles(
+        &self,
+        cr: &gtk::cairo::Context,
+        fg: &gtk::gdk::RGBA,
+        values: &[f32],
+        width: f64,
+        height: f64,
+    ) {
         for band in 0..BAND_LAYOUT.len() {
-            let (x, y) = handle(&values, band, width, height);
-            let on = band_on(&values, band);
+            let (x, y) = handle(values, band, width, height);
+            let on = band_on(values, band);
             let active = self.hovered.get() == Some(band);
             let picked = self.selected.get() == band;
             let radius = if active { HANDLE + 2.0 } else { HANDLE };
             cr.arc(x, y, radius, 0.0, std::f64::consts::TAU);
             if on || BAND_LAYOUT[band].gain.is_some() {
-                colour(cr, BAND_COLOURS[band], 1.0);
+                tint(cr, BAND_COLOURS[band], 1.0);
             } else {
-                set(cr, &fg, 0.35);
+                paint(cr, fg, 0.35);
             }
             let _ = cr.fill_preserve();
             cr.set_line_width(if active || picked { 2.5 } else { 1.5 });
-            set(cr, &fg, if active || picked { 0.95 } else { 0.5 });
+            paint(cr, fg, if active || picked { 0.95 } else { 0.5 });
             let _ = cr.stroke();
         }
     }
+}
+
+/// Paint with the foreground colour, at some opacity.
+fn paint(cr: &gtk::cairo::Context, color: &gtk::gdk::RGBA, alpha: f64) {
+    cr.set_source_rgba(
+        color.red().into(),
+        color.green().into(),
+        color.blue().into(),
+        alpha,
+    );
+}
+
+/// Paint with one of the bands' colours, at some opacity.
+fn tint(cr: &gtk::cairo::Context, (r, g, b): (f64, f64, f64), alpha: f64) {
+    cr.set_source_rgba(r, g, b, alpha);
+}
+
+/// Decades and the usual landmarks across, decibels along, and their
+/// figures. Says where the flat line is.
+fn draw_grid(cr: &gtk::cairo::Context, fg: &gtk::gdk::RGBA, width: f64, height: f64) -> f64 {
+    let top = ZONE_BAR;
+    cr.set_line_width(1.0);
+    for freq in [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0] {
+        let x = freq_to_x(freq, width).round() + 0.5;
+        cr.move_to(x, top);
+        cr.line_to(x, height - MARGIN);
+    }
+    paint(cr, fg, 0.06);
+    let _ = cr.stroke();
+    for db in [-12.0, -6.0, 6.0, 12.0] {
+        let y = db_to_y(db, height).round() + 0.5;
+        cr.move_to(MARGIN, y);
+        cr.line_to(width - MARGIN, y);
+    }
+    paint(cr, fg, 0.05);
+    let _ = cr.stroke();
+    let flat = db_to_y(0.0, height).round() + 0.5;
+    cr.move_to(MARGIN, flat);
+    cr.line_to(width - MARGIN, flat);
+    paint(cr, fg, 0.18);
+    let _ = cr.stroke();
+
+    paint(cr, fg, 0.45);
+    for (freq, text) in [(100.0, "100"), (1000.0, "1k"), (10000.0, "10k")] {
+        let x = freq_to_x(freq, width);
+        cr.move_to(x + 3.0, height - MARGIN - 3.0);
+        let _ = cr.show_text(text);
+    }
+    for (db, text) in [(12.0, "+12"), (-12.0, "-12")] {
+        cr.move_to(MARGIN + 3.0, db_to_y(db, height) - 3.0);
+        let _ = cr.show_text(text);
+    }
+    flat
+}
+
+/// The curve all the bands make together.
+fn draw_curve(
+    cr: &gtk::cairo::Context,
+    fg: &gtk::gdk::RGBA,
+    values: &[f32],
+    xs: &[f64],
+    width: f64,
+    height: f64,
+) {
+    for (i, x) in xs.iter().enumerate() {
+        let y = db_to_y(eq::response(values, x_to_freq(*x, width)), height);
+        if i == 0 {
+            cr.move_to(*x, y);
+        } else {
+            cr.line_to(*x, y);
+        }
+    }
+    cr.set_line_width(2.5);
+    paint(cr, fg, 0.92);
+    let _ = cr.stroke();
 }
 
 /// A small disc of a band's colour, for its chip.
