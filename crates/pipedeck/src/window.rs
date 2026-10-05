@@ -11,8 +11,8 @@ use libadwaita as adw;
 
 use pipedeck_engine::stereotool::Status;
 use pipedeck_engine::{
-    vst3::Plugin, App, Command, Device, Event, MixConfig, MixId, SourceConfig, SourceId,
-    StateSnapshot, VoiceConfig, MAX_MIXES,
+    vst3::Plugin, App, ChainState, Command, Device, Effect, EffectLevel, Event, MixConfig, MixId,
+    SourceConfig, SourceId, StateSnapshot, VoiceConfig, MAX_MIXES,
 };
 
 use crate::cell::{link_button, Cell};
@@ -278,97 +278,13 @@ impl Window {
             } => {
                 self.draw_levels(&sources, &mixes);
                 self.draw_voice_levels(&voices);
-                let open = self.channel_dialog.borrow().clone();
-                if let Some(dialog) = open.filter(|dialog| dialog.is_open()) {
-                    let levels: Vec<(usize, f32, f32)> = effects
-                        .iter()
-                        .filter(|effect| effect.source == dialog.id())
-                        .map(|effect| (effect.index, effect.level, effect.reduction))
-                        .collect();
-                    dialog.set_effect_levels(&levels);
-                }
+                self.draw_effect_levels(&effects);
             }
-            Event::LinkChanged { source, mix, state } => {
-                if let Some(cell) = self.cells.borrow().get(&(source, mix)) {
-                    cell.set_state(state);
-                }
-                if let Some(link) = self
-                    .state
-                    .borrow_mut()
-                    .links
-                    .iter_mut()
-                    .find(|l| l.source == source && l.mix == mix)
-                {
-                    link.set_state(state);
-                }
-            }
-            Event::MixChanged { id, state } => {
-                // A level can move outside the mixer: a media key, a volume
-                // applet, anything holding the same sink.
-                if let Some(mix) = self
-                    .state
-                    .borrow_mut()
-                    .mixes
-                    .iter_mut()
-                    .find(|m| m.id == id)
-                {
-                    mix.set_state(state);
-                }
-                if let Some(dialog) = self.mix_dialog.borrow().as_ref() {
-                    if dialog.id() == id {
-                        dialog.set_state(state);
-                    }
-                }
-            }
-            Event::SourceChanged { id, state } => {
-                if let Some(source) = self
-                    .state
-                    .borrow_mut()
-                    .sources
-                    .iter_mut()
-                    .find(|s| s.id == id)
-                {
-                    source.set_state(state);
-                }
-                if let Some(dialog) = self.channel_dialog.borrow().as_ref() {
-                    if dialog.id() == id {
-                        dialog.set_state(state);
-                    }
-                }
-            }
-            Event::OutputChanged { id, index, state } => {
-                // The window that moved it already shows the new value, but
-                // the windows are drawn again from this copy: left as it was,
-                // the next time would put the fader back where it had been.
-                if let Some(output) = self
-                    .state
-                    .borrow_mut()
-                    .mixes
-                    .iter_mut()
-                    .find(|m| m.id == id)
-                    .and_then(|mix| mix.outputs.get_mut(index))
-                {
-                    output.set_state(state);
-                }
-            }
-            Event::SourceEffects { id, effects } => {
-                // Nothing on the grid shows a setting, so only the
-                // channel's window, if it is up, is told.
-                self.channel_dialog.borrow_mut().take_if(|d| !d.is_open());
-                let open = self.channel_dialog.borrow().clone();
-                if let Some(dialog) = open.filter(|dialog| dialog.id() == id) {
-                    dialog.set_effects(&effects);
-                }
-                if let Some(source) = self
-                    .state
-                    .borrow_mut()
-                    .sources
-                    .iter_mut()
-                    .find(|source| source.id == id)
-                {
-                    source.effects = effects;
-                }
-            }
+            Event::LinkChanged { source, mix, state } => self.link_changed(source, mix, state),
+            Event::MixChanged { id, state } => self.mix_changed(id, state),
+            Event::SourceChanged { id, state } => self.source_changed(id, state),
+            Event::OutputChanged { id, index, state } => self.output_changed(id, index, state),
+            Event::SourceEffects { id, effects } => self.effects_changed(id, effects),
             Event::Error(message) => self.toast(&message),
             Event::Notice(message) => {
                 log::info!("{message}");
@@ -379,6 +295,105 @@ impl Window {
                 self.rebuild();
                 self.toast("Audio engine stopped");
             }
+        }
+    }
+
+    /// What the effects of the channel whose window is up are doing.
+    fn draw_effect_levels(&self, effects: &[EffectLevel]) {
+        let open = self.channel_dialog.borrow().clone();
+        if let Some(dialog) = open.filter(|dialog| dialog.is_open()) {
+            let levels: Vec<(usize, f32, f32)> = effects
+                .iter()
+                .filter(|effect| effect.source == dialog.id())
+                .map(|effect| (effect.index, effect.level, effect.reduction))
+                .collect();
+            dialog.set_effect_levels(&levels);
+        }
+    }
+
+    fn link_changed(&self, source: SourceId, mix: MixId, state: ChainState) {
+        if let Some(cell) = self.cells.borrow().get(&(source, mix)) {
+            cell.set_state(state);
+        }
+        if let Some(link) = self
+            .state
+            .borrow_mut()
+            .links
+            .iter_mut()
+            .find(|l| l.source == source && l.mix == mix)
+        {
+            link.set_state(state);
+        }
+    }
+
+    /// A level can move outside the mixer: a media key, a volume applet,
+    /// anything holding the same sink.
+    fn mix_changed(&self, id: MixId, state: ChainState) {
+        if let Some(mix) = self
+            .state
+            .borrow_mut()
+            .mixes
+            .iter_mut()
+            .find(|m| m.id == id)
+        {
+            mix.set_state(state);
+        }
+        if let Some(dialog) = self.mix_dialog.borrow().as_ref() {
+            if dialog.id() == id {
+                dialog.set_state(state);
+            }
+        }
+    }
+
+    fn source_changed(&self, id: SourceId, state: ChainState) {
+        if let Some(source) = self
+            .state
+            .borrow_mut()
+            .sources
+            .iter_mut()
+            .find(|s| s.id == id)
+        {
+            source.set_state(state);
+        }
+        if let Some(dialog) = self.channel_dialog.borrow().as_ref() {
+            if dialog.id() == id {
+                dialog.set_state(state);
+            }
+        }
+    }
+
+    /// The window that moved it already shows the new value, but the
+    /// windows are drawn again from this copy: left as it was, the next
+    /// time would put the fader back where it had been.
+    fn output_changed(&self, id: MixId, index: usize, state: ChainState) {
+        if let Some(output) = self
+            .state
+            .borrow_mut()
+            .mixes
+            .iter_mut()
+            .find(|m| m.id == id)
+            .and_then(|mix| mix.outputs.get_mut(index))
+        {
+            output.set_state(state);
+        }
+    }
+
+    /// Nothing on the grid shows a setting, so only the channel's window,
+    /// if it is up, is told.
+    fn effects_changed(&self, id: SourceId, effects: Vec<Effect>) {
+        self.channel_dialog.borrow_mut().take_if(|d| !d.is_open());
+        let open = self.channel_dialog.borrow().clone();
+        if let Some(dialog) = open.filter(|dialog| dialog.id() == id) {
+            dialog.set_effects(&effects);
+        }
+        if let Some(source) = self
+            .state
+            .borrow_mut()
+            .sources
+            .iter_mut()
+            .find(|source| source.id == id)
+        {
+            source.effects = effects;
         }
     }
 
