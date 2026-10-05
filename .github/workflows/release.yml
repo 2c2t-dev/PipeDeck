@@ -73,11 +73,10 @@ jobs:
           name: release-appimage
           path: dist/*.AppImage
 
-  # The Flatpak, its bundle for the release and its repository for the
-  # site; see flatpak.yml.
+  # The Flatpak's bundle, which 2c2t's Flatpak repository takes from the
+  # release; see flatpak.yml.
   flatpak:
     uses: ./.github/workflows/flatpak.yml
-    secrets: inherit
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
@@ -85,7 +84,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: write
     steps:
       - uses: actions/checkout@v7
       # The packages are named after Cargo.toml's version: a tag that says
@@ -124,11 +122,3 @@ jobs:
           fail_on_unmatched_files: true
           body_path: notes.md
           generate_release_notes: true
-      # The site serves the latest release's Flatpak repository: it is
-      # published again with it. A release made with this workflow's token
-      # starts no workflow of its own, but asking for one does.
-      - name: Publish the site with the new Flatpak repository
-        if: hashFiles('dist/pipedeck-flatpak-repo.tar.gz') != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run site.yml --repo "$GITHUB_REPOSITORY" --ref main

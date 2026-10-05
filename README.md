@@ -40,12 +40,13 @@ Each [release](https://github.com/2c2t-dev/PipeDeck/releases) has:
 All three need a GTK at least 4.18, a libadwaita at least 1.7 and PipeWire
 1.2 or later, which is why older releases are not covered.
 
-On any distribution, Pipedeck also comes as a Flatpak, from its own
-repository, and is kept up to date with your other Flatpaks:
+On any distribution, Pipedeck also comes as a Flatpak, from
+[2c2t's repository](https://flatpak.2c2t.dev/), and is kept up to date with
+your other Flatpaks:
 
 ```sh
-flatpak remote-add --if-not-exists pipedeck https://pipedeck.2c2t.dev/pipedeck.flatpakrepo
-flatpak install pipedeck dev._2c2t.Pipedeck
+flatpak remote-add --if-not-exists 2c2t https://flatpak.2c2t.dev/2c2t.flatpakrepo
+flatpak install 2c2t dev._2c2t.Pipedeck
 ```
 
 From its sandbox, Pipedeck cannot install StreamController's and Vesktop's
