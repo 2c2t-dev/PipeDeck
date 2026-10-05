@@ -1413,10 +1413,29 @@ impl Graph {
         let cfg = cfg.clone();
         self.dirty = true;
 
-        // The same effects in the same order, some of them set otherwise: the
-        // mixer's own take their settings where they run, and the chain is
-        // left alone. Only PipeWire's own filters, fixed when their module is
-        // loaded, need it made again, and only when one of theirs moved.
+        if self.retune_effects(id, &before, &cfg) {
+            return Ok(());
+        }
+
+        let (had_chain, had_plugins) = self.sources.get(&id).map_or((false, false), |source| {
+            (source.effects.is_some(), source.plugins.is_some())
+        });
+        let has_chain = !cfg.effects.is_empty();
+        let has_plugins = cfg.effects.iter().any(|effect| effect.is_plugin());
+        if had_chain && has_chain && !had_plugins && !has_plugins {
+            self.reload_chain(id, &cfg);
+        } else {
+            self.rebuild_effects(id, &cfg);
+        }
+        Ok(())
+    }
+
+    /// Give a row's running effects their new settings where they run, when
+    /// the effects are the same in the same order. Says whether that was
+    /// all there was to do: only PipeWire's own filters, fixed when their
+    /// module is loaded, need it made again, and only when one of theirs
+    /// moved.
+    fn retune_effects(&self, id: SourceId, before: &[Effect], cfg: &SourceConfig) -> bool {
         let same = before.len() == cfg.effects.len()
             && before
                 .iter()
@@ -1426,57 +1445,47 @@ impl Graph {
             .sources
             .get(&id)
             .is_some_and(|source| source.plugins.is_some() || source.effects.is_some());
-        if same && running {
-            let hosted = cfg.effects.iter().filter(|effect| effect.is_plugin());
-            if let Some(chain) = self.sources.get(&id).and_then(|s| s.plugins.as_ref()) {
-                for (index, effect) in hosted.enumerate() {
-                    chain.set_params(index, &effect.controls);
-                    chain.set_bypass(index, effect.bypassed);
-                }
-            }
-            let filters_moved = before.iter().zip(&cfg.effects).any(|(old, new)| {
-                !new.is_plugin() && (old.controls != new.controls || old.bypassed != new.bypassed)
-            });
-            if !filters_moved {
-                return Ok(());
+        if !same || !running {
+            return false;
+        }
+        let hosted = cfg.effects.iter().filter(|effect| effect.is_plugin());
+        if let Some(chain) = self.sources.get(&id).and_then(|s| s.plugins.as_ref()) {
+            for (index, effect) in hosted.enumerate() {
+                chain.set_params(index, &effect.controls);
+                chain.set_bypass(index, effect.bypassed);
             }
         }
+        let filters_moved = before.iter().zip(&cfg.effects).any(|(old, new)| {
+            !new.is_plugin() && (old.controls != new.controls || old.bypassed != new.bypassed)
+        });
+        !filters_moved
+    }
 
-        let had_chain = self
+    /// Load a row's chain again behind the sink it has. Changing what a
+    /// chain runs keeps its sink: recreating that sink would put a second
+    /// node behind the same name for a moment, and the new chain would as
+    /// likely feed the old one as the new.
+    fn reload_chain(&mut self, id: SourceId, cfg: &SourceConfig) {
+        if let Some(fx) = self
             .sources
-            .get(&id)
-            .is_some_and(|source| source.effects.is_some());
-        let has_chain = !cfg.effects.is_empty();
-
-        let had_plugins = self
-            .sources
-            .get(&id)
-            .is_some_and(|source| source.plugins.is_some());
-        let has_plugins = cfg.effects.iter().any(|effect| effect.is_plugin());
-
-        // Changing what a chain runs keeps its sink: recreating that sink
-        // would put a second node behind the same name for a moment, and the
-        // new chain would as likely feed the old one as the new.
-        if had_chain && has_chain && !had_plugins && !has_plugins {
-            if let Some(fx) = self
-                .sources
-                .get_mut(&id)
-                .and_then(|source| source.effects.as_mut())
-            {
-                fx.module = None;
-            }
-            let module = self.load_chain(&ChainSpec::for_source(&cfg));
-            if let Some(fx) = self
-                .sources
-                .get_mut(&id)
-                .and_then(|source| source.effects.as_mut())
-            {
-                fx.module = module;
-            }
-            return Ok(());
+            .get_mut(&id)
+            .and_then(|source| source.effects.as_mut())
+        {
+            fx.module = None;
         }
+        let module = self.load_chain(&ChainSpec::for_source(cfg));
+        if let Some(fx) = self
+            .sources
+            .get_mut(&id)
+            .and_then(|source| source.effects.as_mut())
+        {
+            fx.module = module;
+        }
+    }
 
-        // The chain appears or goes, so the cells change what they read.
+    /// Make a row's effects again from nothing. The chain appears or goes,
+    /// so the cells change what they read, and are made again too.
+    fn rebuild_effects(&mut self, id: SourceId, cfg: &SourceConfig) {
         let cells: Vec<LinkConfig> = self
             .config
             .links
@@ -1494,7 +1503,7 @@ impl Graph {
         }
         self.sink_ids.remove(&id.effects_node_name());
         self.sink_ids.remove(&id.plugins_node_name());
-        let loaded = self.load_effects(&ChainSpec::for_source(&cfg));
+        let loaded = self.load_effects(&ChainSpec::for_source(cfg));
         let (plugins_sink, plugins_bound) = self.load_plugins_sink(
             cfg.effects.iter().any(|effect| effect.is_plugin()),
             cfg.id.plugins_node_name(),
@@ -1513,7 +1522,6 @@ impl Graph {
                 self.emit(Event::Error(e.to_string()));
             }
         }
-        Ok(())
     }
 
     /// Take the Stereo Tool licence key, and open again whatever runs on it:
@@ -1929,47 +1937,51 @@ impl Graph {
     /// it is announced, and keep the device list up to date. Must not destroy
     /// anything.
     pub fn on_global(&mut self, global: &GlobalObject<&DictRef>) {
-        if global.type_ == ObjectType::Metadata {
-            let is_default = global
-                .props
-                .and_then(|p| p.get("metadata.name"))
-                .is_some_and(|name| name == "default");
-            if is_default && self.metadata.is_none() {
-                match self.registry.bind::<Metadata, _>(global) {
-                    Ok(metadata) => {
-                        log::debug!("bound the default metadata");
-                        self.metadata = Some(metadata);
-                        self.metadata_id = Some(global.id);
-                        // A metadata made again is made empty: every
-                        // application sent to a channel has to be sent
-                        // there again, or it plays wherever it likes.
-                        self.reassign_apps();
-                    }
-                    Err(e) => log::error!("cannot bind the default metadata: {e}"),
-                }
+        match global.type_ {
+            ObjectType::Metadata => self.remember_metadata(global),
+            ObjectType::Link => self.remember_link(global),
+            ObjectType::Client => self.remember_client(global),
+            ObjectType::Port => self.remember_port(global),
+            ObjectType::Node => self.remember_node(global),
+            _ => {}
+        }
+    }
+
+    /// Bind the default metadata, which says where each stream plays.
+    fn remember_metadata(&mut self, global: &GlobalObject<&DictRef>) {
+        let is_default = global
+            .props
+            .and_then(|p| p.get("metadata.name"))
+            .is_some_and(|name| name == "default");
+        if !is_default || self.metadata.is_some() {
+            return;
+        }
+        match self.registry.bind::<Metadata, _>(global) {
+            Ok(metadata) => {
+                log::debug!("bound the default metadata");
+                self.metadata = Some(metadata);
+                self.metadata_id = Some(global.id);
+                // A metadata made again is made empty: every application
+                // sent to a channel has to be sent there again, or it plays
+                // wherever it likes.
+                self.reassign_apps();
             }
-            return;
+            Err(e) => log::error!("cannot bind the default metadata: {e}"),
         }
-        if global.type_ == ObjectType::Link {
-            self.remember_link(global);
-            return;
+    }
+
+    /// Keep the clients of this process, which made the nodes that are ours.
+    fn remember_client(&mut self, global: &GlobalObject<&DictRef>) {
+        // The server fills this in from the socket, so it cannot be claimed
+        // by anyone else.
+        let pid = global.props.and_then(|p| p.get("pipewire.sec.pid"));
+        if pid == Some(std::process::id().to_string().as_str()) {
+            self.own_clients.insert(global.id);
         }
-        if global.type_ == ObjectType::Client {
-            // The server fills this in from the socket, so it cannot be
-            // claimed by anyone else.
-            let pid = global.props.and_then(|p| p.get("pipewire.sec.pid"));
-            if pid == Some(std::process::id().to_string().as_str()) {
-                self.own_clients.insert(global.id);
-            }
-            return;
-        }
-        if global.type_ == ObjectType::Port {
-            self.remember_port(global);
-            return;
-        }
-        if global.type_ != ObjectType::Node {
-            return;
-        }
+    }
+
+    /// A node: one of our stages, an application playing, or a device.
+    fn remember_node(&mut self, global: &GlobalObject<&DictRef>) {
         let Some(props) = global.props else {
             return;
         };
@@ -1987,10 +1999,9 @@ impl Graph {
                 .get("client.id")
                 .and_then(|id| id.parse::<u32>().ok())
                 .is_some_and(|client| self.own_clients.contains(&client));
-            if !ours {
-                return;
+            if ours {
+                self.bind_stage(owner, global);
             }
-            self.bind_stage(owner, global);
             return;
         }
         if name.starts_with(NODE_PREFIX) || name.starts_with(node_prefix()) {
@@ -2001,46 +2012,7 @@ impl Graph {
             .get("media.class")
             .is_some_and(|class| class.starts_with("Stream/Output/Audio"))
         {
-            let Some(key) = app_key(props) else {
-                return;
-            };
-            let app = App {
-                key,
-                name: app_name(props),
-                icon: props
-                    .get("application.icon-name")
-                    .or_else(|| props.get("application.id"))
-                    .map(str::to_owned),
-            };
-            // The call's application sends each person to a voice sink of
-            // theirs, and its own mix wherever the user assigned it. Which
-            // is which is in the stream's own properties, which the registry
-            // leaves out: the node is bound to read them before it is moved.
-            let watch = if app.key == voice_app() {
-                self.watch_stream_target(global)
-            } else {
-                // An application the user has assigned lands on its row's
-                // sink as soon as it starts playing.
-                if let Some(source) = self.source_for_app(&app.key) {
-                    self.move_stream(global.id, &app.name, Some(source));
-                }
-                None
-            };
-            let pid = props
-                .get("application.process.id")
-                .and_then(|pid| pid.parse().ok());
-            self.streams.insert(
-                global.id,
-                AppStream {
-                    app,
-                    pid,
-                    pinned: false,
-                    voice: None,
-                    placed: false,
-                    _watch: watch,
-                },
-            );
-            self.streams_dirty = true;
+            self.remember_stream(global, props);
             return;
         }
 
@@ -2061,6 +2033,50 @@ impl Graph {
             },
         );
         self.devices_dirty = true;
+    }
+
+    /// An application playing: sent to its channel when it has one.
+    fn remember_stream(&mut self, global: &GlobalObject<&DictRef>, props: &DictRef) {
+        let Some(key) = app_key(props) else {
+            return;
+        };
+        let app = App {
+            key,
+            name: app_name(props),
+            icon: props
+                .get("application.icon-name")
+                .or_else(|| props.get("application.id"))
+                .map(str::to_owned),
+        };
+        // The call's application sends each person to a voice sink of
+        // theirs, and its own mix wherever the user assigned it. Which is
+        // which is in the stream's own properties, which the registry leaves
+        // out: the node is bound to read them before it is moved.
+        let watch = if app.key == voice_app() {
+            self.watch_stream_target(global)
+        } else {
+            // An application the user has assigned lands on its row's sink
+            // as soon as it starts playing.
+            if let Some(source) = self.source_for_app(&app.key) {
+                self.move_stream(global.id, &app.name, Some(source));
+            }
+            None
+        };
+        let pid = props
+            .get("application.process.id")
+            .and_then(|pid| pid.parse().ok());
+        self.streams.insert(
+            global.id,
+            AppStream {
+                app,
+                pid,
+                pinned: false,
+                voice: None,
+                placed: false,
+                _watch: watch,
+            },
+        );
+        self.streams_dirty = true;
     }
 
     fn bind_stage(&mut self, owner: StageRef, global: &GlobalObject<&DictRef>) {
