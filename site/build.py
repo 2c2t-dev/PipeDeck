@@ -21,6 +21,8 @@ SITE = Path(__file__).resolve().parent
 ORIGIN = "https://pipedeck.2c2t.dev"
 # The order of the language menu; the first is the root's.
 LANGUAGES = ["en", "fr", "de", "es", "it"]
+# The page each language's folder opens on.
+HOME = "index.html"
 # Not copied as they are: what the pages are made from.
 SOURCES = {"pages", "i18n", "build.py"}
 
@@ -32,7 +34,7 @@ def prefix(lang):
 def address(lang, page):
     """Where a page in a language is, from the root. Cloudflare Pages serves
     a page without its .html, and redirects there from the name with it."""
-    name = "" if page == "index.html" else page.removesuffix(".html")
+    name = "" if page == HOME else page.removesuffix(".html")
     return "/" + prefix(lang) + name
 
 
@@ -40,7 +42,7 @@ def structured_data(lang, strings):
     """What the home page says of Pipedeck to search engines, as JSON-LD:
     the application and the site, in the page's language. JSON escaped for
     a script element, which a "</" would end."""
-    home = ORIGIN + address(lang, "index.html")
+    home = ORIGIN + address(lang, HOME)
     data = {
         "@context": "https://schema.org",
         "@graph": [
@@ -110,7 +112,7 @@ def main():
         for lang in LANGUAGES:
             strings = dict(texts[lang])
             strings["lang"] = lang
-            strings["home"] = address(lang, "index.html")
+            strings["home"] = address(lang, HOME)
             strings["url"] = ORIGIN + address(lang, page)
             strings["alternates"] = "\n".join(
                 [

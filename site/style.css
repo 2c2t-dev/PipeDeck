@@ -121,6 +121,7 @@ section { padding-block: 72px; }
 .dot { width: 12px; height: 12px; border-radius: 50%; }
 
 /* The matrix, drawn small. */
+.matrix-figure { margin: 0; }
 .matrix-section .wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 56px; align-items: center; }
 .terms { display: grid; gap: 22px; margin-top: 28px; }
 .terms div { display: grid; gap: 4px; }
