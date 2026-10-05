@@ -476,143 +476,70 @@ impl CompGraph {
     }
 
     fn draw(&self, cr: &gtk::cairo::Context, width: f64, height: f64) {
-        let [threshold, ratio, makeup] = *self.values.borrow();
+        let values = *self.values.borrow();
         let fg = self.area.color();
-        let set = |cr: &gtk::cairo::Context, alpha: f64| {
-            cr.set_source_rgba(fg.red().into(), fg.green().into(), fg.blue().into(), alpha);
-        };
-        let colour = |cr: &gtk::cairo::Context, (r, g, b): (f64, f64, f64), alpha: f64| {
-            cr.set_source_rgba(r, g, b, alpha);
-        };
-        let (left, right) = (in_to_x(FLOOR, width), in_to_x(0.0, width));
         let (top, bottom) = (out_to_y(CEILING, height), out_to_y(FLOOR, height));
 
         rounded(cr, 0.0, 0.0, width, height, 10.0);
-        set(cr, 0.04);
+        paint(cr, &fg, 0.04);
         let _ = cr.fill();
 
-        // Left alone under the threshold, turned down over it.
-        let bend = in_to_x(threshold, width);
-        cr.rectangle(bend, top, right - bend, bottom - top);
-        colour(cr, COLOURS[THRESHOLD], 0.07);
-        let _ = cr.fill();
-        // Over 0 dB out, the sound clips.
-        let clip = out_to_y(0.0, height);
-        cr.rectangle(left, top, right - left, clip - top);
-        cr.set_source_rgba(0.878, 0.106, 0.141, 0.08);
-        let _ = cr.fill();
-
-        cr.set_font_size(10.0);
-        let label = |cr: &gtk::cairo::Context, text: &str, from: f64, to: f64, alpha: f64| {
-            if let Ok(extents) = cr.text_extents(text) {
-                if extents.width() < to - from - 4.0 {
-                    cr.move_to((from + to) / 2.0 - extents.width() / 2.0, ZONE_BAR - 5.0);
-                    set(cr, alpha);
-                    let _ = cr.show_text(text);
-                }
-            }
-        };
-        label(cr, "Left alone", left, bend, 0.45);
-        label(cr, "Turned down", bend, right, 0.6);
-        cr.move_to(left + 4.0, clip - 4.0);
-        cr.set_source_rgba(0.878, 0.106, 0.141, 0.7);
-        let _ = cr.show_text("Clips");
-
-        // A grid every 12 dB, and the diagonal: what goes in comes out.
-        cr.set_line_width(1.0);
-        // Counted in whole steps, so no rounding adds up along the way.
-        for step in 0..=(-FLOOR / 12.0) as i32 {
-            let db = FLOOR + 12.0 * step as f32;
-            let x = in_to_x(db, width).round() + 0.5;
-            cr.move_to(x, top);
-            cr.line_to(x, bottom);
-            let y = out_to_y(db, height).round() + 0.5;
-            cr.move_to(left, y);
-            cr.line_to(right, y);
-        }
-        set(cr, 0.06);
-        let _ = cr.stroke();
-        cr.set_dash(&[4.0, 4.0], 0.0);
-        cr.move_to(left, out_to_y(FLOOR, height));
-        cr.line_to(right, out_to_y(0.0, height));
-        set(cr, 0.25);
-        let _ = cr.stroke();
-        cr.set_dash(&[], 0.0);
-
-        set(cr, 0.45);
-        for db in [-48.0, -24.0, 0.0] {
-            cr.move_to(in_to_x(db, width) + 3.0, bottom - 3.0);
-            let _ = cr.show_text(&format!("{db:.0}"));
-        }
-        cr.move_to(left + 3.0, out_to_y(-24.0, height) - 3.0);
-        let _ = cr.show_text("-24");
-
-        // The curve, and under it how far it turns down, shaded.
-        const POINTS: usize = 200;
-        let curve: Vec<(f64, f64)> = (0..=POINTS)
-            .map(|i| {
-                let input = FLOOR + (0.0 - FLOOR) * i as f32 / POINTS as f32;
-                let output =
-                    compressor_output(input, threshold, ratio, makeup).clamp(FLOOR, CEILING);
-                (in_to_x(input, width), out_to_y(output, height))
-            })
-            .collect();
-        cr.move_to(curve[0].0, curve[0].1);
-        for (x, y) in &curve[1..] {
-            cr.line_to(*x, *y);
-        }
-        for i in (0..=POINTS).rev() {
-            let input = FLOOR + (0.0 - FLOOR) * i as f32 / POINTS as f32;
-            let untouched = (input + makeup).clamp(FLOOR, CEILING);
-            cr.line_to(in_to_x(input, width), out_to_y(untouched, height));
-        }
-        cr.close_path();
-        colour(cr, COLOURS[RATIO], 0.18);
-        let _ = cr.fill();
-
-        cr.move_to(curve[0].0, curve[0].1);
-        for (x, y) in &curve[1..] {
-            cr.line_to(*x, *y);
-        }
-        cr.set_line_width(2.5);
-        set(cr, 0.92);
-        let _ = cr.stroke();
+        let bend = in_to_x(values[THRESHOLD], width);
+        draw_zones(cr, &fg, bend, width, height);
+        draw_grid(cr, &fg, width, height);
+        draw_curve(cr, &fg, values, width, height);
 
         // The threshold as a line down to where it is read.
         cr.move_to(bend.round() + 0.5, top);
         cr.line_to(bend.round() + 0.5, bottom);
-        colour(cr, COLOURS[THRESHOLD], 0.5);
+        tint(cr, COLOURS[THRESHOLD], 0.5);
         cr.set_line_width(1.0);
         let _ = cr.stroke();
 
-        // What it is doing now: a dot where the voice is on the curve, and
-        // a line down from where it would be untouched to where it comes
-        // out, as long as it is turned down.
-        let (level, turned) = self.live.get();
-        if level > FLOOR {
-            let level = level.min(0.0);
-            let x = in_to_x(level, width);
-            let out = compressor_output(level, threshold, ratio, makeup);
-            let y = out_to_y(out, height);
-            if turned > 0.1 {
-                cr.move_to(x, out_to_y(level + makeup, height));
-                cr.line_to(x, y);
-                colour(cr, COLOURS[RATIO], 0.9);
-                cr.set_line_width(3.0);
-                let _ = cr.stroke();
-                let text = format!("−{turned:.1} dB");
-                if let Ok(extents) = cr.text_extents(&text) {
-                    cr.move_to(right - extents.width() - 4.0, ZONE_BAR + 12.0);
-                    colour(cr, COLOURS[RATIO], 1.0);
-                    let _ = cr.show_text(&text);
-                }
-            }
-            cr.new_sub_path();
-            cr.arc(x, y, 5.0, 0.0, std::f64::consts::TAU);
-            set(cr, 0.95);
-            let _ = cr.fill();
-        }
+        self.draw_live(cr, &fg, values, width, height);
+        self.draw_handles(cr, &fg, height);
+    }
 
+    /// What it is doing now: a dot where the voice is on the curve, and a
+    /// line down from where it would be untouched to where it comes out, as
+    /// long as it is turned down.
+    fn draw_live(
+        &self,
+        cr: &gtk::cairo::Context,
+        fg: &gtk::gdk::RGBA,
+        [threshold, ratio, makeup]: [f32; 3],
+        width: f64,
+        height: f64,
+    ) {
+        let (level, turned) = self.live.get();
+        if level <= FLOOR {
+            return;
+        }
+        let level = level.min(0.0);
+        let x = in_to_x(level, width);
+        let out = compressor_output(level, threshold, ratio, makeup);
+        let y = out_to_y(out, height);
+        if turned > 0.1 {
+            cr.move_to(x, out_to_y(level + makeup, height));
+            cr.line_to(x, y);
+            tint(cr, COLOURS[RATIO], 0.9);
+            cr.set_line_width(3.0);
+            let _ = cr.stroke();
+            let text = format!("−{turned:.1} dB");
+            if let Ok(extents) = cr.text_extents(&text) {
+                cr.move_to(in_to_x(0.0, width) - extents.width() - 4.0, ZONE_BAR + 12.0);
+                tint(cr, COLOURS[RATIO], 1.0);
+                let _ = cr.show_text(&text);
+            }
+        }
+        cr.new_sub_path();
+        cr.arc(x, y, 5.0, 0.0, std::f64::consts::TAU);
+        paint(cr, fg, 0.95);
+        let _ = cr.fill();
+    }
+
+    fn draw_handles(&self, cr: &gtk::cairo::Context, fg: &gtk::gdk::RGBA, height: f64) {
+        let (top, bottom) = (out_to_y(CEILING, height), out_to_y(FLOOR, height));
         for (which, handle_colour) in COLOURS.iter().enumerate() {
             let (x, y) = self.handle(which);
             let active = self.hovered.get() == Some(which);
@@ -623,13 +550,138 @@ impl CompGraph {
                 0.0,
                 std::f64::consts::TAU,
             );
-            colour(cr, *handle_colour, 1.0);
+            tint(cr, *handle_colour, 1.0);
             let _ = cr.fill_preserve();
             cr.set_line_width(if active { 2.5 } else { 1.5 });
-            set(cr, if active { 0.95 } else { 0.5 });
+            paint(cr, fg, if active { 0.95 } else { 0.5 });
             let _ = cr.stroke();
         }
     }
+}
+
+/// The text's colour, as see-through as asked.
+fn paint(cr: &gtk::cairo::Context, color: &gtk::gdk::RGBA, alpha: f64) {
+    cr.set_source_rgba(
+        color.red().into(),
+        color.green().into(),
+        color.blue().into(),
+        alpha,
+    );
+}
+
+fn tint(cr: &gtk::cairo::Context, (r, g, b): (f64, f64, f64), alpha: f64) {
+    cr.set_source_rgba(r, g, b, alpha);
+}
+
+/// Left alone under the threshold, turned down over it, and over 0 dB
+/// out, clipped; each named.
+fn draw_zones(cr: &gtk::cairo::Context, fg: &gtk::gdk::RGBA, bend: f64, width: f64, height: f64) {
+    let (left, right) = (in_to_x(FLOOR, width), in_to_x(0.0, width));
+    let (top, bottom) = (out_to_y(CEILING, height), out_to_y(FLOOR, height));
+    cr.rectangle(bend, top, right - bend, bottom - top);
+    tint(cr, COLOURS[THRESHOLD], 0.07);
+    let _ = cr.fill();
+    let clip = out_to_y(0.0, height);
+    cr.rectangle(left, top, right - left, clip - top);
+    cr.set_source_rgba(0.878, 0.106, 0.141, 0.08);
+    let _ = cr.fill();
+
+    cr.set_font_size(10.0);
+    zone_label(cr, fg, "Left alone", left, bend, 0.45);
+    zone_label(cr, fg, "Turned down", bend, right, 0.6);
+    cr.move_to(left + 4.0, clip - 4.0);
+    cr.set_source_rgba(0.878, 0.106, 0.141, 0.7);
+    let _ = cr.show_text("Clips");
+}
+
+/// A zone's name, centred over it along the top, when it fits.
+fn zone_label(
+    cr: &gtk::cairo::Context,
+    fg: &gtk::gdk::RGBA,
+    text: &str,
+    from: f64,
+    to: f64,
+    alpha: f64,
+) {
+    if let Ok(extents) = cr.text_extents(text) {
+        if extents.width() < to - from - 4.0 {
+            cr.move_to((from + to) / 2.0 - extents.width() / 2.0, ZONE_BAR - 5.0);
+            paint(cr, fg, alpha);
+            let _ = cr.show_text(text);
+        }
+    }
+}
+
+/// A grid every 12 dB, the diagonal where what goes in comes out, and
+/// their figures.
+fn draw_grid(cr: &gtk::cairo::Context, fg: &gtk::gdk::RGBA, width: f64, height: f64) {
+    let (left, right) = (in_to_x(FLOOR, width), in_to_x(0.0, width));
+    let (top, bottom) = (out_to_y(CEILING, height), out_to_y(FLOOR, height));
+    cr.set_line_width(1.0);
+    // Counted in whole steps, so no rounding adds up along the way.
+    for step in 0..=(-FLOOR / 12.0) as i32 {
+        let db = FLOOR + 12.0 * step as f32;
+        let x = in_to_x(db, width).round() + 0.5;
+        cr.move_to(x, top);
+        cr.line_to(x, bottom);
+        let y = out_to_y(db, height).round() + 0.5;
+        cr.move_to(left, y);
+        cr.line_to(right, y);
+    }
+    paint(cr, fg, 0.06);
+    let _ = cr.stroke();
+    cr.set_dash(&[4.0, 4.0], 0.0);
+    cr.move_to(left, out_to_y(FLOOR, height));
+    cr.line_to(right, out_to_y(0.0, height));
+    paint(cr, fg, 0.25);
+    let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
+
+    paint(cr, fg, 0.45);
+    for db in [-48.0, -24.0, 0.0] {
+        cr.move_to(in_to_x(db, width) + 3.0, bottom - 3.0);
+        let _ = cr.show_text(&format!("{db:.0}"));
+    }
+    cr.move_to(left + 3.0, out_to_y(-24.0, height) - 3.0);
+    let _ = cr.show_text("-24");
+}
+
+/// The curve, and under it how far it turns down, shaded.
+fn draw_curve(
+    cr: &gtk::cairo::Context,
+    fg: &gtk::gdk::RGBA,
+    [threshold, ratio, makeup]: [f32; 3],
+    width: f64,
+    height: f64,
+) {
+    const POINTS: usize = 200;
+    let curve: Vec<(f64, f64)> = (0..=POINTS)
+        .map(|i| {
+            let input = FLOOR + (0.0 - FLOOR) * i as f32 / POINTS as f32;
+            let output = compressor_output(input, threshold, ratio, makeup).clamp(FLOOR, CEILING);
+            (in_to_x(input, width), out_to_y(output, height))
+        })
+        .collect();
+    cr.move_to(curve[0].0, curve[0].1);
+    for (x, y) in &curve[1..] {
+        cr.line_to(*x, *y);
+    }
+    for i in (0..=POINTS).rev() {
+        let input = FLOOR + (0.0 - FLOOR) * i as f32 / POINTS as f32;
+        let untouched = (input + makeup).clamp(FLOOR, CEILING);
+        cr.line_to(in_to_x(input, width), out_to_y(untouched, height));
+    }
+    cr.close_path();
+    tint(cr, COLOURS[RATIO], 0.18);
+    let _ = cr.fill();
+
+    cr.move_to(curve[0].0, curve[0].1);
+    for (x, y) in &curve[1..] {
+        cr.line_to(*x, *y);
+    }
+    cr.set_line_width(2.5);
+    paint(cr, fg, 0.92);
+    let _ = cr.stroke();
 }
 
 /// A control's value as the window writes it, with its unit.
