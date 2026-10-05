@@ -448,139 +448,49 @@ impl DeEsserGraph {
     fn draw(&self, cr: &gtk::cairo::Context, width: f64, height: f64) {
         let [freq, strength] = *self.values.borrow();
         let fg = self.area.color();
-        let set = |cr: &gtk::cairo::Context, alpha: f64| {
-            cr.set_source_rgba(fg.red().into(), fg.green().into(), fg.blue().into(), alpha);
-        };
-        let colour = |cr: &gtk::cairo::Context, alpha: f64| {
-            let (r, g, b) = COLOUR;
-            cr.set_source_rgba(r, g, b, alpha);
-        };
-        let (left, right) = (freq_to_x(MIN_FREQ, width), freq_to_x(MAX_FREQ, width));
+        let right = freq_to_x(MAX_FREQ, width);
         let (top, bottom) = (db_to_y(TOP_DB, height), db_to_y(BOTTOM_DB, height));
 
         rounded(cr, 0.0, 0.0, width, height, 10.0);
-        set(cr, 0.04);
+        paint(cr, &fg, 0.04);
         let _ = cr.fill();
 
-        // The zones, every other one shaded, named along the top.
-        cr.set_font_size(10.0);
-        for (index, (from, to, name)) in ZONES.iter().enumerate() {
-            let (from, to) = (freq_to_x(*from, width), freq_to_x(*to, width));
-            if index % 2 == 1 {
-                cr.rectangle(from, top, to - from, bottom - top);
-                set(cr, 0.025);
-                let _ = cr.fill();
-            }
-            if let Ok(extents) = cr.text_extents(name) {
-                if extents.width() < to - from - 4.0 {
-                    cr.move_to((from + to) / 2.0 - extents.width() / 2.0, ZONE_BAR - 5.0);
-                    set(cr, if *name == "Sibilance" { 0.75 } else { 0.4 });
-                    let _ = cr.show_text(name);
-                }
-            }
-        }
+        draw_zones(cr, &fg, width, height);
 
         // What it turns down, shaded from the split up.
         let split = freq_to_x(freq, width);
         cr.rectangle(split, top, right - split, bottom - top);
-        colour(cr, 0.06);
+        tint(cr, 0.06);
         let _ = cr.fill();
 
-        // The grid: landmarks across, every 6 dB along.
-        cr.set_line_width(1.0);
-        for mark in [2000.0, 3000.0, 5000.0, 10000.0] {
-            let x = freq_to_x(mark, width).round() + 0.5;
-            cr.move_to(x, top);
-            cr.line_to(x, bottom);
-        }
-        // Counted in whole steps, so no rounding adds up along the way.
-        for step in 0..=(-BOTTOM_DB / 6.0) as i32 {
-            let y = db_to_y(-6.0 * step as f32, height).round() + 0.5;
-            cr.move_to(left, y);
-            cr.line_to(right, y);
-        }
-        set(cr, 0.06);
-        let _ = cr.stroke();
-        let flat = db_to_y(0.0, height).round() + 0.5;
-        cr.move_to(left, flat);
-        cr.line_to(right, flat);
-        set(cr, 0.18);
-        let _ = cr.stroke();
-
-        set(cr, 0.45);
-        for (mark, text) in [(2000.0, "2k"), (5000.0, "5k"), (10000.0, "10k")] {
-            cr.move_to(freq_to_x(mark, width) + 3.0, bottom - 3.0);
-            let _ = cr.show_text(text);
-        }
-        for db in [-12.0, -24.0] {
-            cr.move_to(left + 3.0, db_to_y(db, height) - 3.0);
-            let _ = cr.show_text(&format!("{db:.0}"));
-        }
-
-        // The curve: the two sides of the split put back together, the
-        // upper one turned down as a loud s would have it. The sides stay
-        // in phase, so their sizes add.
-        let low = Coeffs::lowpass(freq);
-        let high = Coeffs::highpass(freq);
-        let gain = 10f32.powf(deesser_gain(strength, LOUD_S) / 20.0);
-        const POINTS: usize = 200;
-        let curve: Vec<(f64, f64)> = (0..=POINTS)
-            .map(|i| {
-                let x = left + (right - left) * i as f64 / POINTS as f64;
-                let f = x_to_freq(x, width);
-                let under = 10f32.powf(low.response_db(f) * 2.0 / 20.0);
-                let over = 10f32.powf(high.response_db(f) * 2.0 / 20.0);
-                let db = 20.0 * (under + gain * over).max(1e-6).log10();
-                (x, db_to_y(db, height))
-            })
-            .collect();
-        cr.move_to(curve[0].0, flat);
-        for (x, y) in &curve {
-            cr.line_to(*x, *y);
-        }
-        cr.line_to(curve[POINTS].0, flat);
-        cr.close_path();
-        colour(cr, 0.22);
-        let _ = cr.fill();
-        cr.move_to(curve[0].0, curve[0].1);
-        for (x, y) in &curve[1..] {
-            cr.line_to(*x, *y);
-        }
-        cr.set_line_width(2.5);
-        set(cr, 0.92);
-        let _ = cr.stroke();
+        let flat = draw_grid(cr, &fg, width, height);
+        let sides = (Coeffs::lowpass(freq), Coeffs::highpass(freq));
+        let curve = draw_curve(cr, &fg, &sides, strength, flat, width, height);
 
         // What it is doing now: the same curve, as far down as the s are
         // being turned right now, and by how much.
         let now = self.live.get();
         if now > 0.1 {
-            let gain = 10f32.powf(-now / 20.0);
-            for (i, x) in curve.iter().map(|(x, _)| *x).enumerate() {
-                let f = x_to_freq(x, width);
-                let under = 10f32.powf(low.response_db(f) * 2.0 / 20.0);
-                let over = 10f32.powf(high.response_db(f) * 2.0 / 20.0);
-                let y = db_to_y(20.0 * (under + gain * over).max(1e-6).log10(), height);
-                if i == 0 {
-                    cr.move_to(x, y);
-                } else {
-                    cr.line_to(x, y);
-                }
-            }
-            cr.set_line_width(3.0);
-            colour(cr, 1.0);
-            let _ = cr.stroke();
-            let text = format!("s −{now:.1} dB");
-            if let Ok(extents) = cr.text_extents(&text) {
-                cr.move_to(right - extents.width() - 4.0, ZONE_BAR + 14.0);
-                colour(cr, 1.0);
-                let _ = cr.show_text(&text);
-            }
+            draw_live(cr, &sides, &curve, now, width, height);
         }
 
-        // The split, and the handle on it.
+        self.draw_handle(cr, &fg, split, width, height);
+    }
+
+    /// The split, and the handle on it, with how deep a loud s goes.
+    fn draw_handle(
+        &self,
+        cr: &gtk::cairo::Context,
+        fg: &gtk::gdk::RGBA,
+        split: f64,
+        width: f64,
+        height: f64,
+    ) {
+        let right = freq_to_x(MAX_FREQ, width);
+        let (top, bottom) = (db_to_y(TOP_DB, height), db_to_y(BOTTOM_DB, height));
         cr.move_to(split.round() + 0.5, top);
         cr.line_to(split.round() + 0.5, bottom);
-        colour(cr, 0.5);
+        tint(cr, 0.5);
         cr.set_line_width(1.0);
         let _ = cr.stroke();
         let (x, y) = self.handle();
@@ -589,7 +499,7 @@ impl DeEsserGraph {
         cr.set_dash(&[4.0, 4.0], 0.0);
         cr.move_to(x, y.clamp(top, bottom));
         cr.line_to(right, y.clamp(top, bottom));
-        colour(cr, 0.6);
+        tint(cr, 0.6);
         let _ = cr.stroke();
         cr.set_dash(&[], 0.0);
         let active = self.hovered.get();
@@ -600,11 +510,166 @@ impl DeEsserGraph {
             0.0,
             std::f64::consts::TAU,
         );
-        colour(cr, 1.0);
+        tint(cr, 1.0);
         let _ = cr.fill_preserve();
         cr.set_line_width(if active { 2.5 } else { 1.5 });
-        set(cr, if active { 0.95 } else { 0.5 });
+        paint(cr, fg, if active { 0.95 } else { 0.5 });
         let _ = cr.stroke();
+    }
+}
+
+/// The text's colour, as see-through as asked.
+fn paint(cr: &gtk::cairo::Context, color: &gtk::gdk::RGBA, alpha: f64) {
+    cr.set_source_rgba(
+        color.red().into(),
+        color.green().into(),
+        color.blue().into(),
+        alpha,
+    );
+}
+
+/// The handle's colour, as see-through as asked.
+fn tint(cr: &gtk::cairo::Context, alpha: f64) {
+    let (r, g, b) = COLOUR;
+    cr.set_source_rgba(r, g, b, alpha);
+}
+
+/// The zones, every other one shaded, named along the top.
+fn draw_zones(cr: &gtk::cairo::Context, fg: &gtk::gdk::RGBA, width: f64, height: f64) {
+    let (top, bottom) = (db_to_y(TOP_DB, height), db_to_y(BOTTOM_DB, height));
+    cr.set_font_size(10.0);
+    for (index, (from, to, name)) in ZONES.iter().enumerate() {
+        let (from, to) = (freq_to_x(*from, width), freq_to_x(*to, width));
+        if index % 2 == 1 {
+            cr.rectangle(from, top, to - from, bottom - top);
+            paint(cr, fg, 0.025);
+            let _ = cr.fill();
+        }
+        if let Ok(extents) = cr.text_extents(name) {
+            if extents.width() < to - from - 4.0 {
+                cr.move_to((from + to) / 2.0 - extents.width() / 2.0, ZONE_BAR - 5.0);
+                paint(cr, fg, if *name == "Sibilance" { 0.75 } else { 0.4 });
+                let _ = cr.show_text(name);
+            }
+        }
+    }
+}
+
+/// Landmarks across, every 6 dB along, and their figures. Says where the
+/// flat line is.
+fn draw_grid(cr: &gtk::cairo::Context, fg: &gtk::gdk::RGBA, width: f64, height: f64) -> f64 {
+    let (left, right) = (freq_to_x(MIN_FREQ, width), freq_to_x(MAX_FREQ, width));
+    let (top, bottom) = (db_to_y(TOP_DB, height), db_to_y(BOTTOM_DB, height));
+    cr.set_line_width(1.0);
+    for mark in [2000.0, 3000.0, 5000.0, 10000.0] {
+        let x = freq_to_x(mark, width).round() + 0.5;
+        cr.move_to(x, top);
+        cr.line_to(x, bottom);
+    }
+    // Counted in whole steps, so no rounding adds up along the way.
+    for step in 0..=(-BOTTOM_DB / 6.0) as i32 {
+        let y = db_to_y(-6.0 * step as f32, height).round() + 0.5;
+        cr.move_to(left, y);
+        cr.line_to(right, y);
+    }
+    paint(cr, fg, 0.06);
+    let _ = cr.stroke();
+    let flat = db_to_y(0.0, height).round() + 0.5;
+    cr.move_to(left, flat);
+    cr.line_to(right, flat);
+    paint(cr, fg, 0.18);
+    let _ = cr.stroke();
+
+    paint(cr, fg, 0.45);
+    for (mark, text) in [(2000.0, "2k"), (5000.0, "5k"), (10000.0, "10k")] {
+        cr.move_to(freq_to_x(mark, width) + 3.0, bottom - 3.0);
+        let _ = cr.show_text(text);
+    }
+    for db in [-12.0, -24.0] {
+        cr.move_to(left + 3.0, db_to_y(db, height) - 3.0);
+        let _ = cr.show_text(&format!("{db:.0}"));
+    }
+    flat
+}
+
+/// The two sides of the split put back together at a frequency, the upper
+/// one turned down by `gain`, in decibels. The sides stay in phase, so
+/// their sizes add.
+fn joined((low, high): &(Coeffs, Coeffs), freq: f32, gain: f32) -> f32 {
+    let under = 10f32.powf(low.response_db(freq) * 2.0 / 20.0);
+    let over = 10f32.powf(high.response_db(freq) * 2.0 / 20.0);
+    20.0 * (under + gain * over).max(1e-6).log10()
+}
+
+/// The curve, the upper side turned down as a loud s would have it, filled
+/// down to the flat line. Gives the points it went through.
+fn draw_curve(
+    cr: &gtk::cairo::Context,
+    fg: &gtk::gdk::RGBA,
+    sides: &(Coeffs, Coeffs),
+    strength: f32,
+    flat: f64,
+    width: f64,
+    height: f64,
+) -> Vec<(f64, f64)> {
+    let (left, right) = (freq_to_x(MIN_FREQ, width), freq_to_x(MAX_FREQ, width));
+    let gain = 10f32.powf(deesser_gain(strength, LOUD_S) / 20.0);
+    const POINTS: usize = 200;
+    let curve: Vec<(f64, f64)> = (0..=POINTS)
+        .map(|i| {
+            let x = left + (right - left) * i as f64 / POINTS as f64;
+            let db = joined(sides, x_to_freq(x, width), gain);
+            (x, db_to_y(db, height))
+        })
+        .collect();
+    cr.move_to(curve[0].0, flat);
+    for (x, y) in &curve {
+        cr.line_to(*x, *y);
+    }
+    cr.line_to(curve[POINTS].0, flat);
+    cr.close_path();
+    tint(cr, 0.22);
+    let _ = cr.fill();
+    cr.move_to(curve[0].0, curve[0].1);
+    for (x, y) in &curve[1..] {
+        cr.line_to(*x, *y);
+    }
+    cr.set_line_width(2.5);
+    paint(cr, fg, 0.92);
+    let _ = cr.stroke();
+    curve
+}
+
+/// The curve as far down as the s are being turned `now`, in decibels,
+/// over the same points, and the figure.
+fn draw_live(
+    cr: &gtk::cairo::Context,
+    sides: &(Coeffs, Coeffs),
+    curve: &[(f64, f64)],
+    now: f32,
+    width: f64,
+    height: f64,
+) {
+    let gain = 10f32.powf(-now / 20.0);
+    for (i, x) in curve.iter().map(|(x, _)| *x).enumerate() {
+        let y = db_to_y(joined(sides, x_to_freq(x, width), gain), height);
+        if i == 0 {
+            cr.move_to(x, y);
+        } else {
+            cr.line_to(x, y);
+        }
+    }
+    cr.set_line_width(3.0);
+    tint(cr, 1.0);
+    let _ = cr.stroke();
+    let text = format!("s −{now:.1} dB");
+    if let Ok(extents) = cr.text_extents(&text) {
+        cr.move_to(
+            freq_to_x(MAX_FREQ, width) - extents.width() - 4.0,
+            ZONE_BAR + 14.0,
+        );
+        tint(cr, 1.0);
+        let _ = cr.show_text(&text);
     }
 }
 
