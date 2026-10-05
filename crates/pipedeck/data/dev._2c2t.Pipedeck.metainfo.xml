@@ -79,6 +79,14 @@
   </requires>
 
   <releases>
+    <release version="0.1.3" date="2026-10-05">
+      <description>
+        <ul>
+          <li>A Discord call with Vesktop on no channel puts Vesktop on the voice chat's channel, and says so</li>
+          <li>Vesktop's plugin is built with a Node.js new enough for it, one that nvm, fnm or volta keeps when the system's is too old</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-10-05">
       <description>
         <ul>

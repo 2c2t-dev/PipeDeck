@@ -6,12 +6,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-05
+
+### Added
+
+- A PKGBUILD for Arch Linux, in `packaging/aur`.
+
 ### Fixed
 
 - A Discord call with Vesktop on no channel split into nobody: Vesktop is
   now put on the voice chat's channel when there is one, and Pipedeck says
   so, or says to put it on one.
-
 - Building Vesktop's plugin with a Node.js older than Vencord's pnpm needs
   failed inside pnpm. Pipedeck now builds with a newer one that nvm, fnm
   or volta keeps, when there is one, and says which versions it found
@@ -95,7 +100,8 @@ The first release.
   closed, and starting with the session.
 - .deb, .rpm and AppImage packages.
 
-[Unreleased]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/2c2t-dev/PipeDeck/releases/tag/v0.1.0
