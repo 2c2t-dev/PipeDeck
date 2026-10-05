@@ -6,6 +6,11 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Building Vesktop's plugin with a Node.js older than Vencord's pnpm needs
+  says so, with both versions, rather than failing inside pnpm.
+
 ## [0.1.2] - 2026-10-05
 
 ### Added

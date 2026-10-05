@@ -234,6 +234,7 @@ fn build_and_point(say: &impl Fn(&str)) -> Result<(), String> {
 
     // Vencord is built with the pnpm its package names, fetched by npx.
     let pnpm = format!("pnpm@{}", pnpm_version(&dir)?);
+    node_new_enough(&dir, &pnpm)?;
     say("Fetching what Vencord is built with…");
     run(
         "Fetching what Vencord is built with",
@@ -425,6 +426,77 @@ fn pnpm_version(dir: &Path) -> Result<String, String> {
         .ok_or_else(|| "Vencord's package names no pnpm".into())
 }
 
+/// Whether this system's Node.js is as new as Vencord and its pnpm ask: an
+/// older one fails deep inside pnpm, with an error that says nothing of
+/// Node's version. When a version cannot be read, the build is left to
+/// say what it will.
+fn node_new_enough(dir: &Path, pnpm: &str) -> Result<(), String> {
+    let Some(have) = command_output("node", &["--version"])
+        .as_deref()
+        .and_then(version_in)
+    else {
+        return Ok(());
+    };
+    let vencord = read_json(&dir.join("package.json"))
+        .ok()
+        .and_then(|package| package["engines"]["node"].as_str().and_then(lowest));
+    let pnpm = command_output("npm", &["view", pnpm, "engines.node"])
+        .as_deref()
+        .and_then(lowest);
+    let Some(needs) = vencord.into_iter().chain(pnpm).max() else {
+        return Ok(());
+    };
+    if have >= needs {
+        return Ok(());
+    }
+    let shown = |(major, minor, patch): Version| match (minor, patch) {
+        (0, 0) => major.to_string(),
+        (_, 0) => format!("{major}.{minor}"),
+        _ => format!("{major}.{minor}.{patch}"),
+    };
+    Err(format!(
+        "Building Vencord needs Node.js {} or newer, and this system has {}. \
+         Install a newer Node.js, then try again.",
+        shown(needs),
+        shown(have)
+    ))
+}
+
+/// A version, as major, minor and patch.
+type Version = (u32, u32, u32);
+
+/// What a program prints, when it runs and succeeds.
+fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    let output = crate::launcher::host_command(program)
+        .args(args)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// A version as `node --version` writes it, `v20.20.2`, or as a range's
+/// bound, `22.13`.
+fn version_in(text: &str) -> Option<Version> {
+    let mut parts = text
+        .trim()
+        .trim_start_matches('v')
+        .split('.')
+        .map(|part| part.parse::<u32>().ok());
+    let major = parts.next()??;
+    let minor = parts.next().flatten().unwrap_or(0);
+    let patch = parts.next().flatten().unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+/// The lowest version a range of the `>=22.13` kind lets in; none for a
+/// range of another kind, which is left to the build.
+fn lowest(range: &str) -> Option<Version> {
+    version_in(range.trim().strip_prefix(">=")?)
+}
+
 /// Run one step of the build, and say which failed and why if one does.
 /// What a program prints when it fails ends as often in a stack or an
 /// object as in its reason, so the line naming the error is what is said,
@@ -487,6 +559,16 @@ fn edit_json(path: &Path, change: impl FnOnce(&mut Value)) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versions_are_read_as_node_and_ranges_write_them() {
+        assert_eq!(version_in("v20.20.2"), Some((20, 20, 2)));
+        assert_eq!(version_in("v26.10.0\n"), Some((26, 10, 0)));
+        assert_eq!(lowest(">=22.13"), Some((22, 13, 0)));
+        assert_eq!(lowest(">=22"), Some((22, 0, 0)));
+        assert_eq!(lowest("^18 || >=20"), None);
+        assert!(version_in("v20.20.2") < lowest(">=22.13"));
+    }
 
     #[test]
     fn a_failure_is_said_by_the_line_naming_it() {
