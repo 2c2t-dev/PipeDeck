@@ -28,6 +28,10 @@ from .actions import (
 )
 from .client import Pipedeck
 
+# How a Pipedeck page's name ends for the call's page beside it, as the
+# OpenDeck plugin lays them out: "Pipedeck" and "Pipedeck Call".
+CALL = " Call"
+
 KEYS_AND_DIALS = {
     Input.Key: ActionInputSupport.SUPPORTED,
     Input.Dial: ActionInputSupport.SUPPORTED,
@@ -85,10 +89,10 @@ class PipedeckPlugin(PluginBase):
             name = page.get_name() if page else ""
             if not name.startswith("Pipedeck"):
                 continue
-            if started and not name.endswith(" Call"):
-                switch_page(controller, f"{name} Call")
-            elif not started and name.endswith(" Call"):
-                switch_page(controller, name[: -len(" Call")])
+            if started and not name.endswith(CALL):
+                switch_page(controller, name + CALL)
+            elif not started and name.endswith(CALL):
+                switch_page(controller, name[: -len(CALL)])
         return False
 
     def get_selector_icon(self) -> Gtk.Widget:

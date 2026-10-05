@@ -218,8 +218,13 @@
 					fill($("app-channel"), channels.map((c) => [String(c.id), c.name]), settings.channel);
 				}
 				if (action === "voice") {
+					// English ordinals: 1st, 2nd, 3rd, but 11th to 13th, and 21st again.
+					const suffixes = { 1: "st", 2: "nd", 3: "rd" };
 					const places = [];
-					for (let n = 1; n <= 24; n++) places.push([String(n), n === 1 ? "1st in the call" : n === 2 ? "2nd in the call" : n === 3 ? "3rd in the call" : `${n}th in the call`]);
+					for (let n = 1; n <= 24; n++) {
+						const suffix = n >= 11 && n <= 13 ? "th" : (suffixes[n % 10] ?? "th");
+						places.push([String(n), `${n}${suffix} in the call`]);
+					}
 					fill($("slot"), places, settings.slot ?? 1);
 				}
 				if (action === "call") $("page").value = settings.page === "mixer" ? "mixer" : "call";
@@ -230,7 +235,9 @@
 						options.push([`c:${channel.id}`, channel.name]);
 						for (const voice of channel.voices) options.push([`v:${channel.id}:${voice.user}`, `${channel.name} › ${voice.name}`]);
 					}
-					const chosen = settings.channel === undefined ? null : settings.user ? `v:${settings.channel}:${settings.user}` : `c:${settings.channel}`;
+					let chosen = null;
+					if (settings.channel !== undefined && settings.user) chosen = `v:${settings.channel}:${settings.user}`;
+					else if (settings.channel !== undefined) chosen = `c:${settings.channel}`;
 					fill($("channel"), options, chosen, settings.label);
 					// A person of a call has one level; a channel has its own and
 					// one in each mix it feeds.

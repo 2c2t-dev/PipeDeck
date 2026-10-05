@@ -43,7 +43,20 @@ import globals as gl  # noqa: E402
 from . import draw  # noqa: E402
 
 GONE = "(gone)"
+
+# What a list offers before anything is picked.
+PICK_ONE = "Pick one"
+# A drop-down's choice changing.
+SELECTED = "notify::selected"
 FADES = [(0, "None"), (500, "0.5 s"), (1000, "1 s"), (2000, "2 s"), (5000, "5 s")]
+
+
+def ordinal(n: int) -> str:
+    """English ordinals: 1st, 2nd, 3rd, but 11th to 13th, and 21st again."""
+    if 11 <= n % 100 <= 13:
+        return f"{n}th"
+    return f"{n}" + {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
 
 # A fader on its way somewhere, by its target, so a new fade replaces it.
 _fades: dict = {}
@@ -112,7 +125,12 @@ class PipedeckAction(ActionCore):
 
     def changed(self) -> None:
         # Told from the connection's thread; drawn on the main one.
-        GLib.idle_add(self.redraw, False)
+        GLib.idle_add(self._redraw_once)
+
+    def _redraw_once(self) -> bool:
+        """Draw again if what the key shows changed; run once by GLib."""
+        self.redraw(always=False)
+        return GLib.SOURCE_REMOVE
 
     def on_ready(self) -> None:
         self.redraw()
@@ -120,21 +138,20 @@ class PipedeckAction(ActionCore):
     def on_update(self) -> None:
         self.redraw()
 
-    def redraw(self, always: bool = True) -> bool:
+    def redraw(self, always: bool = True) -> None:
         if not self.on_ready_called or not self.get_is_present():
-            return False
+            return
         try:
             size = self.get_input().get_image_size()
             if not size or not size[0]:
-                return False
+                return
             picture = self.now()
             if (picture, size) == self._shown and not always:
-                return False
+                return
             self._shown = (picture, size)
             self.set_media(image=draw.picture(picture, size), size=1.0)
         except Exception as e:
             log.exception(f"pipedeck: cannot draw {self.action_id}: {e}")
-        return False
 
     def now(self) -> draw.Picture:
         """What the key shows now."""
@@ -161,7 +178,7 @@ class PipedeckAction(ActionCore):
         if chosen is not None and not any(value == chosen for value, _ in options):
             options.append((chosen, missing))
         if chosen is None:
-            options.insert(0, (None, "Pick one"))
+            options.insert(0, (None, PICK_ONE))
         row = Adw.ComboRow(title=title)
         self.fill(row, options, chosen)
         return row
@@ -185,7 +202,7 @@ class PipedeckAction(ActionCore):
             if index < len(row._options) and row._options[index][0] is not None:
                 callback(*row._options[index])
 
-        row.connect("notify::selected", on_selected)
+        row.connect(SELECTED, on_selected)
 
 
 class LevelAction(PipedeckAction):
@@ -258,7 +275,7 @@ class LevelAction(PipedeckAction):
     def picture(self, settings: dict) -> draw.Picture:
         target = self.target(settings)
         if not target:
-            raise LookupError("Pick one")
+            raise LookupError(PICK_ONE)
         found = self.pipedeck.find(target)
         if not found:
             raise LookupError("Gone")
@@ -375,7 +392,7 @@ class ChannelLevel(LevelAction):
                 self.save(mix=row._options[index][0])
 
         self.picked(channel, on_channel)
-        level.connect("notify::selected", on_level)
+        level.connect(SELECTED, on_level)
         fill_levels(settings.get("channel"), settings.get("user"))
         return [channel, level] + self.level_rows()
 
@@ -425,8 +442,7 @@ class CallVoice(LevelAction):
 
     def get_config_rows(self) -> list:
         settings = self.settings()
-        ordinal = {1: "1st", 2: "2nd", 3: "3rd"}
-        places = [(n, f"{ordinal.get(n, f'{n}th')} in the call") for n in range(1, 25)]
+        places = [(n, f"{ordinal(n)} in the call") for n in range(1, 25)]
         place = self.combo("Person", places, self.place(settings))
         self.picked(place, lambda value, _: self.save(slot=value, label=f"Person {value}"))
         return [place] + self.level_rows()
@@ -495,7 +511,7 @@ class ChannelEffect(PressAction):
 
     def picture(self, settings: dict) -> draw.Picture:
         if settings.get("channel") is None or settings.get("effect") is None:
-            raise LookupError("Pick one")
+            raise LookupError(PICK_ONE)
         place = self.place(settings)
         if not place:
             raise LookupError("Gone")
@@ -519,7 +535,7 @@ class ChannelEffect(PressAction):
             chosen = self.settings().get("index")
             if self.settings().get("effect") in names:
                 chosen = names.index(self.settings()["effect"])
-            self.fill(effect, [(None, "Pick one")] + list(enumerate(names)), chosen)
+            self.fill(effect, [(None, PICK_ONE)] + list(enumerate(names)), chosen)
 
         def on_effect(row, *_):
             if getattr(row, "_filling", False):
@@ -529,7 +545,7 @@ class ChannelEffect(PressAction):
                 value, name = row._options[index]
                 self.save(index=value, effect=name, label=name)
 
-        effect.connect("notify::selected", on_effect)
+        effect.connect(SELECTED, on_effect)
         channel = self.channel_row(settings, then=lambda value: (self.save(index=None, effect=None), fill_effects(value)))
         fill_effects(settings.get("channel"))
         return [channel, effect]
@@ -559,7 +575,7 @@ class AddApp(PressAction):
 
     def picture(self, settings: dict) -> draw.Picture:
         if settings.get("channel") is None or not settings.get("app"):
-            raise LookupError("Pick one")
+            raise LookupError(PICK_ONE)
         channel = self.channel(settings)
         if not channel:
             raise LookupError("Gone")
@@ -681,7 +697,7 @@ class SwitchAction(PipedeckAction):
         """Of two, the one on, or the first when neither is."""
         first, second = settings.get(self.FIRST), settings.get(self.SECOND)
         if first is None:
-            raise LookupError("Pick one")
+            raise LookupError(PICK_ONE)
         if settings.get("mode") == "toggle" and second is not None and self.is_on(second) and not self.is_on(first):
             return second
         return first
