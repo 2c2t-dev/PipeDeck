@@ -128,9 +128,18 @@ fn outside(dirs: &OsStr, appdir: &Path) -> Option<OsString> {
     std::env::join_paths(kept).ok()
 }
 
+/// Whether this runs in a Flatpak's sandbox, which the system's programs
+/// and the user's other folders are outside of.
+pub fn sandboxed() -> bool {
+    Path::new("/.flatpak-info").exists()
+}
+
 /// Whether a package put the desktop entry among the system's, which it
-/// then keeps up itself.
+/// then keeps up itself. A Flatpak's is the system's for it.
 fn packaged(app_id: &str) -> bool {
+    if sandboxed() {
+        return true;
+    }
     if std::env::var_os("APPIMAGE").is_some() {
         return false;
     }

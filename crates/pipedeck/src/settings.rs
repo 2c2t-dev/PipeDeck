@@ -50,6 +50,10 @@ pub struct Settings {
     /// with the session leaves the window closed.
     #[serde(default)]
     pub keep_running: bool,
+    /// In a Flatpak, whether KWin is given the script that says which
+    /// window has the focus, which it then is each time Pipedeck starts.
+    #[serde(default)]
+    pub focus_script: bool,
 }
 
 fn yes() -> bool {
@@ -64,6 +68,7 @@ impl Default for Settings {
             stream_deck_profiles: true,
             software_rendering: false,
             keep_running: false,
+            focus_script: false,
         }
     }
 }
@@ -124,8 +129,13 @@ fn autostart_path() -> Option<PathBuf> {
     Some(base.join("autostart").join("pipedeck.desktop"))
 }
 
-/// Is the mixer set to start with the session?
+/// Is the mixer set to start with the session? In a Flatpak, the desktop
+/// keeps the entry where the sandbox cannot see it, so what was last asked
+/// for is what is known.
 pub fn starts_at_login() -> bool {
+    if crate::launcher::sandboxed() {
+        return Settings::load().start_at_login;
+    }
     autostart_path().is_some_and(|path| path.exists())
 }
 
@@ -135,6 +145,9 @@ pub fn starts_at_login() -> bool {
 /// It points at the program that runs rather than at an installed name, so
 /// it works for a build that was never installed, and for an AppImage.
 pub fn set_start_at_login(enabled: bool, background: bool) -> std::io::Result<()> {
+    if crate::launcher::sandboxed() {
+        return ask_to_start_at_login(enabled, background);
+    }
     let Some(path) = autostart_path() else {
         return Ok(());
     };
@@ -163,6 +176,43 @@ pub fn set_start_at_login(enabled: bool, background: bool) -> std::io::Result<()
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(&path, entry)
+}
+
+/// Ask the desktop's Background portal to start the mixer with the session,
+/// or not to: a Flatpak cannot write the entry itself. The desktop may ask
+/// the user first; what they answer comes later, and is not waited for.
+fn ask_to_start_at_login(enabled: bool, background: bool) -> std::io::Result<()> {
+    use adw::gtk::{gio, glib};
+    use adw::prelude::*;
+    use libadwaita as adw;
+
+    let mut command = vec!["pipedeck".to_owned()];
+    if background {
+        command.push("--background".to_owned());
+    }
+    let options = glib::VariantDict::new(None);
+    options.insert(
+        "reason",
+        "Pipedeck starts with the session to run the mixer",
+    );
+    options.insert("autostart", enabled);
+    options.insert("commandline", command);
+    options.insert("dbus-activatable", false);
+    let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)
+        .map_err(std::io::Error::other)?;
+    bus.call_sync(
+        Some("org.freedesktop.portal.Desktop"),
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.Background",
+        "RequestBackground",
+        Some(&("", options.end()).to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        10_000,
+        gio::Cancellable::NONE,
+    )
+    .map(|_| ())
+    .map_err(std::io::Error::other)
 }
 
 /// Where a plug-in a user installs for themselves belongs.

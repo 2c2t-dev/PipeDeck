@@ -209,7 +209,9 @@ fn plugins_page(
     page.add(&install);
 
     page.add(&stereotool_group(parent, engine, state, found, key));
-    if vesktop::state() != vesktop::State::Missing {
+    if crate::launcher::sandboxed() {
+        page.add(&outside_group());
+    } else if vesktop::state() != vesktop::State::Missing {
         page.add(&vesktop_group());
     }
     if [App::OpenDeck, App::StreamController]
@@ -219,6 +221,39 @@ fn plugins_page(
         page.add(&stream_deck_group());
     }
     page
+}
+
+/// In a Flatpak, the plugins Pipedeck cannot put in from its sandbox, and
+/// the way to put them in from outside.
+fn outside_group() -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("From outside the Flatpak");
+    group.set_description(Some(
+        "From its sandbox, Pipedeck reaches neither StreamController's folders nor the \
+         git and Node.js that build Vesktop's plugin. Install them from a copy of \
+         Pipedeck's sources instead.",
+    ));
+    for (title, subtitle, page) in [
+        (
+            "StreamController",
+            "Run integrations/streamcontroller/install.sh",
+            "https://github.com/2c2t-dev/PipeDeck/tree/main/integrations/streamcontroller#install",
+        ),
+        (
+            "Discord voices",
+            "Run integrations/vencord/build.sh, then point Vesktop at what it built",
+            "https://github.com/2c2t-dev/PipeDeck/tree/main/integrations/vencord#install",
+        ),
+    ] {
+        let row = adw::ActionRow::new();
+        row.set_title(title);
+        row.set_subtitle(subtitle);
+        let how = gtk::LinkButton::with_label(page, "How");
+        how.set_valign(gtk::Align::Center);
+        row.add_suffix(&how);
+        group.add(&row);
+    }
+    group
 }
 
 /// Run something that takes a while on a thread of its own, and tell the
@@ -285,7 +320,7 @@ fn stream_deck_group() -> adw::PreferencesGroup {
     // On KDE, the application in front, for Add to Channel: a KWin script
     // says which window has the focus.
     if crate::kwin::available() {
-        group.add(&front_row(&status, &spinner));
+        group.add(&front_row(&status, &spinner, &saved));
     }
     let show_all: Rc<dyn Fn()> = Rc::new(move || shows.iter().for_each(|show| show()));
     lay_out.connect_clicked(move |_| {
@@ -301,7 +336,22 @@ fn stream_deck_group() -> adw::PreferencesGroup {
 
 /// Whether OpenDeck's profiles follow the mixer, and a button to lay them
 /// out now.
-fn profiles_row(saved: &Rc<RefCell<Settings>>) -> (adw::SwitchRow, gtk::Button) {
+fn profiles_row(saved: &Rc<RefCell<Settings>>) -> (adw::ActionRow, gtk::Button) {
+    let lay_out = gtk::Button::with_label("Lay out now");
+    lay_out.set_valign(gtk::Align::Center);
+    // A Flatpak cannot close OpenDeck, which writes its profiles back over
+    // new ones when it closes: the user closes it, and nothing is laid out
+    // behind their back.
+    if crate::launcher::sandboxed() {
+        let profiles = adw::ActionRow::new();
+        profiles.set_title("Pipedeck profiles");
+        profiles.set_subtitle(
+            "Quit OpenDeck first, then lay them out and start it again: \
+             from its Flatpak, Pipedeck cannot do it for you",
+        );
+        profiles.add_suffix(&lay_out);
+        return (profiles, lay_out);
+    }
     let profiles = adw::SwitchRow::new();
     profiles.set_title("Pipedeck profiles follow the mixer");
     profiles
@@ -314,10 +364,8 @@ fn profiles_row(saved: &Rc<RefCell<Settings>>) -> (adw::SwitchRow, gtk::Button) 
             saved.borrow().save();
         }
     });
-    let lay_out = gtk::Button::with_label("Lay out now");
-    lay_out.set_valign(gtk::Align::Center);
     profiles.add_suffix(&lay_out);
-    (profiles, lay_out)
+    (profiles.upcast(), lay_out)
 }
 
 fn starter(
@@ -356,7 +404,7 @@ fn starter(
 /// shows where its plugin stands again.
 fn app_row(
     app: App,
-    profiles: &adw::SwitchRow,
+    profiles: &adw::ActionRow,
     buttons: &Rc<RefCell<Vec<gtk::Button>>>,
     start: &Start,
     saved: &Rc<RefCell<Settings>>,
@@ -387,7 +435,7 @@ fn app_row(
     install.connect_clicked({
         let (start, saved, show) = (start.clone(), saved.clone(), show.clone());
         move |_| {
-            let lay_out = saved.borrow().stream_deck_profiles;
+            let lay_out = saved.borrow().stream_deck_profiles && !crate::launcher::sandboxed();
             start(
                 Box::new(move || streamdeck::install(app, lay_out)),
                 show.clone(),
@@ -408,7 +456,7 @@ fn show_plugin(
     row: &adw::ActionRow,
     install: &gtk::Button,
     remove: &gtk::Button,
-    profiles: &adw::SwitchRow,
+    profiles: &adw::ActionRow,
 ) {
     let state = streamdeck::state(app);
     let installed = matches!(state, streamdeck::State::Installed { .. });
@@ -444,13 +492,17 @@ fn show_plugin(
 
 /// Whether the KWin script that says which window has the focus is
 /// installed, and installing or removing it.
-fn front_row(status: &gtk::Label, spinner: &adw::Spinner) -> adw::SwitchRow {
+fn front_row(
+    status: &gtk::Label,
+    spinner: &adw::Spinner,
+    saved: &Rc<RefCell<Settings>>,
+) -> adw::SwitchRow {
     let front = adw::SwitchRow::new();
     front.set_title("Application in front");
     front.set_subtitle("A KWin script tells Pipedeck which window has the focus");
     front.set_active(crate::kwin::installed());
     front.connect_active_notify({
-        let (status, spinner) = (status.clone(), spinner.clone());
+        let (status, spinner, saved) = (status.clone(), spinner.clone(), saved.clone());
         move |row| {
             if row.is_active() == crate::kwin::installed() {
                 return;
@@ -467,7 +519,11 @@ fn front_row(status: &gtk::Label, spinner: &adw::Spinner) -> adw::SwitchRow {
                 status.set_label(&format!("It did not work: {e}"));
                 status.set_visible(true);
                 row.set_active(crate::kwin::installed());
+                return;
             }
+            // What a Flatpak goes by, having nowhere else to look.
+            saved.borrow_mut().focus_script = on;
+            saved.borrow().save();
         }
     });
     front

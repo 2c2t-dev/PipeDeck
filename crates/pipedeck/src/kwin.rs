@@ -7,10 +7,14 @@
 //! switches it off and removes it. It calls the object this module puts on
 //! the application's own D-Bus name, which is there while Pipedeck runs;
 //! while it does not, KWin's calls go nowhere.
+//!
+//! A Flatpak reaches neither KWin's scripts nor its settings: it hands KWin
+//! the script over D-Bus, from the folder it shares with the system, each
+//! time it starts.
 
 use std::path::PathBuf;
 
-use adw::gtk::gio;
+use adw::gtk::{gio, glib};
 use adw::prelude::*;
 use libadwaita as adw;
 
@@ -73,9 +77,82 @@ fn script_dir() -> PathBuf {
         .join(SCRIPT)
 }
 
-/// Is the script installed?
+/// Is the script installed? In a Flatpak, whether it is asked for.
 pub fn installed() -> bool {
+    if crate::launcher::sandboxed() {
+        return crate::settings::Settings::load().focus_script;
+    }
     script_dir().join("contents/code/main.js").is_file()
+}
+
+/// In a Flatpak, where the script is kept for KWin to read: the folder the
+/// sandbox shares with the system for the control socket.
+fn shared_script() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("pipedeck")
+        .join(format!("{SCRIPT}.js"))
+}
+
+fn call_kwin(
+    path: &str,
+    interface: &str,
+    method: &str,
+    args: Option<&glib::Variant>,
+) -> Result<glib::Variant, String> {
+    gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)
+        .and_then(|bus| {
+            bus.call_sync(
+                Some("org.kde.KWin"),
+                path,
+                interface,
+                method,
+                args,
+                None,
+                gio::DBusCallFlags::NONE,
+                5000,
+                gio::Cancellable::NONE,
+            )
+        })
+        .map_err(|e| format!("KWin: {e}"))
+}
+
+/// Hand KWin the script and run it, in place of one handed over before.
+fn load() -> Result<(), String> {
+    let path = shared_script();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::write(&path, MAIN_JS).map_err(|e| format!("{}: {e}", path.display()))?;
+    unload()?;
+    let loaded = call_kwin(
+        "/Scripting",
+        "org.kde.kwin.Scripting",
+        "loadScript",
+        Some(&(path.display().to_string(), SCRIPT).to_variant()),
+    )?;
+    let id: i32 = loaded.child_value(0).get().unwrap_or(-1);
+    if id < 0 {
+        return Err("KWin did not take the script".into());
+    }
+    call_kwin(
+        &format!("/Scripting/Script{id}"),
+        "org.kde.kwin.Script",
+        "run",
+        None,
+    )
+    .map(|_| ())
+}
+
+fn unload() -> Result<(), String> {
+    call_kwin(
+        "/Scripting",
+        "org.kde.kwin.Scripting",
+        "unloadScript",
+        Some(&(SCRIPT,).to_variant()),
+    )
+    .map(|_| ())
 }
 
 /// Switch the script on or off in KWin's settings, and have KWin read them
@@ -109,6 +186,9 @@ fn switch(on: bool) -> Result<(), String> {
 
 /// Install the script and switch it on.
 pub fn install() -> Result<(), String> {
+    if crate::launcher::sandboxed() {
+        return load();
+    }
     let dir = script_dir();
     let write = |path: PathBuf, text: &str| -> Result<(), String> {
         if let Some(parent) = path.parent() {
@@ -123,6 +203,10 @@ pub fn install() -> Result<(), String> {
 
 /// Switch the script off and take it out.
 pub fn remove() -> Result<(), String> {
+    if crate::launcher::sandboxed() {
+        let _ = std::fs::remove_file(shared_script());
+        return unload();
+    }
     switch(false)?;
     let dir = script_dir();
     if dir.exists() {
@@ -161,5 +245,11 @@ pub fn listen(app: &adw::Application, engine: &EngineLink) {
         .build();
     if let Err(e) = registered {
         log::warn!("cannot hear which window has the focus: {e}");
+    }
+    // A Flatpak's script lasts as long as KWin's session, not across them.
+    if crate::launcher::sandboxed() && installed() {
+        if let Err(e) = load() {
+            log::warn!("cannot tell KWin to say which window has the focus: {e}");
+        }
     }
 }

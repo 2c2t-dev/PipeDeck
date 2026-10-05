@@ -73,7 +73,7 @@ const QUIT: i32 = 2;
 struct Shown {
     connection: gio::DBusConnection,
     registrations: Vec<gio::RegistrationId>,
-    name: gio::OwnerId,
+    name: Option<gio::OwnerId>,
 }
 
 thread_local! {
@@ -186,18 +186,27 @@ fn show_on(app: &adw::Application, connection: &gio::DBusConnection) {
     };
 
     // The item's name: owning it is what the area looks for, and the
-    // watcher is told of it once it is ours.
-    let service = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
-    let name = gio::bus_own_name_on_connection(
-        connection,
-        &service,
-        gio::BusNameOwnerFlags::NONE,
-        {
-            let service = service.clone();
-            move |connection, _| tell_watcher(&connection, &service)
-        },
-        |_, _| {},
-    );
+    // watcher is told of it once it is ours. A Flatpak may own no such
+    // name, and gives the connection's own instead, which the watcher
+    // takes as well.
+    let name = if crate::launcher::sandboxed() {
+        if let Some(unique) = connection.unique_name() {
+            tell_watcher(connection, &unique);
+        }
+        None
+    } else {
+        let service = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
+        Some(gio::bus_own_name_on_connection(
+            connection,
+            &service,
+            gio::BusNameOwnerFlags::NONE,
+            {
+                let service = service.clone();
+                move |connection, _| tell_watcher(&connection, &service)
+            },
+            |_, _| {},
+        ))
+    };
     SHOWN.with(|shown| {
         *shown.borrow_mut() = Some(Shown {
             connection: connection.clone(),
@@ -213,7 +222,9 @@ fn hide() {
         let Some(shown) = shown.borrow_mut().take() else {
             return;
         };
-        gio::bus_unown_name(shown.name);
+        if let Some(name) = shown.name {
+            gio::bus_unown_name(name);
+        }
         for id in shown.registrations {
             let _ = shown.connection.unregister_object(id);
         }

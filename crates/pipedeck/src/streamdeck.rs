@@ -11,6 +11,10 @@
 //! profiles it holds back over whatever is on disk: putting a plugin in, or
 //! laying out a profile, means closing it first and starting it again
 //! after, which is done here when it was running.
+//!
+//! In a Flatpak, Pipedeck sees neither OpenDeck's process nor
+//! StreamController's folders: the user closes and starts OpenDeck, and
+//! StreamController's plugin is installed from outside.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -145,9 +149,11 @@ fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// OpenDeck's settings. A Flatpak's own `XDG_CONFIG_HOME` is not the
+/// user's, so it is not asked there.
 fn opendeck_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
+        .filter(|v| !v.is_empty() && !crate::launcher::sandboxed())
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".config"))
         .join("opendeck")
@@ -225,6 +231,9 @@ pub fn can_install(app: App) -> Result<(), String> {
 
 /// Where an application stands now.
 pub fn state(app: App) -> State {
+    if app == App::StreamController && crate::launcher::sandboxed() {
+        return State::Missing;
+    }
     let present =
         on_path(app.program()).is_some() || app.plugins_dir().parent().is_some_and(Path::is_dir);
     if !present {
@@ -332,7 +341,9 @@ pub fn install(app: App, lay_out: bool) -> Result<String, String> {
                 start_opendeck();
             }
             result.map(|()| {
-                if lay_out {
+                if crate::launcher::sandboxed() {
+                    "Installed: start OpenDeck again to load it.".to_owned()
+                } else if lay_out {
                     "Installed, with a Pipedeck profile for each deck: pick it in OpenDeck."
                         .to_owned()
                 } else {
@@ -448,7 +459,11 @@ pub fn lay_out_profiles() -> Result<String, String> {
             start_opendeck();
         }
         result?;
-        said.push("pick the Pipedeck profile in OpenDeck");
+        said.push(if crate::launcher::sandboxed() {
+            "start OpenDeck again and pick the Pipedeck profile"
+        } else {
+            "pick the Pipedeck profile in OpenDeck"
+        });
     }
     if has_plugin(App::StreamController) {
         streamcontroller_pages_now()?;
@@ -462,6 +477,9 @@ pub fn lay_out_profiles() -> Result<String, String> {
 fn run_layout(program: &Path, args: &[&std::ffi::OsStr]) -> Result<(), String> {
     let out = crate::launcher::host_command(program)
         .args(args)
+        // Where OpenDeck's settings are, which the program would otherwise
+        // look for where a Flatpak's are.
+        .env("OPENDECK_CONFIG", opendeck_dir())
         .output()
         .map_err(|e| format!("{}: {e}", program.display()))?;
     if !out.status.success() {
@@ -575,8 +593,9 @@ static LATEST: Mutex<Option<String>> = Mutex::new(None);
 /// a channel, a mix, a cell or a device came or went.
 pub fn mixer_changed(mixer: &StateSnapshot, outputs: &[Device], enabled: bool) {
     // Devices are told apart from the matrix: until both are, a layout
-    // would be taken from half of it.
-    if !enabled || outputs.is_empty() || mixer.mixes.is_empty() {
+    // would be taken from half of it. A Flatpak cannot close OpenDeck,
+    // which would write its own profiles back over the new ones.
+    if !enabled || outputs.is_empty() || mixer.mixes.is_empty() || crate::launcher::sandboxed() {
         return;
     }
     let layout = layout_of(mixer, outputs);
