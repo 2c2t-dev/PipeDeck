@@ -133,16 +133,7 @@ pub fn show(app: &adw::Application, on: bool) {
         return;
     }
     if !on {
-        SHOWN.with(|shown| {
-            if let Some(shown) = shown.borrow_mut().take() {
-                gio::bus_unown_name(shown.name);
-                if let Some(connection) = app.dbus_connection() {
-                    for id in shown.registrations {
-                        let _ = connection.unregister_object(id);
-                    }
-                }
-            }
-        });
+        hide(app);
         return;
     }
     let Some(connection) = app.dbus_connection() else {
@@ -171,92 +162,17 @@ pub fn show(app: &adw::Application, on: bool) {
                 invocation.return_value(None);
             }
         })
-        .property({
-            let app_id = app_id.clone();
-            move |_, _, _, _, property| match property {
-                "Category" => "ApplicationStatus".to_variant(),
-                "Id" => "pipedeck".to_variant(),
-                "Title" => "Pipedeck".to_variant(),
-                "Status" => "Active".to_variant(),
-                "IconName" => app_id.to_variant(),
-                "IconThemePath" => icon_theme_path().to_variant(),
-                "ItemIsMenu" => false.to_variant(),
-                "Menu" => glib::variant::ObjectPath::try_from(MENU_PATH)
-                    .expect("a valid path")
-                    .to_variant(),
-                "WindowId" => 0i32.to_variant(),
-                _ => (
-                    app_id.clone(),
-                    Vec::<(i32, i32, Vec<u8>)>::new(),
-                    "Pipedeck".to_owned(),
-                    "The mixer keeps running".to_owned(),
-                )
-                    .to_variant(),
-            }
-        })
+        .property(move |_, _, _, _, property| item_property(&app_id, property))
         .build();
     let menu_registration = connection
         .register_object(MENU_PATH, &menu)
         .method_call({
             let app = app.clone();
-            move |_, _, _, _, method, params, invocation| match method {
-                "GetLayout" => {
-                    let reply = glib::Variant::tuple_from_iter([1u32.to_variant(), layout()]);
-                    invocation.return_value(Some(&reply));
-                }
-                "GetGroupProperties" => {
-                    let ids: Vec<i32> = params.child_value(0).get().unwrap_or_default();
-                    let group: Vec<(i32, HashMap<String, glib::Variant>)> =
-                        ids.into_iter().map(|id| (id, properties(id))).collect();
-                    invocation.return_value(Some(&(group,).to_variant()));
-                }
-                "GetProperty" => {
-                    let id: i32 = params.child_value(0).get().unwrap_or_default();
-                    let name: String = params.child_value(1).get().unwrap_or_default();
-                    let value = properties(id)
-                        .remove(&name)
-                        .unwrap_or_else(|| "".to_variant());
-                    invocation
-                        .return_value(Some(&(glib::Variant::from_variant(&value),).to_variant()));
-                }
-                "Event" => {
-                    let id: i32 = params.child_value(0).get().unwrap_or_default();
-                    let event: String = params.child_value(1).get().unwrap_or_default();
-                    if event == "clicked" {
-                        match id {
-                            OPEN => app.activate(),
-                            QUIT => app.quit(),
-                            _ => {}
-                        }
-                    }
-                    invocation.return_value(None);
-                }
-                "EventGroup" => {
-                    let events: Vec<(i32, String, glib::Variant, u32)> =
-                        params.child_value(0).get().unwrap_or_default();
-                    for (id, event, _, _) in events {
-                        if event == "clicked" {
-                            match id {
-                                OPEN => app.activate(),
-                                QUIT => app.quit(),
-                                _ => {}
-                            }
-                        }
-                    }
-                    invocation.return_value(Some(&(Vec::<i32>::new(),).to_variant()));
-                }
-                "AboutToShow" => invocation.return_value(Some(&(false,).to_variant())),
-                "AboutToShowGroup" => invocation
-                    .return_value(Some(&(Vec::<i32>::new(), Vec::<i32>::new()).to_variant())),
-                _ => invocation.return_value(None),
+            move |_, _, _, _, method, params, invocation| {
+                invocation.return_value(menu_reply(&app, method, &params).as_ref());
             }
         })
-        .property(move |_, _, _, _, property| match property {
-            "Version" => 3u32.to_variant(),
-            "TextDirection" => "ltr".to_variant(),
-            "Status" => "normal".to_variant(),
-            _ => Vec::<String>::new().to_variant(),
-        })
+        .property(|_, _, _, _, property| menu_property(property))
         .build();
     let (Ok(item_registration), Ok(menu_registration)) = (item_registration, menu_registration)
     else {
@@ -273,22 +189,7 @@ pub fn show(app: &adw::Application, on: bool) {
         gio::BusNameOwnerFlags::NONE,
         {
             let service = service.clone();
-            move |connection, _| {
-                let registered = connection.call_sync(
-                    Some("org.kde.StatusNotifierWatcher"),
-                    "/StatusNotifierWatcher",
-                    "org.kde.StatusNotifierWatcher",
-                    "RegisterStatusNotifierItem",
-                    Some(&(service.clone(),).to_variant()),
-                    None,
-                    gio::DBusCallFlags::NONE,
-                    2000,
-                    gio::Cancellable::NONE,
-                );
-                if let Err(e) = registered {
-                    log::warn!("no notification area to show Pipedeck in: {e}");
-                }
-            }
+            move |connection, _| tell_watcher(&connection, &service)
         },
         |_, _| {},
     );
@@ -300,6 +201,130 @@ pub fn show(app: &adw::Application, on: bool) {
     });
 }
 
+/// Take the icon away: release its name and its objects.
+fn hide(app: &adw::Application) {
+    SHOWN.with(|shown| {
+        let Some(shown) = shown.borrow_mut().take() else {
+            return;
+        };
+        gio::bus_unown_name(shown.name);
+        if let Some(connection) = app.dbus_connection() {
+            for id in shown.registrations {
+                let _ = connection.unregister_object(id);
+            }
+        }
+    });
+}
+
+/// What the icon says of itself.
+fn item_property(app_id: &str, property: &str) -> glib::Variant {
+    match property {
+        "Category" => "ApplicationStatus".to_variant(),
+        "Id" => "pipedeck".to_variant(),
+        "Title" => "Pipedeck".to_variant(),
+        "Status" => "Active".to_variant(),
+        "IconName" => app_id.to_variant(),
+        "IconThemePath" => icon_theme_path().to_variant(),
+        "ItemIsMenu" => false.to_variant(),
+        "Menu" => glib::variant::ObjectPath::try_from(MENU_PATH)
+            .expect("a valid path")
+            .to_variant(),
+        "WindowId" => 0i32.to_variant(),
+        _ => (
+            app_id.to_owned(),
+            Vec::<(i32, i32, Vec<u8>)>::new(),
+            "Pipedeck".to_owned(),
+            "The mixer keeps running".to_owned(),
+        )
+            .to_variant(),
+    }
+}
+
+/// What the menu says of itself.
+fn menu_property(property: &str) -> glib::Variant {
+    match property {
+        "Version" => 3u32.to_variant(),
+        "TextDirection" => "ltr".to_variant(),
+        "Status" => "normal".to_variant(),
+        _ => Vec::<String>::new().to_variant(),
+    }
+}
+
+/// The menu's answer to one of its methods.
+fn menu_reply(
+    app: &adw::Application,
+    method: &str,
+    params: &glib::Variant,
+) -> Option<glib::Variant> {
+    match method {
+        "GetLayout" => Some(glib::Variant::tuple_from_iter([
+            1u32.to_variant(),
+            layout(),
+        ])),
+        "GetGroupProperties" => {
+            let ids: Vec<i32> = params.child_value(0).get().unwrap_or_default();
+            let group: Vec<(i32, HashMap<String, glib::Variant>)> =
+                ids.into_iter().map(|id| (id, properties(id))).collect();
+            Some((group,).to_variant())
+        }
+        "GetProperty" => {
+            let id: i32 = params.child_value(0).get().unwrap_or_default();
+            let name: String = params.child_value(1).get().unwrap_or_default();
+            let value = properties(id)
+                .remove(&name)
+                .unwrap_or_else(|| "".to_variant());
+            Some((glib::Variant::from_variant(&value),).to_variant())
+        }
+        "Event" => {
+            let id: i32 = params.child_value(0).get().unwrap_or_default();
+            let event: String = params.child_value(1).get().unwrap_or_default();
+            happened(app, id, &event);
+            None
+        }
+        "EventGroup" => {
+            let events: Vec<(i32, String, glib::Variant, u32)> =
+                params.child_value(0).get().unwrap_or_default();
+            for (id, event, _, _) in events {
+                happened(app, id, &event);
+            }
+            Some((Vec::<i32>::new(),).to_variant())
+        }
+        "AboutToShow" => Some((false,).to_variant()),
+        "AboutToShowGroup" => Some((Vec::<i32>::new(), Vec::<i32>::new()).to_variant()),
+        _ => None,
+    }
+}
+
+/// Do what an entry of the menu is for, once clicked.
+fn happened(app: &adw::Application, id: i32, event: &str) {
+    if event != "clicked" {
+        return;
+    }
+    match id {
+        OPEN => app.activate(),
+        QUIT => app.quit(),
+        _ => {}
+    }
+}
+
+/// Tell the notification area the icon is there.
+fn tell_watcher(connection: &gio::DBusConnection, service: &str) {
+    let registered = connection.call_sync(
+        Some("org.kde.StatusNotifierWatcher"),
+        "/StatusNotifierWatcher",
+        "org.kde.StatusNotifierWatcher",
+        "RegisterStatusNotifierItem",
+        Some(&(service,).to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        2000,
+        gio::Cancellable::NONE,
+    );
+    if let Err(e) = registered {
+        log::warn!("no notification area to show Pipedeck in: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +334,64 @@ mod tests {
         let reply = glib::Variant::tuple_from_iter([1u32.to_variant(), layout()]);
         assert_eq!(reply.type_().as_str(), "(u(ia{sv}av))");
         assert_eq!(layout().child_value(2).n_children(), 2);
+    }
+
+    #[test]
+    fn the_menu_answers_as_dbusmenu_expects() {
+        let app = adw::Application::builder()
+            .application_id("dev._2c2t.PipedeckTrayTest")
+            .build();
+        let reply = |method: &str, params: glib::Variant| {
+            menu_reply(&app, method, &params).map(|v| v.type_().as_str().to_owned())
+        };
+        assert_eq!(
+            reply(
+                "GetLayout",
+                (0i32, -1i32, Vec::<String>::new()).to_variant()
+            )
+            .as_deref(),
+            Some("(u(ia{sv}av))")
+        );
+        assert_eq!(
+            reply(
+                "GetGroupProperties",
+                (vec![OPEN, QUIT], Vec::<String>::new()).to_variant()
+            )
+            .as_deref(),
+            Some("(a(ia{sv}))")
+        );
+        assert_eq!(
+            reply("GetProperty", (OPEN, "label").to_variant()).as_deref(),
+            Some("(v)")
+        );
+        assert_eq!(
+            reply(
+                "EventGroup",
+                (Vec::<(i32, String, glib::Variant, u32)>::new(),).to_variant()
+            )
+            .as_deref(),
+            Some("(ai)")
+        );
+        assert_eq!(
+            reply("AboutToShow", (0i32,).to_variant()).as_deref(),
+            Some("(b)")
+        );
+        assert_eq!(
+            reply("AboutToShowGroup", (Vec::<i32>::new(),).to_variant()).as_deref(),
+            Some("(aiai)")
+        );
+        assert_eq!(
+            reply(
+                "Event",
+                (0i32, "hovered", 0i32.to_variant(), 0u32).to_variant()
+            ),
+            None
+        );
+        assert_eq!(
+            item_property("dev._2c2t.Pipedeck", "IconName").str(),
+            Some("dev._2c2t.Pipedeck")
+        );
+        assert_eq!(menu_property("Version").get::<u32>(), Some(3));
     }
 
     #[test]
