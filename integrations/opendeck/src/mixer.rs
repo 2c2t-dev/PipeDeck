@@ -7,7 +7,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -355,7 +355,12 @@ fn follow(stream: &Arc<Mutex<Option<UnixStream>>>, changed: &Sender<News>) -> st
 
 /// Ask the mixer once where things stand. `None` while it is not up yet.
 pub fn fetch() -> std::io::Result<Option<View>> {
-    let mut socket = connect()?;
+    fetch_from(&socket_path())
+}
+
+/// Ask the mixer behind the socket at `path` where things stand.
+fn fetch_from(path: &Path) -> std::io::Result<Option<View>> {
+    let mut socket = connect_to(path)?;
     socket.write_all(b"{\"get\": \"state\"}\n")?;
     let mut line = String::new();
     BufReader::new(socket).read_line(&mut line)?;
@@ -368,9 +373,13 @@ pub fn fetch() -> std::io::Result<Option<View>> {
 /// directory it is in the shared temporary one, where a folder that is not
 /// was made by someone else, who could pose as the mixer.
 fn connect() -> std::io::Result<UnixStream> {
+    connect_to(&socket_path())
+}
+
+/// Reach the mixer behind the socket at `path`, on the same condition.
+fn connect_to(path: &Path) -> std::io::Result<UnixStream> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    let path = socket_path();
-    let folder = std::fs::symlink_metadata(path.parent().unwrap_or(&path))?;
+    let folder = std::fs::symlink_metadata(path.parent().unwrap_or(path))?;
     // The process's own folder belongs to whoever runs it.
     let me = std::fs::metadata("/proc/self")?.uid();
     if !folder.is_dir() || folder.uid() != me || folder.permissions().mode() & 0o077 != 0 {
@@ -388,4 +397,79 @@ fn socket_path() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("pipedeck")
         .join("control.sock")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::net::UnixListener;
+
+    /// A folder of the test's own, with the given mode, and the socket's
+    /// path in it.
+    fn folder(name: &str, mode: u32) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("pipedeck-opendeck-{}-{name}", std::process::id()))
+            .join("pipedeck");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        dir.join("control.sock")
+    }
+
+    fn clean(path: &Path) {
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    /// A mixer that answers the first line it is told with `answer`.
+    fn mixer(path: &Path, answer: &'static str) -> std::thread::JoinHandle<String> {
+        let listener = UnixListener::bind(path).unwrap();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut asked = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut asked)
+                .unwrap();
+            (&stream).write_all(answer.as_bytes()).unwrap();
+            asked
+        })
+    }
+
+    #[test]
+    fn the_mixer_is_asked_where_things_stand() {
+        let path = folder("asked", 0o700);
+        let answering = mixer(&path, "{\"state\": null}\n");
+        assert!(matches!(fetch_from(&path), Ok(None)));
+        assert_eq!(answering.join().unwrap(), "{\"get\": \"state\"}\n");
+        clean(&path);
+    }
+
+    #[test]
+    fn an_answer_not_understood_is_said_so() {
+        let path = folder("unclear", 0o700);
+        let answering = mixer(&path, "not json\n");
+        assert!(fetch_from(&path).is_err());
+        answering.join().unwrap();
+        clean(&path);
+    }
+
+    #[test]
+    fn a_socket_in_a_folder_open_to_others_is_not_trusted() {
+        let path = folder("open", 0o755);
+        let _listener = UnixListener::bind(&path).unwrap();
+        let refused = connect_to(&path).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
+        clean(&path);
+    }
+
+    #[test]
+    fn no_folder_no_mixer() {
+        let path = std::env::temp_dir().join("pipedeck-opendeck-none/pipedeck/control.sock");
+        assert!(connect_to(&path).is_err());
+    }
 }
