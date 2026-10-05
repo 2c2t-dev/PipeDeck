@@ -1,0 +1,62 @@
+# Maintainer: Fabien MILLET <zipname80 at gmail dot com>
+
+pkgname=pipedeck
+pkgver=0.1.2
+pkgrel=1
+pkgdesc='PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link'
+arch=('x86_64')
+url='https://pipedeck.2c2t.dev'
+license=('MIT')
+depends=(
+  'cairo' 'glib2' 'glibc' 'graphene' 'gtk4' 'libadwaita' 'libgcc' 'libpipewire' 'pango'
+  'pipewire' 'pipewire-session-manager'
+)
+makedepends=('cargo' 'clang')
+checkdepends=('dbus')
+optdepends=(
+  'opendeck: Stream Deck keys and dials through OpenDeck'
+  'git: building the plugin that splits Discord calls in Vesktop'
+  'npm: building the plugin that splits Discord calls in Vesktop'
+)
+source=("$pkgname-$pkgver.tar.gz::https://github.com/2c2t-dev/PipeDeck/archive/refs/tags/v$pkgver.tar.gz")
+# The libspa crate wraps PipeWire's inline functions in C, which the link
+# cannot read as LTO bitcode.
+options=('!lto')
+sha256sums=('3cd077157693d281eac07ab870fc9bc52196f66860e9b1640de22ec82d38f650')
+
+prepare() {
+  cd "PipeDeck-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "PipeDeck-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p pipedeck -p pipedeck-opendeck
+}
+
+check() {
+  cd "PipeDeck-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen --workspace
+}
+
+package() {
+  cd "PipeDeck-$pkgver"
+  install -Dm755 target/release/pipedeck target/release/pipedeck-opendeck -t "$pkgdir/usr/bin"
+
+  local data=crates/pipedeck/data
+  install -Dm644 "$data/dev._2c2t.Pipedeck.desktop" -t "$pkgdir/usr/share/applications"
+  install -Dm644 "$data/dev._2c2t.Pipedeck.metainfo.xml" -t "$pkgdir/usr/share/metainfo"
+  install -Dm644 "$data/dev._2c2t.Pipedeck.svg" -t "$pkgdir/usr/share/icons/hicolor/scalable/apps"
+  install -Dm644 "$data/dev._2c2t.Pipedeck-symbolic.svg" -t "$pkgdir/usr/share/icons/hicolor/symbolic/apps"
+  for size in 16 24 32 48 64 96 128; do
+    install -Dm644 "$data/icons/$size.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/dev._2c2t.Pipedeck.png"
+  done
+
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname"
+}
