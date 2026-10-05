@@ -1972,10 +1972,20 @@ impl Graph {
 
     /// Keep the clients of this process, which made the nodes that are ours.
     fn remember_client(&mut self, global: &GlobalObject<&DictRef>) {
-        // The server fills this in from the socket, so it cannot be claimed
-        // by anyone else.
-        let pid = global.props.and_then(|p| p.get("pipewire.sec.pid"));
-        if pid == Some(std::process::id().to_string().as_str()) {
+        let Some(props) = global.props else {
+            return;
+        };
+        // The server fills these in from the socket and the sandbox, so
+        // they cannot be claimed by anyone else. In a Flatpak, the process
+        // has a number of the sandbox's own, which the server does not
+        // know it by: there it goes by the sandbox's instance.
+        let ours = match flatpak_instance() {
+            Some(instance) => {
+                props.get("pipewire.access.portal.instance_id") == Some(instance.as_str())
+            }
+            None => props.get("pipewire.sec.pid") == Some(std::process::id().to_string().as_str()),
+        };
+        if ours {
             self.own_clients.insert(global.id);
         }
     }
@@ -2583,5 +2593,47 @@ impl Graph {
             self.emit_focus();
         }
         self.flush_config();
+    }
+}
+
+/// The Flatpak instance this runs in, if it runs in one, as the sandbox's
+/// own description has it.
+fn flatpak_instance() -> Option<&'static String> {
+    static INSTANCE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    INSTANCE
+        .get_or_init(|| {
+            std::fs::read_to_string("/.flatpak-info")
+                .ok()
+                .and_then(|info| instance_in(&info))
+        })
+        .as_ref()
+}
+
+/// The `instance-id` of a `.flatpak-info`'s `[Instance]` group.
+fn instance_in(info: &str) -> Option<String> {
+    let mut in_instance = false;
+    for line in info.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_instance = line == "[Instance]";
+        } else if in_instance {
+            if let Some(id) = line.strip_prefix("instance-id=") {
+                return Some(id.to_owned());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_flatpak_instance_is_read_from_its_group() {
+        let info = "[Application]\nname=dev._2c2t.Pipedeck\n\n[Instance]\n\
+                    instance-id=1832809038\nbranch=master\n";
+        assert_eq!(instance_in(info).as_deref(), Some("1832809038"));
+        assert_eq!(instance_in("[Application]\ninstance-id=7\n"), None);
+        assert_eq!(instance_in(""), None);
     }
 }
