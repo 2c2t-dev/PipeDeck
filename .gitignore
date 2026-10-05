@@ -8,3 +8,5 @@
 __pycache__/
 # Editor settings, each contributor's own.
 /.vscode/
+/packaging/flatpak/cargo-sources.json
+/.flatpak-builder

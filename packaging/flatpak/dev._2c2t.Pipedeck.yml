@@ -1,0 +1,68 @@
+# Pipedeck as a Flatpak, built by .github/workflows/flatpak.yml.
+#
+# The crates are fetched ahead into cargo-sources.json, which the workflow
+# makes from Cargo.lock with flatpak-builder-tools' cargo generator: a
+# Flatpak builds offline. Flathub's copy of this file takes the sources
+# from a release tag rather than from this folder; see MAINTAINING.md.
+id: dev._2c2t.Pipedeck
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm22
+command: pipedeck
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # PipeWire, which the mixer is made of.
+  - --filesystem=xdg-run/pipewire-0
+  # The control socket, which the Stream Deck plugins reach from outside.
+  - --filesystem=xdg-run/pipedeck:create
+  # OpenDeck's plugins and profiles, where Pipedeck installs its plugin.
+  - --filesystem=~/.config/opendeck:create
+  # The user's VST3 plug-ins.
+  - --filesystem=~/.vst3:ro
+  # The icon in the notification area, and the KWin script that says which
+  # window has the focus.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.kde.KWin
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm22/bin
+  env:
+    CARGO_HOME: /run/build/pipedeck/cargo
+    # bindgen, for PipeWire's headers.
+    LIBCLANG_PATH: /usr/lib/sdk/llvm22/lib
+modules:
+  - name: pipedeck
+    buildsystem: simple
+    build-commands:
+      - cargo --offline build --release --locked -p pipedeck
+      # OpenDeck runs the plugin program outside the sandbox, on whatever
+      # libraries the system has: it is linked statically.
+      - >-
+        RUSTFLAGS="-C target-feature=+crt-static"
+        cargo --offline build --release --locked -p pipedeck-opendeck
+        --target x86_64-unknown-linux-gnu
+      - install -Dm755 target/release/pipedeck /app/bin/pipedeck
+      - install -Dm755 target/x86_64-unknown-linux-gnu/release/pipedeck-opendeck /app/bin/pipedeck-opendeck
+      - install -Dm644 crates/pipedeck/data/dev._2c2t.Pipedeck.desktop /app/share/applications/dev._2c2t.Pipedeck.desktop
+      - install -Dm644 crates/pipedeck/data/dev._2c2t.Pipedeck.metainfo.xml /app/share/metainfo/dev._2c2t.Pipedeck.metainfo.xml
+      - install -Dm644 crates/pipedeck/data/dev._2c2t.Pipedeck.svg /app/share/icons/hicolor/scalable/apps/dev._2c2t.Pipedeck.svg
+      - install -Dm644 crates/pipedeck/data/dev._2c2t.Pipedeck-symbolic.svg /app/share/icons/hicolor/symbolic/apps/dev._2c2t.Pipedeck-symbolic.svg
+      - >-
+        for size in 16 24 32 48 64 96 128; do
+        install -Dm644 crates/pipedeck/data/icons/$size.png
+        /app/share/icons/hicolor/${size}x${size}/apps/dev._2c2t.Pipedeck.png;
+        done
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - dist
+          - _site
+          - .git
+      - cargo-sources.json
