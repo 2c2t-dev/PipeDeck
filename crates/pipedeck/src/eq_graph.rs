@@ -712,23 +712,42 @@ impl EqGraph {
         height: f64,
     ) {
         for band in 0..BAND_LAYOUT.len() {
-            let (x, y) = handle(values, band, width, height);
-            let on = band_on(values, band);
-            let active = self.hovered.get() == Some(band);
-            let picked = self.selected.get() == band;
-            let radius = if active { HANDLE + 2.0 } else { HANDLE };
-            cr.arc(x, y, radius, 0.0, std::f64::consts::TAU);
-            if on || BAND_LAYOUT[band].gain.is_some() {
-                tint(cr, BAND_COLOURS[band], 1.0);
-            } else {
-                paint(cr, fg, 0.35);
-            }
-            let _ = cr.fill_preserve();
-            cr.set_line_width(if active || picked { 2.5 } else { 1.5 });
-            paint(cr, fg, if active || picked { 0.95 } else { 0.5 });
-            let _ = cr.stroke();
+            // A band that is off, and has no gain to show it by, is grey.
+            let colour = (band_on(values, band) || BAND_LAYOUT[band].gain.is_some())
+                .then_some(BAND_COLOURS[band]);
+            draw_handle(
+                cr,
+                fg,
+                handle(values, band, width, height),
+                colour,
+                self.hovered.get() == Some(band),
+                self.selected.get() == band,
+            );
         }
     }
+}
+
+/// One band's handle: in its colour, or grey, larger when pointed at, and
+/// ringed more firmly when pointed at or picked.
+fn draw_handle(
+    cr: &gtk::cairo::Context,
+    fg: &gtk::gdk::RGBA,
+    (x, y): (f64, f64),
+    colour: Option<(f64, f64, f64)>,
+    active: bool,
+    picked: bool,
+) {
+    let radius = if active { HANDLE + 2.0 } else { HANDLE };
+    cr.arc(x, y, radius, 0.0, std::f64::consts::TAU);
+    match colour {
+        Some(colour) => tint(cr, colour, 1.0),
+        None => paint(cr, fg, 0.35),
+    }
+    let _ = cr.fill_preserve();
+    let firm = active || picked;
+    cr.set_line_width(if firm { 2.5 } else { 1.5 });
+    paint(cr, fg, if firm { 0.95 } else { 0.5 });
+    let _ = cr.stroke();
 }
 
 /// Paint with the foreground colour, at some opacity.
