@@ -109,13 +109,13 @@ class Reading(unittest.TestCase):
 
     def test_meters_read_by_target(self):
         meter = self.pipedeck.meter
-        self.assertEqual(meter({"what": "channel", "id": 1}), 0.5)
-        self.assertEqual(meter({"what": "cell", "channel": 1, "mix": 1}), 0.5)
-        self.assertEqual(meter({"what": "mix", "id": 1}), 0.7)
-        self.assertEqual(meter({"what": "voice", "channel": 3, "user": "42"}), 0.3)
-        self.assertEqual(meter({"what": "output", "device": "alsa.phones"}), 0.0)
-        self.assertEqual(meter({"what": "channel", "id": 9}), 0.0)
-        self.assertEqual(meter(None), 0.0)
+        self.assertAlmostEqual(meter({"what": "channel", "id": 1}), 0.5)
+        self.assertAlmostEqual(meter({"what": "cell", "channel": 1, "mix": 1}), 0.5)
+        self.assertAlmostEqual(meter({"what": "mix", "id": 1}), 0.7)
+        self.assertAlmostEqual(meter({"what": "voice", "channel": 3, "user": "42"}), 0.3)
+        self.assertAlmostEqual(meter({"what": "output", "device": "alsa.phones"}), 0.0)
+        self.assertAlmostEqual(meter({"what": "channel", "id": 9}), 0.0)
+        self.assertAlmostEqual(meter(None), 0.0)
 
 
 class Connection(unittest.TestCase):
@@ -152,7 +152,7 @@ class Connection(unittest.TestCase):
         self.assertTrue(told.wait(5))
         self.assertTrue(wait_for(lambda: pipedeck.state == STATE))
         conn.sendall((json.dumps({"levels": {"channels": [[1, 0.9]]}}) + "\n").encode())
-        self.assertTrue(wait_for(lambda: pipedeck.meter({"what": "channel", "id": 1}) == 0.9))
+        self.assertTrue(wait_for(lambda: abs(pipedeck.meter({"what": "channel", "id": 1}) - 0.9) < 1e-9))
         conn.sendall((json.dumps({"error": "no mix 9"}) + "\n").encode())
         self.assertTrue(wait_for(lambda: "pipedeck: no mix 9" in logged))
 

@@ -3,7 +3,6 @@ copy of it with texts taken out, to see what the build makes of that."""
 
 import io
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -64,12 +63,14 @@ class TheSite(unittest.TestCase):
 
     def test_the_sitemap_lists_every_page(self):
         sitemap = (self.out / "sitemap.xml").read_text()
-        self.assertEqual(len(re.findall("<loc>", sitemap)), 2 * len(LANGUAGES))
+        self.assertEqual(sitemap.count("<loc>"), 2 * len(LANGUAGES))
         self.assertIn("<loc>https://pipedeck.2c2t.dev/de/</loc>", sitemap)
 
     def test_the_structured_data_is_json_in_the_pages_language(self):
         html = (self.out / "es" / "index.html").read_text()
-        block = re.search(r'<script type="application/ld\+json">\s*(.*?)\s*</script>', html, re.S).group(1)
+        opening = '<script type="application/ld+json">'
+        start = html.index(opening) + len(opening)
+        block = html[start : html.index("</script>", start)]
         self.assertNotIn("</", block)
         app = json.loads(block)["@graph"][0]
         self.assertEqual((app["@type"], app["inLanguage"], app["url"]), ("SoftwareApplication", "es", "https://pipedeck.2c2t.dev/es/"))
