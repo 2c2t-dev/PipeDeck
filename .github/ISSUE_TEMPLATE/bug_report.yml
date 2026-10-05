@@ -24,7 +24,7 @@ body:
     attributes:
       label: Pipedeck version
       description: Shown in Settings → About.
-      placeholder: "0.1.0"
+      placeholder: "0.1.1"
     validations:
       required: true
 

@@ -6,11 +6,7 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-
-- On OpenDeck, the Call key goes to the call's profile and back. OpenDeck
-  takes a profile switch only from its Starter Pack, so the laid-out Call
-  keys are now its Switch Profile.
+## [0.1.1] - 2026-10-05
 
 ### Changed
 
@@ -23,6 +19,12 @@ follow [Semantic Versioning](https://semver.org/).
 
 - From the OpenDeck plugin, the Call action and Follow calls: OpenDeck
   does not let them switch profiles. StreamController keeps both.
+
+### Fixed
+
+- On OpenDeck, the Call key goes to the call's profile and back. OpenDeck
+  takes a profile switch only from its Starter Pack, so the laid-out Call
+  keys are now its Switch Profile.
 
 ## [0.1.0] - 2026-10-05
 
@@ -60,5 +62,6 @@ The first release.
   closed, and starting with the session.
 - .deb, .rpm and AppImage packages.
 
-[Unreleased]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/2c2t-dev/PipeDeck/releases/tag/v0.1.0

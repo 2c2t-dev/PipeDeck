@@ -5,8 +5,10 @@ pictures up to date.
 
 ## Making a release
 
-1. Set `version` in the root `Cargo.toml`, and move the changelog's
-   *Unreleased* section under the new version.
+1. Set `version` in the root `Cargo.toml` and in the two plugins'
+   manifests, `integrations/opendeck/plugin/manifest.json` and
+   `integrations/streamcontroller/dev_2c2t_Pipedeck/manifest.json`, and
+   move the changelog's *Unreleased* section under the new version.
 2. Commit, and tag that commit: `git tag -a v0.2.0 -m "Pipedeck 0.2.0"`.
 3. Push the commit, then the tag: `git push origin main v0.2.0`.
 
