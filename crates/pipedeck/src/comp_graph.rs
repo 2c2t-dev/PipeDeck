@@ -520,15 +520,15 @@ impl CompGraph {
 
         // A grid every 12 dB, and the diagonal: what goes in comes out.
         cr.set_line_width(1.0);
-        let mut db = FLOOR;
-        while db <= 0.0 {
+        // Counted in whole steps, so no rounding adds up along the way.
+        for step in 0..=(-FLOOR / 12.0) as i32 {
+            let db = FLOOR + 12.0 * step as f32;
             let x = in_to_x(db, width).round() + 0.5;
             cr.move_to(x, top);
             cr.line_to(x, bottom);
             let y = out_to_y(db, height).round() + 0.5;
             cr.move_to(left, y);
             cr.line_to(right, y);
-            db += 12.0;
         }
         set(cr, 0.06);
         let _ = cr.stroke();

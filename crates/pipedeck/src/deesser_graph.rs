@@ -493,12 +493,11 @@ impl DeEsserGraph {
             cr.move_to(x, top);
             cr.line_to(x, bottom);
         }
-        let mut db = 0.0;
-        while db >= BOTTOM_DB {
-            let y = db_to_y(db, height).round() + 0.5;
+        // Counted in whole steps, so no rounding adds up along the way.
+        for step in 0..=(-BOTTOM_DB / 6.0) as i32 {
+            let y = db_to_y(-6.0 * step as f32, height).round() + 0.5;
             cr.move_to(left, y);
             cr.line_to(right, y);
-            db -= 6.0;
         }
         set(cr, 0.06);
         let _ = cr.stroke();
