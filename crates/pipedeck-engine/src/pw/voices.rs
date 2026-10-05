@@ -442,6 +442,60 @@ mod tests {
         }
     }
 
+    fn member(id: &str, name: &str, avatar: Option<&str>) -> CallMember {
+        CallMember {
+            id: id.into(),
+            name: name.into(),
+            avatar: avatar.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn someone_new_in_a_call_is_known_from_then_on() {
+        let mut voices = Vec::new();
+        assert!(meet(
+            &mut voices,
+            &member("42", "Alice", Some("/a.png")),
+            20_000
+        ));
+        let alice = &voices[0];
+        assert_eq!(
+            (
+                alice.name.as_str(),
+                alice.avatar.as_deref(),
+                alice.gain,
+                alice.seen
+            ),
+            ("Alice", Some("/a.png"), 1.0, Some(20_000))
+        );
+    }
+
+    #[test]
+    fn someone_known_keeps_their_level_and_takes_their_new_name() {
+        let mut voices = vec![voice("42", Some(19_990))];
+        voices[0].present = false;
+        assert!(meet(
+            &mut voices,
+            &member("42", "Alice", Some("/a.png")),
+            20_000
+        ));
+        let alice = &voices[0];
+        assert_eq!(
+            (
+                alice.name.as_str(),
+                alice.avatar.as_deref(),
+                alice.gain,
+                alice.seen,
+                alice.present
+            ),
+            ("Alice", Some("/a.png"), 0.5, Some(20_000), true)
+        );
+        // The same again the same day is no news; a picture not fetched yet
+        // does not take away the one known.
+        assert!(!meet(&mut voices, &member("42", "Alice", None), 20_000));
+        assert_eq!(voices[0].avatar.as_deref(), Some("/a.png"));
+    }
+
     #[test]
     fn someone_not_seen_for_months_is_forgotten() {
         let today = 20_000;

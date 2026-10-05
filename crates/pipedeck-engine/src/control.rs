@@ -1294,6 +1294,197 @@ mod tests {
         );
     }
 
+    /// The model, with a person in a call on the channel.
+    fn model_in_a_call() -> Model {
+        let mut model = model();
+        if let Some(state) = model.state.as_mut() {
+            state.sources[0].voices.push(crate::types::VoiceConfig {
+                id: "42".into(),
+                name: "Alice".into(),
+                avatar: None,
+                gain: 1.0,
+                muted: false,
+                seen: None,
+                present: true,
+            });
+        }
+        model
+    }
+
+    #[test]
+    fn a_mix_and_a_person_are_set() {
+        let mut model = model_in_a_call();
+        assert_eq!(
+            act(
+                &mut model,
+                r#"{"do":{"what":"mix","id":1,"volume":0.5,"mute":true}}"#
+            ),
+            Ok(vec![
+                Command::SetMixGain {
+                    id: MixId(1),
+                    gain: 0.5
+                },
+                Command::SetMixMute {
+                    id: MixId(1),
+                    muted: true
+                }
+            ])
+        );
+        assert_eq!(
+            act(
+                &mut model,
+                r#"{"do":{"what":"voice","channel":2,"user":"42","volume":0.5,"mute":true}}"#
+            ),
+            Ok(vec![
+                Command::SetVoiceGain {
+                    id: SourceId(2),
+                    user: "42".into(),
+                    gain: 0.5
+                },
+                Command::SetVoiceMute {
+                    id: SourceId(2),
+                    user: "42".into(),
+                    muted: true
+                }
+            ])
+        );
+        assert_eq!(
+            act(
+                &mut model,
+                r#"{"do":{"what":"voice","channel":2,"user":"7","mute":true}}"#
+            ),
+            Err("nobody called 7 on channel 2".into())
+        );
+        assert_eq!(
+            act(&mut model, r#"{"do":{"what":"mix","id":9,"mute":true}}"#),
+            Err("no mix 9".into())
+        );
+    }
+
+    #[test]
+    fn what_is_there_already_or_not_at_all_is_said_so() {
+        let mut model = model();
+        assert_eq!(
+            act(&mut model, r#"{"do":{"what":"hear","mix":9,"only":true}}"#),
+            Err("no mix 9".into())
+        );
+        assert_eq!(
+            act(
+                &mut model,
+                r#"{"do":{"what":"effect","channel":2,"index":0,"bypass":true}}"#
+            ),
+            Err("channel 2 has no effect 0".into())
+        );
+        assert_eq!(
+            act(
+                &mut model,
+                r#"{"do":{"what":"app","app":"spotify","channel":2,"release":true}}"#
+            ),
+            Ok(vec![Command::ReleaseApp {
+                id: SourceId(2),
+                app: "spotify".into()
+            }])
+        );
+        assert_eq!(
+            act(
+                &mut model,
+                r#"{"do":{"what":"app","focused":true,"channel":2}}"#
+            ),
+            Err("no application playing in the window in front".into())
+        );
+        assert_eq!(
+            act(&mut model, r#"{"do":{"what":"app","channel":2}}"#),
+            Err("an application, or the one in front".into())
+        );
+    }
+
+    /// One line from the mixer, as JSON, within a second.
+    fn read_line(reader: &mut BufReader<UnixStream>) -> serde_json::Value {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("a line");
+        serde_json::from_str(&line).expect("JSON")
+    }
+
+    #[test]
+    fn a_client_is_answered_until_it_goes() {
+        let (ours, theirs) = UnixStream::pair().expect("a pair of sockets");
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("a timeout");
+        let (commands, _engine) = pw::channel::channel::<Command>();
+        let model = Arc::new(Mutex::new(model_in_a_call()));
+        let serving = {
+            let model = model.clone();
+            std::thread::spawn(move || serve(ours, commands, model))
+        };
+        let mut writer = theirs.try_clone().expect("a writer");
+        let mut reader = BufReader::new(theirs);
+        let say = |writer: &mut UnixStream, line: &str| {
+            writer.write_all(format!("{line}\n").as_bytes()).unwrap();
+        };
+
+        // Who is in the call, answered with how each is shown.
+        say(&mut writer, r#"{"call":[{"id":"42","name":"Alice"}]}"#);
+        assert_eq!(read_line(&mut reader)["labels"]["42"], "Alice (Discord)");
+
+        // Subscribed: told the state now, and after every change.
+        say(&mut writer, r#"{"subscribe":true}"#);
+        let told = read_line(&mut reader);
+        assert_eq!(told["state"]["channels"][0]["name"], "Music");
+
+        say(&mut writer, r#"{"get":"state"}"#);
+        assert_eq!(
+            read_line(&mut reader)["state"]["mixes"][0]["name"],
+            "Stream"
+        );
+
+        say(&mut writer, "not json");
+        let unclear = read_line(&mut reader);
+        assert!(unclear["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("not understood"));
+
+        // An order: done, and the change told to the subscriber, in either
+        // order, since the subscriber's thread says it.
+        say(
+            &mut writer,
+            r#"{"do":{"what":"channel","id":2,"mute":true}}"#,
+        );
+        let (first, second) = (read_line(&mut reader), read_line(&mut reader));
+        let done = [&first, &second].into_iter().any(|line| line["ok"] == true);
+        let changed = [&first, &second]
+            .into_iter()
+            .any(|line| line["state"]["channels"][0]["muted"] == true);
+        assert!(done && changed, "{first} {second}");
+
+        // An order that cannot be done is said so.
+        say(&mut writer, r#"{"do":{"what":"mix","id":9,"mute":true}}"#);
+        assert_eq!(read_line(&mut reader)["error"], "no mix 9");
+
+        // The meters, passed on at their own pace.
+        say(&mut writer, r#"{"meters":true}"#);
+        std::thread::sleep(Duration::from_millis(50));
+        model.lock().unwrap().hear(Event::Levels {
+            sources: vec![(SourceId(2), 0.5)],
+            mixes: vec![(MixId(1), 0.25)],
+            voices: vec![(SourceId(2), "42".into(), 0.125)],
+            effects: Vec::new(),
+        });
+        let levels = loop {
+            let line = read_line(&mut reader);
+            if line.get("levels").is_some() {
+                break line;
+            }
+        };
+        assert_eq!(levels["levels"]["channels"][0][1], 0.5);
+
+        // The client goes: the mixer stops answering it.
+        drop(reader);
+        drop(writer);
+        serving.join().expect("serve returns");
+    }
+
     #[test]
     fn a_meter_keeps_the_loudest_it_was_told() {
         let mut peaks = Peaks {
