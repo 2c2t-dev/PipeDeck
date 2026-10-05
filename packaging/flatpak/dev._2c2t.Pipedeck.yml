@@ -25,10 +25,8 @@ finish-args:
   - --filesystem=~/.config/opendeck:create
   # The user's VST3 plug-ins.
   - --filesystem=~/.vst3:ro
-  # The icon in the notification area, and the KWin script that says which
-  # window has the focus.
+  # The icon in the notification area.
   - --talk-name=org.kde.StatusNotifierWatcher
-  - --talk-name=org.kde.KWin
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm22/bin
   env:

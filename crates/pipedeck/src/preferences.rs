@@ -320,7 +320,7 @@ fn stream_deck_group() -> adw::PreferencesGroup {
     // On KDE, the application in front, for Add to Channel: a KWin script
     // says which window has the focus.
     if crate::kwin::available() {
-        group.add(&front_row(&status, &spinner, &saved));
+        group.add(&front_row(&status, &spinner));
     }
     let show_all: Rc<dyn Fn()> = Rc::new(move || shows.iter().for_each(|show| show()));
     lay_out.connect_clicked(move |_| {
@@ -492,17 +492,13 @@ fn show_plugin(
 
 /// Whether the KWin script that says which window has the focus is
 /// installed, and installing or removing it.
-fn front_row(
-    status: &gtk::Label,
-    spinner: &adw::Spinner,
-    saved: &Rc<RefCell<Settings>>,
-) -> adw::SwitchRow {
+fn front_row(status: &gtk::Label, spinner: &adw::Spinner) -> adw::SwitchRow {
     let front = adw::SwitchRow::new();
     front.set_title("Application in front");
     front.set_subtitle("A KWin script tells Pipedeck which window has the focus");
     front.set_active(crate::kwin::installed());
     front.connect_active_notify({
-        let (status, spinner, saved) = (status.clone(), spinner.clone(), saved.clone());
+        let (status, spinner) = (status.clone(), spinner.clone());
         move |row| {
             if row.is_active() == crate::kwin::installed() {
                 return;
@@ -519,11 +515,7 @@ fn front_row(
                 status.set_label(&format!("It did not work: {e}"));
                 status.set_visible(true);
                 row.set_active(crate::kwin::installed());
-                return;
             }
-            // What a Flatpak goes by, having nowhere else to look.
-            saved.borrow_mut().focus_script = on;
-            saved.borrow().save();
         }
     });
     front

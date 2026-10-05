@@ -50,10 +50,6 @@ pub struct Settings {
     /// with the session leaves the window closed.
     #[serde(default)]
     pub keep_running: bool,
-    /// In a Flatpak, whether KWin is given the script that says which
-    /// window has the focus, which it then is each time Pipedeck starts.
-    #[serde(default)]
-    pub focus_script: bool,
 }
 
 fn yes() -> bool {
@@ -68,7 +64,6 @@ impl Default for Settings {
             stream_deck_profiles: true,
             software_rendering: false,
             keep_running: false,
-            focus_script: false,
         }
     }
 }
