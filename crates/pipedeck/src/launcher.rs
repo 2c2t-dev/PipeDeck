@@ -25,7 +25,7 @@ const SYMBOLIC: &str = include_str!("../data/dev._2c2t.Pipedeck-symbolic.svg");
 /// task switcher then blows up; with these, it hands over each size and the
 /// desktop takes the one it shows at. Larger ones are left to the scalable
 /// icon, which is what the theme's larger folders hold.
-const SIZES: [(u32, &[u8]); 7] = [
+pub(crate) const SIZES: [(u32, &[u8]); 7] = [
     (16, include_bytes!("../data/icons/16.png")),
     (24, include_bytes!("../data/icons/24.png")),
     (32, include_bytes!("../data/icons/32.png")),

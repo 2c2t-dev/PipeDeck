@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use adw::gtk::{gio, glib};
+use adw::gtk::{gdk, gio, glib};
 use adw::prelude::*;
 use libadwaita as adw;
 
@@ -24,6 +24,7 @@ const ITEM_XML: &str = r#"<node>
     <property name="Status" type="s" access="read"/>
     <property name="IconName" type="s" access="read"/>
     <property name="IconThemePath" type="s" access="read"/>
+    <property name="IconPixmap" type="a(iiay)" access="read"/>
     <property name="ItemIsMenu" type="b" access="read"/>
     <property name="Menu" type="o" access="read"/>
     <property name="WindowId" type="i" access="read"/>
@@ -116,15 +117,29 @@ fn layout() -> glib::Variant {
     (0i32, root, children).to_variant()
 }
 
-fn icon_theme_path() -> String {
-    std::env::var_os("XDG_DATA_HOME")
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share"))
+/// The icon as pictures, for an area that finds no icon by its name: each
+/// size small enough for a panel, as ARGB with the alpha first, which is
+/// what StatusNotifierItem asks for.
+fn pixmaps() -> Vec<(i32, i32, Vec<u8>)> {
+    crate::launcher::SIZES
+        .iter()
+        .filter(|(size, _)| *size <= 64)
+        .filter_map(|(_, png)| {
+            let texture = gdk::Texture::from_bytes(&glib::Bytes::from_static(png)).ok()?;
+            let mut downloader = gdk::TextureDownloader::new(&texture);
+            downloader.set_format(gdk::MemoryFormat::A8r8g8b8);
+            let (bytes, stride) = downloader.download_bytes();
+            let (width, height) = (texture.width(), texture.height());
+            let row = width as usize * 4;
+            let pixels = bytes
+                .chunks(stride)
+                .take(height as usize)
+                .flat_map(|line| &line[..row])
+                .copied()
+                .collect();
+            Some((width, height, pixels))
         })
-        .map(|data| data.join("icons").display().to_string())
-        .unwrap_or_default()
+        .collect()
 }
 
 /// Show the icon, or take it away.
@@ -239,7 +254,11 @@ fn item_property(app_id: &str, property: &str) -> glib::Variant {
         "Title" => "Pipedeck".to_variant(),
         "Status" => "Active".to_variant(),
         "IconName" => app_id.to_variant(),
-        "IconThemePath" => icon_theme_path().to_variant(),
+        // The icon is in the themes' usual folders. A folder named here
+        // would be taken for a theme of its own, which has no index there,
+        // and KDE then draws an empty square.
+        "IconThemePath" => "".to_variant(),
+        "IconPixmap" => pixmaps().to_variant(),
         "ItemIsMenu" => false.to_variant(),
         "Menu" => glib::variant::ObjectPath::try_from(MENU_PATH)
             .expect("a valid path")
@@ -622,6 +641,28 @@ mod tests {
             })
             .unwrap();
         area.join().unwrap();
+    }
+
+    #[test]
+    fn the_icon_is_given_as_pictures_too() {
+        let pixmaps = pixmaps();
+        assert_eq!(
+            pixmaps.iter().map(|(w, h, _)| (*w, *h)).collect::<Vec<_>>(),
+            [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64)]
+        );
+        for (width, height, pixels) in &pixmaps {
+            assert_eq!(pixels.len(), (width * height * 4) as usize);
+            // Alpha first: the corners are clear, the middle is not.
+            assert_eq!(pixels[0], 0);
+            let middle = ((height / 2 * width + width / 2) * 4) as usize;
+            assert_eq!(pixels[middle], 255);
+        }
+        assert_eq!(
+            item_property("dev._2c2t.Pipedeck", "IconPixmap")
+                .type_()
+                .as_str(),
+            "a(iiay)"
+        );
     }
 
     #[test]
