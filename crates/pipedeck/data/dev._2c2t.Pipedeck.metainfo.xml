@@ -80,6 +80,16 @@
   </requires>
 
   <releases>
+    <release version="0.2.0" date="2026-10-11">
+      <description>
+        <ul>
+          <li>A soundboard, played into the mixes through a channel of its own, from the window, keyboard shortcuts or a Stream Deck key</li>
+          <li>Sounds taken from the soundboards of your Discord servers, through Vesktop</li>
+          <li>Pipedeck says when a newer version is out</li>
+          <li>Pipedeck's icon shows in KDE's notification area</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.3" date="2026-10-05">
       <description>
         <ul>

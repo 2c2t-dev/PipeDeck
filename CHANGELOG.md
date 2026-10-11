@@ -6,12 +6,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-11
+
 ### Added
 
-- A soundboard: sounds played into the mixes, through a channel of their
-  own, from the window, a keyboard shortcut or a Stream Deck key (the Play
-  Sound action, in both plugins). Sounds can be taken from the soundboards
-  of your Discord servers, through Vesktop's plugin.
+- A soundboard: sounds played into the mixes through a channel of their
+  own, whose cells decide who hears them. They are played from a menu in
+  the header bar or a window of their own, from keyboard shortcuts that
+  work with the window closed, and from a Stream Deck key (the Play Sound
+  action, in both plugins). MP3, Ogg Vorbis and Opus, FLAC and WAV.
+- Sounds taken from the soundboards of your Discord servers, through
+  Vesktop's plugin.
 - Pipedeck says when a newer version is out, asking GitHub once a day.
   It can be turned off in the settings, and the Flatpak does not ask.
 
@@ -113,7 +118,8 @@ The first release.
   closed, and starting with the session.
 - .deb, .rpm and AppImage packages.
 
-[Unreleased]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/2c2t-dev/PipeDeck/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.0...v0.1.1
