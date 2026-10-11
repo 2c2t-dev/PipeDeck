@@ -23,7 +23,7 @@ serde_json = "1"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
 rtrb = "0.3"
 # Opus, which Discord's soundboards are often in, from the system's libopus.
-symphonia-adapter-libopus = { version = "0.2.9", default-features = false }
+symphonia-adapter-libopus = { version = "0.3.0", default-features = false }
 
 [dev-dependencies]
 env_logger = "0.11"
