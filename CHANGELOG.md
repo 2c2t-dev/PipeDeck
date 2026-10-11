@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-11
+
 ### Changed
 
 - The notification area shows Pipedeck's logo in colour, rather than the
@@ -130,7 +132,8 @@ The first release.
   closed, and starting with the session.
 - .deb, .rpm and AppImage packages.
 
-[Unreleased]: https://github.com/2c2t-dev/PipeDeck/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/2c2t-dev/PipeDeck/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/2c2t-dev/PipeDeck/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/2c2t-dev/PipeDeck/compare/v0.1.1...v0.1.2

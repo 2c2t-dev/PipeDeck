@@ -80,6 +80,14 @@
   </requires>
 
   <releases>
+    <release version="0.2.1" date="2026-10-11">
+      <description>
+        <ul>
+          <li>The menu of Pipedeck's icon in KDE's notification area is no longer empty, and is laid out as OpenDeck's</li>
+          <li>The notification area shows Pipedeck's logo in colour</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-10-11">
       <description>
         <ul>

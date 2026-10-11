@@ -1597,7 +1597,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pipedeck"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-channel",
  "env_logger",
@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "pipedeck-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "env_logger",
  "libc",
@@ -1636,7 +1636,7 @@ dependencies = [
 
 [[package]]
 name = "pipedeck-opendeck"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png",
  "serde",
