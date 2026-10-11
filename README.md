@@ -130,7 +130,8 @@ of delay.
 
 The button beside the output in the header bar opens the soundboard: add
 sounds (MP3, Ogg Vorbis, FLAC or WAV), and a click plays one from its start,
-even while it plays; the square stops them all. The files are copied into
+even while it plays; the square stops them all. The last button opens it in
+a window of its own, to keep beside the mixer or on another screen. The files are copied into
 `~/.local/share/pipedeck/sounds/`, so moving the originals loses nothing.
 
 The sounds play into a channel of their own, **Soundboard**, made with the

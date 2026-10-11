@@ -1,5 +1,6 @@
-//! The soundboard, in the header bar: its sounds a click from playing,
-//! with what adds, renames and removes them.
+//! The soundboard, in the header bar and, when asked, in a window of its
+//! own: its sounds a click from playing, with what adds, renames and
+//! removes them.
 //!
 //! A sound plays into the soundboard's row of the matrix, so who hears it
 //! is the cells' business, as for any channel. Clicked again, it starts
@@ -22,11 +23,15 @@ pub struct Soundboard {
     engine: EngineLink,
     button: gtk::MenuButton,
     popover: gtk::Popover,
+    /// The soundboard in a window of its own, once it was asked for: kept
+    /// when closed, to open again as it was.
+    window: RefCell<Option<adw::Window>>,
     /// The sounds as last drawn, so the same list is not drawn again.
     sounds: RefCell<Vec<SoundConfig>>,
     playing: RefCell<Vec<SoundId>>,
-    /// Each sound's button, to light while it plays.
-    buttons: RefCell<HashMap<SoundId, gtk::Button>>,
+    /// Each sound's buttons, in the menu and in the window, to light while
+    /// it plays.
+    buttons: RefCell<HashMap<SoundId, Vec<gtk::Button>>>,
     /// The desktop's shortcuts for the sounds, where it has them.
     shortcuts: RefCell<Option<Rc<Shortcuts>>>,
 }
@@ -42,6 +47,7 @@ impl Soundboard {
             engine: engine.clone(),
             button,
             popover,
+            window: RefCell::new(None),
             sounds: RefCell::new(Vec::new()),
             playing: RefCell::new(Vec::new()),
             buttons: RefCell::new(HashMap::new()),
@@ -78,29 +84,66 @@ impl Soundboard {
     /// Light the sounds playing.
     pub fn set_playing(&self, playing: &[SoundId]) {
         *self.playing.borrow_mut() = playing.to_vec();
-        for (id, button) in self.buttons.borrow().iter() {
-            if playing.contains(id) {
-                button.add_css_class("suggested-action");
-            } else {
-                button.remove_css_class("suggested-action");
+        for (id, buttons) in self.buttons.borrow().iter() {
+            for button in buttons {
+                if playing.contains(id) {
+                    button.add_css_class("suggested-action");
+                } else {
+                    button.remove_css_class("suggested-action");
+                }
             }
         }
     }
 
+    /// Draw the menu again, and the window when there is one.
     fn draw(self: &Rc<Self>) {
+        let mut buttons: HashMap<SoundId, Vec<gtk::Button>> = HashMap::new();
+
         let page = gtk::Box::new(gtk::Orientation::Vertical, 10);
         page.set_margin_top(10);
         page.set_margin_bottom(10);
         page.set_margin_start(10);
         page.set_margin_end(10);
         page.set_width_request(480);
-
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let title = gtk::Label::new(Some("Soundboard"));
         title.add_css_class("heading");
         title.set_xalign(0.0);
         title.set_hexpand(true);
         top.append(&title);
+        for control in self.controls() {
+            top.append(&control);
+        }
+        let detach = gtk::Button::from_icon_name("window-new-symbolic");
+        detach.add_css_class("flat");
+        detach.set_tooltip_text(Some("Open in a window"));
+        detach.connect_clicked({
+            let this = self.clone();
+            move |_| {
+                this.popover.popdown();
+                this.open_window();
+            }
+        });
+        top.append(&detach);
+        page.append(&top);
+        page.append(&self.sounds_area(3, Some(420), &mut buttons));
+        if let Some(keys) = self.shortcuts_button() {
+            page.append(&keys);
+        }
+        self.popover.set_child(Some(&page));
+
+        if let Some(window) = self.window.borrow().as_ref() {
+            window.set_content(Some(&self.window_content(&mut buttons)));
+        }
+
+        *self.buttons.borrow_mut() = buttons;
+        let playing = self.playing.borrow().clone();
+        self.set_playing(&playing);
+    }
+
+    /// What stops the sounds and adds others, in the menu's top line and
+    /// the window's header bar.
+    fn controls(self: &Rc<Self>) -> [gtk::Button; 2] {
         let stop = gtk::Button::from_icon_name("media-playback-stop-symbolic");
         stop.add_css_class("flat");
         stop.set_tooltip_text(Some("Stop every sound"));
@@ -108,19 +151,25 @@ impl Soundboard {
             let engine = self.engine.clone();
             move |_| engine.send(Command::StopSounds)
         });
-        top.append(&stop);
         let add = gtk::Button::from_icon_name("list-add-symbolic");
         add.add_css_class("flat");
         add.set_tooltip_text(Some("Add sounds"));
         add.connect_clicked({
             let this = self.clone();
-            move |_| this.pick_sounds()
+            move |button| this.pick_sounds(button)
         });
-        top.append(&add);
-        page.append(&top);
+        [stop, add]
+    }
 
+    /// The sounds, as many to a line as `columns` at most, or what to do
+    /// without any. A menu stops growing at `height`; a window scrolls.
+    fn sounds_area(
+        self: &Rc<Self>,
+        columns: u32,
+        height: Option<i32>,
+        buttons: &mut HashMap<SoundId, Vec<gtk::Button>>,
+    ) -> gtk::Widget {
         let sounds = self.sounds.borrow().clone();
-        let mut buttons = HashMap::new();
         if sounds.is_empty() {
             let empty = gtk::Label::new(Some(
                 "Add sounds to play them into the mixes: from here, a Stream Deck or a keyboard shortcut.",
@@ -129,53 +178,98 @@ impl Soundboard {
             empty.set_wrap(true);
             empty.set_xalign(0.0);
             empty.set_max_width_chars(40);
-            page.append(&empty);
-        } else {
-            let grid = gtk::FlowBox::new();
-            grid.set_selection_mode(gtk::SelectionMode::None);
-            grid.set_homogeneous(true);
-            grid.set_min_children_per_line(3);
-            grid.set_max_children_per_line(3);
-            grid.set_column_spacing(6);
-            grid.set_row_spacing(6);
-            for sound in &sounds {
-                let (tile, play) = self.tile(sound);
-                buttons.insert(sound.id, play);
-                grid.append(&tile);
+            return empty.upcast();
+        }
+        let grid = gtk::FlowBox::new();
+        grid.set_selection_mode(gtk::SelectionMode::None);
+        grid.set_homogeneous(true);
+        grid.set_valign(gtk::Align::Start);
+        grid.set_min_children_per_line(columns.min(3));
+        grid.set_max_children_per_line(columns);
+        grid.set_column_spacing(6);
+        grid.set_row_spacing(6);
+        for sound in &sounds {
+            let (tile, play) = self.tile(sound);
+            buttons.entry(sound.id).or_default().push(play);
+            grid.append(&tile);
+        }
+        let scroller = gtk::ScrolledWindow::new();
+        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        match height {
+            Some(height) => {
+                scroller.set_propagate_natural_height(true);
+                scroller.set_max_content_height(height);
             }
-            let scroller = gtk::ScrolledWindow::new();
-            scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-            scroller.set_propagate_natural_height(true);
-            scroller.set_max_content_height(420);
-            scroller.set_child(Some(&grid));
-            page.append(&scroller);
+            None => scroller.set_vexpand(true),
         }
+        scroller.set_child(Some(&grid));
+        scroller.upcast()
+    }
 
-        let configurable = self
-            .shortcuts
-            .borrow()
-            .clone()
-            .filter(|shortcuts| shortcuts.can_configure() && !sounds.is_empty());
-        if let Some(shortcuts) = configurable {
-            let keys = gtk::Button::with_label("Keyboard Shortcuts…");
-            keys.add_css_class("flat");
-            keys.set_tooltip_text(Some(
-                "Choose keys that play each sound, even with the window in the background",
-            ));
-            keys.connect_clicked({
-                let popover = self.popover.clone();
-                move |_| {
-                    popover.popdown();
-                    shortcuts.configure();
-                }
-            });
-            page.append(&keys);
+    /// The way to the desktop's settings for the sounds' keys, when it
+    /// offers one and there are sounds to give keys.
+    fn shortcuts_button(&self) -> Option<gtk::Button> {
+        let shortcuts =
+            self.shortcuts.borrow().clone().filter(|shortcuts| {
+                shortcuts.can_configure() && !self.sounds.borrow().is_empty()
+            })?;
+        let keys = gtk::Button::with_label("Keyboard Shortcuts…");
+        keys.add_css_class("flat");
+        keys.set_tooltip_text(Some(
+            "Choose keys that play each sound, even with the window in the background",
+        ));
+        keys.connect_clicked({
+            let popover = self.popover.clone();
+            move |_| {
+                popover.popdown();
+                shortcuts.configure();
+            }
+        });
+        Some(keys)
+    }
+
+    /// The soundboard in a window of its own, beside the mixer or on
+    /// another screen.
+    fn open_window(self: &Rc<Self>) {
+        if let Some(window) = self.window.borrow().as_ref() {
+            window.present();
+            return;
         }
+        // Not one of the application's windows: the mixer's is the one a
+        // second start of Pipedeck, or its icon, brings up.
+        let window = adw::Window::builder()
+            .title("Soundboard")
+            .default_width(560)
+            .default_height(380)
+            .hide_on_close(true)
+            .build();
+        *self.window.borrow_mut() = Some(window.clone());
+        self.draw();
+        window.present();
+    }
 
-        self.popover.set_child(Some(&page));
-        *self.buttons.borrow_mut() = buttons;
-        let playing = self.playing.borrow().clone();
-        self.set_playing(&playing);
+    fn window_content(
+        self: &Rc<Self>,
+        buttons: &mut HashMap<SoundId, Vec<gtk::Button>>,
+    ) -> gtk::Widget {
+        let header = adw::HeaderBar::new();
+        for control in self.controls() {
+            header.pack_start(&control);
+        }
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        content.set_margin_top(12);
+        content.set_margin_bottom(12);
+        content.set_margin_start(12);
+        content.set_margin_end(12);
+        content.append(&self.sounds_area(8, None, buttons));
+        if let Some(keys) = self.shortcuts_button() {
+            keys.set_halign(gtk::Align::Start);
+            content.append(&keys);
+        }
+        let view = adw::ToolbarView::new();
+        view.add_top_bar(&header);
+        view.set_content(Some(&content));
+        view.upcast()
     }
 
     /// One sound: a button that plays it, and a menu to rename or remove it.
@@ -245,7 +339,6 @@ impl Soundboard {
         });
         let menu = gtk::MenuButton::new();
         menu.set_icon_name("view-more-symbolic");
-        menu.add_css_class("flat");
         menu.set_tooltip_text(Some("Rename or remove"));
         menu.set_popover(Some(&menu_popover));
 
@@ -256,8 +349,8 @@ impl Soundboard {
         (tile.upcast(), play)
     }
 
-    /// Ask for sound files and add each.
-    fn pick_sounds(self: &Rc<Self>) {
+    /// Ask for sound files and add each, over the window asked from.
+    fn pick_sounds(self: &Rc<Self>, from: &gtk::Button) {
         self.popover.popdown();
         let filter = gtk::FileFilter::new();
         filter.set_name(Some("Sounds"));
@@ -280,7 +373,7 @@ impl Soundboard {
         let dialog = gtk::FileDialog::new();
         dialog.set_title("Add Sounds");
         dialog.set_filters(Some(&filters));
-        let window = self.button.root().and_downcast::<gtk::Window>();
+        let window = from.root().and_downcast::<gtk::Window>();
         dialog.open_multiple(window.as_ref(), None::<&gtk::gio::Cancellable>, {
             let engine = self.engine.clone();
             move |answer| {
