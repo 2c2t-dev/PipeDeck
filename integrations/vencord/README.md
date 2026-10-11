@@ -20,6 +20,13 @@ Pipedeck is not running, or has no sink for someone, their voice goes where
 Discord sends it. What it does is written down in
 `~/.cache/pipedeck/vencord-voices.log`.
 
+It also lets Pipedeck's soundboard take sounds from Discord's: Pipedeck
+asks it for the servers you are in and a server's sounds, which it reads
+from Discord's client or asks Discord for, and the plugin fetches the ones
+you tick into `$XDG_RUNTIME_DIR/pipedeck/discord`, from where Pipedeck moves
+them onto its soundboard. For that it stays connected to Pipedeck while
+Vesktop runs, not only during a call.
+
 ## Install
 
 In Pipedeck: Settings, Plug-ins, **Discord voices**, Install. Vencord only

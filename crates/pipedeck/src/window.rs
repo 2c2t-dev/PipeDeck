@@ -167,6 +167,10 @@ impl Window {
         });
 
         this.rebuild();
+        this.soundboard.set_notify(Rc::new({
+            let toasts = this.toasts.clone();
+            move |said: &str| toasts.add_toast(adw::Toast::new(said))
+        }));
         this.check_vesktop_plugin();
         this
     }
@@ -318,6 +322,9 @@ impl Window {
             Event::OutputChanged { id, index, state } => self.output_changed(id, index, state),
             Event::SourceEffects { id, effects } => self.effects_changed(id, effects),
             Event::Playing { sounds } => self.soundboard.set_playing(&sounds),
+            Event::Discord(answer) => self.soundboard.discord_answered(answer),
+            // For the control socket, which asks Vesktop.
+            Event::DiscordAsked(_) => {}
             Event::Error(message) => self.toast(&message),
             Event::Notice(message) => {
                 log::info!("{message}");

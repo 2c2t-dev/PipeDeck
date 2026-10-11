@@ -37,6 +37,8 @@ mod denoise_graph;
 mod desktop;
 #[path = "../src/dialogs.rs"]
 mod dialogs;
+#[path = "../src/discord_import.rs"]
+mod discord_import;
 #[path = "../src/effect_panel.rs"]
 mod effect_panel;
 #[path = "../src/effects.rs"]

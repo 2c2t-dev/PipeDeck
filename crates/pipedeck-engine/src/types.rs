@@ -239,6 +239,52 @@ impl SoundConfig {
     }
 }
 
+/// What Pipedeck asks of Discord, through Vesktop's plugin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "want", rename_all = "lowercase")]
+pub enum DiscordQuery {
+    /// The servers the user is in, whose soundboards can be looked at.
+    Guilds,
+    /// A server's soundboard, or Discord's own for [`DISCORD_SOUNDS`].
+    Sounds { guild: String },
+    /// These sounds, fetched and put on Pipedeck's soundboard.
+    Fetch { sounds: Vec<DiscordSound> },
+}
+
+/// What stands for Discord's own sounds among the servers.
+pub const DISCORD_SOUNDS: &str = "default";
+
+/// A server, as Discord names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscordGuild {
+    pub id: String,
+    pub name: String,
+}
+
+/// A sound of a Discord soundboard.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscordSound {
+    pub id: String,
+    pub name: String,
+    /// The emoji it wears there, when it is one anyone can show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>,
+}
+
+/// What Discord answered, through Vesktop's plugin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscordAnswer {
+    Guilds(Vec<DiscordGuild>),
+    Sounds {
+        guild: String,
+        sounds: Vec<DiscordSound>,
+    },
+    /// How many of the sounds asked for were fetched, and put on the
+    /// soundboard.
+    Imported(usize),
+    Error(String),
+}
+
 impl std::fmt::Display for SourceId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

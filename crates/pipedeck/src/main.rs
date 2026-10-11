@@ -7,6 +7,7 @@ mod deesser_graph;
 mod denoise_graph;
 mod desktop;
 mod dialogs;
+mod discord_import;
 mod effect_panel;
 mod effects;
 mod engine_link;

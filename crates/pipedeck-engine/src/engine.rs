@@ -24,8 +24,8 @@ use crate::config::Config;
 use crate::error::EngineError;
 use crate::pw::Graph;
 use crate::types::{
-    self, App, ChainState, Device, Effect, LinkConfig, MixConfig, MixId, SoundConfig, SoundId,
-    SourceConfig, SourceId, MAX_MIXES,
+    self, App, ChainState, Device, DiscordAnswer, DiscordQuery, Effect, LinkConfig, MixConfig,
+    MixId, SoundConfig, SoundId, SourceConfig, SourceId, MAX_MIXES,
 };
 
 /// Requests from a client to the engine.
@@ -247,10 +247,12 @@ pub enum Command {
     ImportConfig(PathBuf),
     /// Add a sound to the soundboard: the file is copied among Pipedeck's
     /// own, under the name given, or its own. The soundboard's row is made
-    /// with the first sound, fed to every mix.
+    /// with the first sound, fed to every mix. A file fetched for it is
+    /// `taken`: moved rather than copied, and removed if it is no sound.
     AddSound {
         path: PathBuf,
         name: Option<String>,
+        taken: bool,
     },
     /// Take a sound off the soundboard, and its copy with it.
     RemoveSound(SoundId),
@@ -268,6 +270,12 @@ pub enum Command {
     /// Stop one sound, or every one.
     StopSound(SoundId),
     StopSounds,
+    /// Ask Discord something, through Vesktop's plugin: said on as
+    /// [`Event::DiscordAsked`], for the control socket to pass on.
+    AskDiscord(DiscordQuery),
+    /// Discord's answer, from the control socket: said on as
+    /// [`Event::Discord`].
+    DiscordAnswered(DiscordAnswer),
     /// Tear the graph down and stop the thread.
     Shutdown,
 }
@@ -374,6 +382,11 @@ pub enum Event {
     /// The sounds of the soundboard playing now, sent as one starts or
     /// stops.
     Playing { sounds: Vec<SoundId> },
+    /// A question for Discord, which the control socket passes on to
+    /// Vesktop's plugin.
+    DiscordAsked(DiscordQuery),
+    /// What Discord answered.
+    Discord(DiscordAnswer),
     /// Non-fatal problem worth showing to the user.
     Error(String),
     /// Something worth saying that is not a problem: the connection to the
@@ -422,6 +435,7 @@ impl Watch {
             | Event::SourceEffects { .. }
             | Event::Apps { .. }
             | Event::Playing { .. }
+            | Event::DiscordAsked(_)
             | Event::Focused { .. } => event.clone(),
             Event::Levels {
                 sources,
@@ -1100,7 +1114,14 @@ fn handle_command(
                     )));
                 })
         }
-        Command::AddSound { path, name } => add_sound(&mut g, &path, name),
+        Command::AddSound { path, name, taken } => {
+            let added = add_sound(&mut g, &path, name, taken);
+            if taken {
+                // Moved, or no sound: either way it is not left behind.
+                let _ = std::fs::remove_file(&path);
+            }
+            added
+        }
         Command::RemoveSound(id) => remove_sound(&mut g, id),
         Command::RenameSound { id, name } => rename_sound(&mut g, id, name),
         Command::MoveSound { id, to } => {
@@ -1132,6 +1153,16 @@ fn handle_command(
         Command::StopSounds => {
             structural = false;
             g.stop_sounds();
+            Ok(())
+        }
+        Command::AskDiscord(query) => {
+            structural = false;
+            events(Event::DiscordAsked(query));
+            Ok(())
+        }
+        Command::DiscordAnswered(answer) => {
+            structural = false;
+            events(Event::Discord(answer));
             Ok(())
         }
         // The session takes it before it comes here, to end itself.
@@ -1214,7 +1245,12 @@ fn soundboard(g: &mut Graph) -> Result<SourceId, EngineError> {
 
 /// Copy a sound among Pipedeck's own and put it on the soundboard, once it
 /// is known to be one.
-fn add_sound(g: &mut Graph, path: &Path, name: Option<String>) -> Result<(), EngineError> {
+fn add_sound(
+    g: &mut Graph,
+    path: &Path,
+    name: Option<String>,
+    taken: bool,
+) -> Result<(), EngineError> {
     crate::sound::open(path).map_err(EngineError::Sound)?;
     let dir = types::sounds_dir()
         .ok_or_else(|| EngineError::Sound("no folder to keep sounds in".into()))?;
@@ -1223,7 +1259,15 @@ fn add_sound(g: &mut Graph, path: &Path, name: Option<String>) -> Result<(), Eng
         Some(extension) => format!("{id}.{}", extension.to_lowercase()),
         None => id.to_string(),
     };
-    let copied = std::fs::create_dir_all(&dir).and_then(|()| std::fs::copy(path, dir.join(&file)));
+    let kept = dir.join(&file);
+    let copied = std::fs::create_dir_all(&dir).and_then(|()| {
+        // A file fetched for the soundboard is moved, unless it is on
+        // another file system, where it is copied.
+        if taken && std::fs::rename(path, &kept).is_ok() {
+            return Ok(());
+        }
+        std::fs::copy(path, &kept).map(|_| ())
+    });
     if let Err(e) = copied {
         return Err(EngineError::Sound(format!(
             "cannot copy the sound into {}: {e}",

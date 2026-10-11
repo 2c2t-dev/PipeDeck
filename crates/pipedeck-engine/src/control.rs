@@ -56,6 +56,28 @@
 //! A sound of the soundboard plays from its start, even when it plays
 //! already; `stop` stops it, or every sound when none is named.
 //!
+//! Vesktop's plugin, once it has said who is in a call, is asked about
+//! Discord's soundboards for Pipedeck's to take sounds from:
+//!
+//! ```json
+//! {"discord": {"want": "guilds"}}
+//! {"discord": {"want": "sounds", "guild": "81384788765712384"}}
+//! {"discord": {"want": "fetch", "sounds": [{"id": "1234", "name": "Airhorn"}]}}
+//! ```
+//!
+//! and answers with the servers, a server's sounds, the files it fetched
+//! into the `discord` folder beside the socket, or what went wrong:
+//!
+//! ```json
+//! {"discord": {"guilds": [{"id": "81384788765712384", "name": "Friends"}]}}
+//! {"discord": {"sounds": {"guild": "81384788765712384", "list": [{"id": "1234", "name": "Airhorn", "emoji": "📯"}]}}}
+//! {"discord": {"fetched": [{"name": "Airhorn", "path": "/run/user/1000/pipedeck/discord/1234.mp3"}]}}
+//! {"discord": {"error": "..."}}
+//! ```
+//!
+//! A file fetched is moved onto the soundboard; one anywhere but in that
+//! folder is not taken.
+//!
 //! An effect is told by its place in the channel's chain; bypassed, the
 //! sound goes past it. An application is told by its key, as the state
 //! lists the ones playing; it is on one channel at a time.
@@ -81,7 +103,62 @@ use pipewire as pw;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{Command, Event, StateSnapshot, Watch};
-use crate::types::{voice_labels, CallMember, Device, MixId, SoundId, SourceId};
+use crate::types::{
+    voice_labels, CallMember, Device, DiscordAnswer, DiscordGuild, DiscordQuery, DiscordSound,
+    MixId, SoundId, SourceId,
+};
+
+/// Where Vesktop's plugin puts the sounds it fetched from Discord: beside
+/// the socket, which a Flatpak of Pipedeck sees as well.
+pub fn discord_dir() -> PathBuf {
+    socket_path()
+        .parent()
+        .map(|dir| dir.join("discord"))
+        .unwrap_or_else(|| PathBuf::from("discord"))
+}
+
+/// Whether a file Vesktop's plugin says it fetched is one: a plain file in
+/// the folder it fetches into, and nowhere else.
+fn fetched_into(path: &std::path::Path, folder: &std::path::Path) -> bool {
+    let is_file = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file());
+    let parent = path.parent().and_then(|dir| dir.canonicalize().ok());
+    is_file && parent.is_some() && parent == folder.canonicalize().ok()
+}
+
+/// What Discord's answer comes to for the engine: passed on, and the
+/// sounds fetched into `folder` put on the soundboard.
+fn discord_commands(reply: DiscordReply, folder: &std::path::Path) -> Vec<Command> {
+    let mut commands = Vec::new();
+    if let Some(guilds) = reply.guilds {
+        commands.push(Command::DiscordAnswered(DiscordAnswer::Guilds(guilds)));
+    }
+    if let Some(GuildSounds { guild, list }) = reply.sounds {
+        commands.push(Command::DiscordAnswered(DiscordAnswer::Sounds {
+            guild,
+            sounds: list,
+        }));
+    }
+    if let Some(fetched) = reply.fetched {
+        let mut taken = 0;
+        for Fetched { name, path } in fetched {
+            if !fetched_into(&path, folder) {
+                log::warn!("not taking {}: not fetched for Pipedeck", path.display());
+                continue;
+            }
+            taken += 1;
+            commands.push(Command::AddSound {
+                path,
+                name: Some(name),
+                taken: true,
+            });
+        }
+        commands.push(Command::DiscordAnswered(DiscordAnswer::Imported(taken)));
+    }
+    if let Some(error) = reply.error {
+        commands.push(Command::DiscordAnswered(DiscordAnswer::Error(error)));
+    }
+    commands
+}
 
 /// Where the socket is: `PIPEDECK_CONTROL_SOCKET` when set, for a test
 /// running beside the user's own mixer, which answers on the usual one.
@@ -103,6 +180,33 @@ struct Message {
     meters: Option<bool>,
     #[serde(rename = "do")]
     action: Option<Action>,
+    discord: Option<DiscordReply>,
+}
+
+/// What Vesktop's plugin answers about Discord.
+#[derive(Debug, Default, Deserialize)]
+struct DiscordReply {
+    guilds: Option<Vec<DiscordGuild>>,
+    sounds: Option<GuildSounds>,
+    fetched: Option<Vec<Fetched>>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GuildSounds {
+    guild: String,
+    list: Vec<DiscordSound>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Fetched {
+    name: String,
+    path: PathBuf,
+}
+
+#[derive(Serialize)]
+struct DiscordLine<'a> {
+    discord: &'a DiscordQuery,
 }
 
 #[derive(Debug, Serialize)]
@@ -304,6 +408,9 @@ struct Model {
     focused: Option<crate::types::App>,
     /// The sounds playing.
     playing: Vec<SoundId>,
+    /// The connections of Vesktop's plugin, which questions for Discord
+    /// are passed to.
+    discord: Vec<mpsc::Sender<DiscordQuery>>,
     /// The clients that asked to hear of every change.
     subscribers: Vec<mpsc::Sender<()>>,
     /// The clients that asked for the meters, and are handed every
@@ -402,8 +509,24 @@ impl Peaks {
 }
 
 impl Model {
-    /// Take in what the engine said.
-    fn hear(&mut self, event: Event) {
+    /// Take in what the engine said, and say what to tell it back: that
+    /// nobody is there to ask Discord, when that is so.
+    fn hear(&mut self, event: Event) -> Option<Command> {
+        if let Event::DiscordAsked(query) = event {
+            self.discord
+                .retain(|plugin| plugin.send(query.clone()).is_ok());
+            return self.discord.is_empty().then(|| {
+                Command::DiscordAnswered(DiscordAnswer::Error(
+                    "Vesktop is not running, or Pipedeck's plugin is not on in it".into(),
+                ))
+            });
+        }
+        self.hear_mixer(event);
+        None
+    }
+
+    /// Take in what the engine said of the mixer.
+    fn hear_mixer(&mut self, event: Event) {
         // The engine says it set every level it was asked to, in turn: a
         // dial turned fast is told the first notch after the model has
         // moved on to the third, which would put the key back a notch for
@@ -896,10 +1019,12 @@ pub fn listen(commands: pw::channel::Sender<Command>, watch: Watch) {
         .name("pipedeck-watch".into())
         .spawn({
             let model = model.clone();
+            let commands = commands.clone();
             move || {
                 for event in heard {
-                    if let Ok(mut model) = model.lock() {
-                        model.hear(event);
+                    let reply = model.lock().ok().and_then(|mut model| model.hear(event));
+                    if let Some(reply) = reply {
+                        let _ = commands.send(reply);
                     }
                 }
             }
@@ -1002,6 +1127,9 @@ struct Client {
     model: Arc<Mutex<Model>>,
     /// Whether it said who is in a call, which ends with it.
     in_call: bool,
+    /// Whether it is asked about Discord: Vesktop's plugin is, once it
+    /// has said who is in a call.
+    asked: bool,
 }
 
 impl Client {
@@ -1009,6 +1137,11 @@ impl Client {
     fn handle(&mut self, message: Message) -> bool {
         if let Some(members) = message.call {
             if !self.call(members) {
+                return false;
+            }
+        }
+        if let Some(reply) = message.discord {
+            if !self.discord(reply) {
                 return false;
             }
         }
@@ -1045,7 +1178,38 @@ impl Client {
                 .collect(),
         };
         self.in_call = !members.is_empty();
+        if !self.asked {
+            self.asked = true;
+            self.ask_discord();
+        }
         self.commands.send(Command::SetCall { members }).is_ok() && say(&self.writer, &answer)
+    }
+
+    /// Pass the questions for Discord on to this client, on a thread of
+    /// their own.
+    fn ask_discord(&self) {
+        let (tx, rx) = mpsc::channel::<DiscordQuery>();
+        if let Ok(mut model) = self.model.lock() {
+            model.discord.push(tx);
+        }
+        let writer = self.writer.clone();
+        let _ = std::thread::Builder::new()
+            .name("pipedeck-discord".into())
+            .spawn(move || {
+                for query in rx {
+                    if !say(&writer, &DiscordLine { discord: &query }) {
+                        break;
+                    }
+                }
+            });
+    }
+
+    /// What Discord answered: passed on to the engine, and the sounds
+    /// fetched put on the soundboard.
+    fn discord(&self, reply: DiscordReply) -> bool {
+        discord_commands(reply, &discord_dir())
+            .into_iter()
+            .all(|command| self.commands.send(command).is_ok())
     }
 
     /// Told now, and then on a thread of its own after every change, as one
@@ -1179,6 +1343,7 @@ fn serve(stream: UnixStream, commands: pw::channel::Sender<Command>, model: Arc<
         commands,
         model,
         in_call: false,
+        asked: false,
     };
     for line in BufReader::new(stream).lines() {
         let Ok(line) = line else {
@@ -1580,6 +1745,96 @@ mod tests {
         drop(reader);
         drop(writer);
         serving.join().expect("serve returns");
+    }
+
+    #[test]
+    fn discord_is_asked_through_vesktop_or_said_to_be_away() {
+        let mut model = model();
+        let away = model.hear(Event::DiscordAsked(DiscordQuery::Guilds));
+        assert!(matches!(
+            away,
+            Some(Command::DiscordAnswered(DiscordAnswer::Error(_)))
+        ));
+
+        let (ours, theirs) = UnixStream::pair().expect("a pair of sockets");
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("a timeout");
+        let (commands, _engine) = pw::channel::channel::<Command>();
+        let model = Arc::new(Mutex::new(model));
+        let serving = {
+            let model = model.clone();
+            std::thread::spawn(move || serve(ours, commands, model))
+        };
+        let mut writer = theirs.try_clone().expect("a writer");
+        let mut reader = BufReader::new(theirs);
+        // Vesktop's plugin, out of a call.
+        writer.write_all(b"{\"call\":[]}\n").unwrap();
+        read_line(&mut reader);
+        let asked = model
+            .lock()
+            .unwrap()
+            .hear(Event::DiscordAsked(DiscordQuery::Sounds {
+                guild: "81".into(),
+            }));
+        assert!(asked.is_none());
+        let line = read_line(&mut reader);
+        assert_eq!(line["discord"]["want"], "sounds");
+        assert_eq!(line["discord"]["guild"], "81");
+        drop(reader);
+        drop(writer);
+        serving.join().expect("serve returns");
+    }
+
+    #[test]
+    fn only_sounds_fetched_for_pipedeck_are_taken() {
+        let dir =
+            std::env::temp_dir().join(format!("pipedeck-discord-test-{}", std::process::id()));
+        let folder = dir.join("discord");
+        std::fs::create_dir_all(&folder).unwrap();
+        let fetched = folder.join("1234.mp3");
+        std::fs::write(&fetched, b"sound").unwrap();
+        let elsewhere = dir.join("secret.txt");
+        std::fs::write(&elsewhere, b"secret").unwrap();
+        let sneaking = folder.join("..").join("secret.txt");
+
+        let reply: DiscordReply = serde_json::from_value(serde_json::json!({
+            "fetched": [
+                {"name": "Airhorn", "path": fetched},
+                {"name": "Secret", "path": elsewhere},
+                {"name": "Sneaky", "path": sneaking},
+            ],
+        }))
+        .unwrap();
+        let commands = discord_commands(reply, &folder);
+        assert_eq!(
+            commands,
+            [
+                Command::AddSound {
+                    path: fetched,
+                    name: Some("Airhorn".into()),
+                    taken: true,
+                },
+                Command::DiscordAnswered(DiscordAnswer::Imported(1)),
+            ]
+        );
+
+        let reply: DiscordReply = serde_json::from_value(serde_json::json!({
+            "sounds": {"guild": "81", "list": [{"id": "1", "name": "Wow", "emoji": "😮"}]},
+        }))
+        .unwrap();
+        assert_eq!(
+            discord_commands(reply, &folder),
+            [Command::DiscordAnswered(DiscordAnswer::Sounds {
+                guild: "81".into(),
+                sounds: vec![DiscordSound {
+                    id: "1".into(),
+                    name: "Wow".into(),
+                    emoji: Some("😮".into()),
+                }],
+            })]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

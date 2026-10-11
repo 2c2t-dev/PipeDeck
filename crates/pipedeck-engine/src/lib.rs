@@ -26,6 +26,7 @@ pub use engine::{
 pub use error::EngineError;
 pub use types::{
     new_mix, node_prefix, sounds_dir, voice_app, voice_labels, App, CallMember, ChainState,
-    Control, Device, Effect, EffectKind, LinkConfig, MixConfig, MixId, MixOutput, SoundConfig,
-    SoundId, SourceConfig, SourceId, VoiceConfig, MAX_MIXES, NEW_MIXES,
+    Control, Device, DiscordAnswer, DiscordGuild, DiscordQuery, DiscordSound, Effect, EffectKind,
+    LinkConfig, MixConfig, MixId, MixOutput, SoundConfig, SoundId, SourceConfig, SourceId,
+    VoiceConfig, DISCORD_SOUNDS, MAX_MIXES, NEW_MIXES,
 };

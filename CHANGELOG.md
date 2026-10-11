@@ -10,7 +10,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 - A soundboard: sounds played into the mixes, through a channel of their
   own, from the window, a keyboard shortcut or a Stream Deck key (the Play
-  Sound action, in both plugins).
+  Sound action, in both plugins). Sounds can be taken from the soundboards
+  of your Discord servers, through Vesktop's plugin.
 - Pipedeck says when a newer version is out, asking GitHub once a day.
   It can be turned off in the settings, and the Flatpak does not ask.
 

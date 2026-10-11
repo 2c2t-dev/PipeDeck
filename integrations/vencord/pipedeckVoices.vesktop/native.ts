@@ -5,6 +5,11 @@
  * Pipedeck may start after Vesktop, stop, and start again; the connection
  * is made again whenever it is lost, and the call is told again once it is.
  *
+ * Pipedeck asks about Discord's soundboards through it too, for its own to
+ * take sounds from: the questions wait here for the page, which knows the
+ * servers, and the sounds asked for are fetched here, into a folder beside
+ * the socket, which Pipedeck's Flatpak sees as well.
+ *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -19,6 +24,7 @@ const logDir = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "pi
 const logFile = join(logDir, "vencord-voices.log");
 const socketPath = join(process.env.XDG_RUNTIME_DIR || tmpdir(), "pipedeck", "control.sock");
 const avatarDir = join(logDir, "avatars");
+const soundDir = join(dirname(socketPath), "discord");
 
 /** Write one line down, with the time it was said. */
 export function log(_: IpcMainInvokeEvent, line: string) {
@@ -64,6 +70,11 @@ let retry: ReturnType<typeof setTimeout> | undefined;
 let call: Member[] = [];
 let known: Record<string, string> = {};
 let buffer = "";
+/** Pipedeck's questions about Discord, waiting for the page. */
+let questions: any[] = [];
+
+/** How long to wait before knocking at Pipedeck again. */
+const RETRY = 5000;
 
 /** Tell Pipedeck who is in the call, with the pictures that are here. */
 function send() {
@@ -92,7 +103,7 @@ function connect() {
     if (socket || connecting) return;
     if (!trusted()) {
         clearTimeout(retry);
-        if (call.length) retry = setTimeout(connect, 3000);
+        retry = setTimeout(connect, RETRY);
         return;
     }
     connecting = true;
@@ -110,7 +121,10 @@ function connect() {
             const line = buffer.slice(0, end);
             buffer = buffer.slice(end + 1);
             try {
-                known = JSON.parse(line).labels ?? {};
+                const said = JSON.parse(line);
+                if (said.labels) known = said.labels;
+                if (said.discord?.want === "fetch") fetchSounds(said.discord.sounds ?? []);
+                else if (said.discord) questions.push(said.discord);
             } catch { }
         }
     });
@@ -120,18 +134,63 @@ function connect() {
         socket = null;
         known = {};
         buffer = "";
-        // Pipedeck is not there, or went: ask again in a moment, for as
-        // long as there is a call to tell it about.
+        // Pipedeck is not there, or went: ask again in a moment.
         clearTimeout(retry);
-        if (call.length) retry = setTimeout(connect, 3000);
+        retry = setTimeout(connect, RETRY);
     });
+}
+
+/** Reach Pipedeck, and keep reaching it. */
+export function start(_: IpcMainInvokeEvent) {
+    connect();
+}
+
+/** Pipedeck's questions about Discord since last asked. */
+export function takeQuestions(_: IpcMainInvokeEvent) {
+    const taken = questions;
+    questions = [];
+    return taken;
+}
+
+/** Answer Pipedeck about Discord. */
+export function answer(_: IpcMainInvokeEvent, reply: unknown) {
+    socket?.write(JSON.stringify({ discord: reply }) + "\n");
+}
+
+interface Sound {
+    id: string;
+    name: string;
+}
+
+/** Fetch sounds of Discord's soundboards, and tell Pipedeck where they are. */
+async function fetchSounds(sounds: Sound[]) {
+    const fetched: { name: string; path: string; }[] = [];
+    const failed: string[] = [];
+    mkdirSync(soundDir, { recursive: true, mode: 0o700 });
+    for (const { id, name } of sounds) {
+        if (!/^\d+$/.test(String(id))) continue;
+        try {
+            const got = await fetch(`https://cdn.discordapp.com/soundboard-sounds/${id}`);
+            if (!got.ok) throw new Error(`${got.status}`);
+            const ogg = (got.headers.get("content-type") ?? "").includes("ogg");
+            const path = join(soundDir, `${id}.${ogg ? "ogg" : "mp3"}`);
+            writeFileSync(path, Buffer.from(await got.arrayBuffer()));
+            fetched.push({ name: String(name), path });
+        } catch (e) {
+            log(null as any, `cannot fetch the sound ${name}: ${e}`);
+            failed.push(String(name));
+        }
+    }
+    const reply: Record<string, unknown> = { fetched };
+    if (failed.length) reply.error = `Discord did not give ${failed.join(", ")}`;
+    socket?.write(JSON.stringify({ discord: reply }) + "\n");
 }
 
 /** Who is in the call now; an empty list ends it. */
 export function setCall(_: IpcMainInvokeEvent, members: Member[]) {
     call = members;
     if (socket) send();
-    else if (call.length) connect();
+    else connect();
 }
 
 /** The name Pipedeck gave each person's sink, by their id. */

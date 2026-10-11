@@ -17,11 +17,23 @@
  * put on that output instead. When Pipedeck is not running, or has no sink
  * for someone, their element plays as Discord has it.
  *
+ * Pipedeck asks it about Discord's soundboards too: the servers the user
+ * is in, and the sounds of one, for its own soundboard to take some from.
+ *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 import definePlugin, { PluginNative, StartAt } from "@utils/types";
-import { ChannelStore, GuildMemberStore, SelectedChannelStore, UserStore, VoiceStateStore } from "@webpack/common";
+import {
+    ChannelStore,
+    GuildMemberStore,
+    GuildStore,
+    RestAPI,
+    SelectedChannelStore,
+    SoundboardStore,
+    UserStore,
+    VoiceStateStore,
+} from "@webpack/common";
 
 const Native = VencordNative.pluginHelpers.PipedeckVoices as PluginNative<typeof import("./native")>;
 
@@ -269,7 +281,73 @@ async function routeAll() {
     }
 }
 
+/** What stands for Discord's own sounds among the servers. */
+const DISCORD_SOUNDS = "default";
+
+/** A sound of a Discord soundboard, as Pipedeck is told of it. */
+interface Sound {
+    id: string;
+    name: string;
+    emoji?: string;
+}
+
+/** The servers the user is in, Discord's own sounds first. */
+function guilds() {
+    const servers = (GuildStore.getGuildsArray?.() ?? Object.values(GuildStore.getGuilds()))
+        .map((guild: any) => ({ id: String(guild.id), name: String(guild.name) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    return [{ id: DISCORD_SOUNDS, name: "Discord" }, ...servers];
+}
+
+/** A sound as Discord's client keeps it, or as its API gives it. */
+function sound(kept: any): Sound | null {
+    const id = kept.soundId ?? kept.sound_id;
+    if (!id || kept.available === false) return null;
+    // A server's own emoji is a picture, which Pipedeck cannot show.
+    const custom = kept.emojiId ?? kept.emoji_id;
+    const emoji = custom ? undefined : (kept.emojiName ?? kept.emoji_name ?? undefined);
+    return { id: String(id), name: String(kept.name), emoji };
+}
+
+/** A server's sounds, or Discord's own: the ones its client has, or else
+ * asked of Discord. */
+async function soundsOf(guild: string): Promise<Sound[]> {
+    const kept = SoundboardStore?.getSoundsForGuild?.(guild === DISCORD_SOUNDS ? "DEFAULT" : guild);
+    let found: any[] = kept ?? [];
+    if (!found.length) {
+        const { body } = await RestAPI.get({
+            url: guild === DISCORD_SOUNDS ? "/soundboard-default-sounds" : `/guilds/${guild}/soundboard-sounds`,
+        });
+        found = Array.isArray(body) ? body : body?.items ?? [];
+    }
+    return found.map(sound).filter((s): s is Sound => s !== null);
+}
+
+/** Answer what Pipedeck asked about Discord since last time. */
+async function answerQuestions() {
+    let questions: any[];
+    try {
+        questions = await Native.takeQuestions();
+    } catch {
+        return;
+    }
+    for (const question of questions) {
+        try {
+            if (question.want === "guilds") {
+                Native.answer({ guilds: guilds() });
+            } else if (question.want === "sounds") {
+                const guild = String(question.guild);
+                Native.answer({ sounds: { guild, list: await soundsOf(guild) } });
+            }
+        } catch (e) {
+            log("cannot answer about Discord:", String(e));
+            Native.answer({ error: `Discord did not answer: ${e}` });
+        }
+    }
+}
+
 let timer: ReturnType<typeof setInterval> | undefined;
+let questionTimer: ReturnType<typeof setInterval> | undefined;
 let srcObject: PropertyDescriptor | undefined;
 let setRemoteDescription: typeof RTCPeerConnection.prototype.setRemoteDescription | undefined;
 
@@ -382,12 +460,16 @@ export default definePlugin({
         // Pipedeck's answer, a sink appearing, a person's name changing: all
         // of it is caught up with here.
         timer = setInterval(refresh, 2000);
+        // Pipedeck's questions about Discord, answered while it waits.
+        questionTimer = setInterval(answerQuestions, 300);
+        Native.start();
         navigator.mediaDevices.addEventListener("devicechange", routeAll);
         log("started");
     },
 
     stop() {
         if (timer) clearInterval(timer);
+        if (questionTimer) clearInterval(questionTimer);
         navigator.mediaDevices.removeEventListener("devicechange", routeAll);
         // Everyone back on Discord's own output, as loud as Discord wants.
         for (const [element, entry] of elements) release(element, entry);

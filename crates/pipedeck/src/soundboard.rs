@@ -14,10 +14,14 @@ use adw::gtk;
 use adw::prelude::*;
 use libadwaita as adw;
 
-use pipedeck_engine::{Command, SoundConfig, SoundId};
+use pipedeck_engine::{Command, DiscordAnswer, SoundConfig, SoundId};
 
+use crate::discord_import::DiscordImport;
 use crate::engine_link::EngineLink;
 use crate::shortcuts::Shortcuts;
+
+/// Says something in passing, in the mixer's window.
+pub type Notify = Rc<dyn Fn(&str)>;
 
 pub struct Soundboard {
     engine: EngineLink,
@@ -34,6 +38,10 @@ pub struct Soundboard {
     buttons: RefCell<HashMap<SoundId, Vec<gtk::Button>>>,
     /// The desktop's shortcuts for the sounds, where it has them.
     shortcuts: RefCell<Option<Rc<Shortcuts>>>,
+    /// Taking sounds from Discord, while its dialog is open.
+    import: RefCell<Option<Rc<DiscordImport>>>,
+    /// How the mixer's window says something in passing.
+    notify: RefCell<Option<Notify>>,
 }
 
 impl Soundboard {
@@ -52,6 +60,8 @@ impl Soundboard {
             playing: RefCell::new(Vec::new()),
             buttons: RefCell::new(HashMap::new()),
             shortcuts: RefCell::new(None),
+            import: RefCell::new(None),
+            notify: RefCell::new(None),
         });
         this.draw();
         this
@@ -67,6 +77,45 @@ impl Soundboard {
         shortcuts.bind(&self.sounds.borrow());
         *self.shortcuts.borrow_mut() = Some(shortcuts);
         self.draw();
+    }
+
+    /// How to say something in passing, in the mixer's window.
+    pub fn set_notify(&self, notify: Notify) {
+        *self.notify.borrow_mut() = Some(notify);
+    }
+
+    /// What Discord answered, for the import under way.
+    pub fn discord_answered(&self, answer: DiscordAnswer) {
+        let import = self
+            .import
+            .borrow()
+            .clone()
+            .filter(|import| import.is_open());
+        match import {
+            Some(import) => import.answered(answer),
+            None => *self.import.borrow_mut() = None,
+        }
+    }
+
+    /// Open the dialog that takes sounds from Discord's soundboards.
+    fn import_from_discord(self: &Rc<Self>, from: &gtk::Widget) {
+        self.popover.popdown();
+        let parent = from
+            .root()
+            .map(|root| root.upcast::<gtk::Widget>())
+            .unwrap_or_else(|| from.clone());
+        let notify = self.notify.borrow().clone();
+        let import = DiscordImport::open(&parent, &self.engine, move |count| {
+            let said = match count {
+                0 => "No sound could be imported from Discord".to_owned(),
+                1 => "Imported a sound from Discord".to_owned(),
+                n => format!("Imported {n} sounds from Discord"),
+            };
+            if let Some(notify) = &notify {
+                notify(&said);
+            }
+        });
+        *self.import.borrow_mut() = Some(import);
     }
 
     /// The sounds, as the engine has them.
@@ -143,7 +192,7 @@ impl Soundboard {
 
     /// What stops the sounds and adds others, in the menu's top line and
     /// the window's header bar.
-    fn controls(self: &Rc<Self>) -> [gtk::Button; 2] {
+    fn controls(self: &Rc<Self>) -> [gtk::Widget; 2] {
         let stop = gtk::Button::from_icon_name("media-playback-stop-symbolic");
         stop.add_css_class("flat");
         stop.set_tooltip_text(Some("Stop every sound"));
@@ -151,14 +200,42 @@ impl Soundboard {
             let engine = self.engine.clone();
             move |_| engine.send(Command::StopSounds)
         });
-        let add = gtk::Button::from_icon_name("list-add-symbolic");
+        [stop.upcast(), self.add_button().upcast()]
+    }
+
+    /// What adds sounds: files, or Discord's.
+    fn add_button(self: &Rc<Self>) -> gtk::MenuButton {
+        let add = gtk::MenuButton::new();
+        add.set_icon_name("list-add-symbolic");
         add.add_css_class("flat");
         add.set_tooltip_text(Some("Add sounds"));
-        add.connect_clicked({
-            let this = self.clone();
-            move |button| this.pick_sounds(button)
-        });
-        [stop, add]
+        let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let menu = gtk::Popover::new();
+        menu.add_css_class("menu");
+        for (label, discord) in [("Sound Files…", false), ("From Discord…", true)] {
+            let choice = gtk::Button::with_label(label);
+            choice.add_css_class("flat");
+            if let Some(text) = choice.child().and_downcast::<gtk::Label>() {
+                text.set_xalign(0.0);
+            }
+            choice.connect_clicked({
+                let this = self.clone();
+                let menu = menu.clone();
+                let add = add.clone();
+                move |_| {
+                    menu.popdown();
+                    if discord {
+                        this.import_from_discord(add.upcast_ref());
+                    } else {
+                        this.pick_sounds(add.upcast_ref());
+                    }
+                }
+            });
+            choices.append(&choice);
+        }
+        menu.set_child(Some(&choices));
+        add.set_popover(Some(&menu));
+        add
     }
 
     /// The sounds, as many to a line as `columns` at most, or what to do
@@ -350,7 +427,7 @@ impl Soundboard {
     }
 
     /// Ask for sound files and add each, over the window asked from.
-    fn pick_sounds(self: &Rc<Self>, from: &gtk::Button) {
+    fn pick_sounds(self: &Rc<Self>, from: &gtk::Widget) {
         self.popover.popdown();
         let filter = gtk::FileFilter::new();
         filter.set_name(Some("Sounds"));
@@ -382,7 +459,11 @@ impl Soundboard {
                 };
                 for file in files.iter::<gtk::gio::File>().flatten() {
                     if let Some(path) = file.path() {
-                        engine.send(Command::AddSound { path, name: None });
+                        engine.send(Command::AddSound {
+                            path,
+                            name: None,
+                            taken: false,
+                        });
                     }
                 }
             }

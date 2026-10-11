@@ -2166,6 +2166,7 @@ fn main() -> ExitCode {
         .send(Command::AddSound {
             path: clip.clone(),
             name: Some("Clip".into()),
+            taken: false,
         })
         .unwrap();
     let state = wait_state(&rx, "the sound added", |s| {

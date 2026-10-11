@@ -129,7 +129,9 @@ of delay.
 ## Soundboard
 
 The button beside the output in the header bar opens the soundboard: add
-sounds (MP3, Ogg Vorbis, FLAC or WAV), and a click plays one from its start,
+sounds (MP3, Ogg Vorbis, FLAC or WAV), or take some from the soundboards of
+your Discord servers with **From Discord…** (through Vesktop's plugin, with
+Vesktop running), and a click plays one from its start,
 even while it plays; the square stops them all. The last button opens it in
 a window of its own, to keep beside the mixer or on another screen. The files are copied into
 `~/.local/share/pipedeck/sounds/`, so moving the originals loses nothing.
@@ -147,7 +149,7 @@ Stream Deck, **Play Sound** puts one on a key.
 | --- | --- |
 | [OpenDeck plugin](integrations/opendeck/README.md) | Mutes, levels, the mix you hear, effects and more on keys and dials, with meters. Ready-made profiles for the Stream Deck, Stream Deck + and XL. |
 | [StreamController plugin](integrations/streamcontroller/README.md) | The same actions and the same look, for StreamController. |
-| [Vesktop plugin](integrations/vencord/README.md) | Splits the Discord call into one sub-track per person, each with its own level and mute, remembered for the next call. |
+| [Vesktop plugin](integrations/vencord/README.md) | Splits the Discord call into one sub-track per person, each with its own level and mute, remembered for the next call; lets the soundboard take sounds from your servers'. |
 
 All three are installed from **Settings → Plug-ins**. They talk to the
 mixer through its control socket, `$XDG_RUNTIME_DIR/pipedeck/control.sock`.
