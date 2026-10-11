@@ -21,7 +21,7 @@ nnnoiseless = "0.5.2"
 serde_json = "1"
 # The soundboard: its files decoded, and handed to the audio thread.
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
-rtrb = "0.3"
+rtrb = "0.4"
 # Opus, which Discord's soundboards are often in, from the system's libopus.
 symphonia-adapter-libopus = { version = "0.2.9", default-features = false }
 
