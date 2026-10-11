@@ -108,10 +108,9 @@ fn properties(id: i32) -> HashMap<String, glib::Variant> {
 
 /// The whole menu: a root holding the two entries.
 fn layout() -> glib::Variant {
-    let children = vec![
-        glib::Variant::from_variant(&entry(OPEN, "Open Pipedeck")),
-        glib::Variant::from_variant(&entry(QUIT, "Quit")),
-    ];
+    // Each in a variant: an array of variants wraps its items itself, and
+    // wrapped twice they are no entries to KDE.
+    let children = vec![entry(OPEN, "Open Pipedeck"), entry(QUIT, "Quit")];
     let mut root: HashMap<String, glib::Variant> = HashMap::new();
     root.insert("children-display".into(), "submenu".to_variant());
     (0i32, root, children).to_variant()
@@ -307,7 +306,8 @@ fn menu_reply(
             let value = properties(id)
                 .remove(&name)
                 .unwrap_or_else(|| "".to_variant());
-            Some((glib::Variant::from_variant(&value),).to_variant())
+            // The tuple wraps the value in its variant.
+            Some((value,).to_variant())
         }
         "Event" => {
             let id: i32 = params.child_value(0).get().unwrap_or_default();
@@ -371,6 +371,10 @@ mod tests {
         let reply = glib::Variant::tuple_from_iter([1u32.to_variant(), layout()]);
         assert_eq!(reply.type_().as_str(), "(u(ia{sv}av))");
         assert_eq!(layout().child_value(2).n_children(), 2);
+        // An entry is a variant holding the entry itself, not another
+        // variant: KDE reads no entry from that.
+        let first = layout().child_value(2).child_value(0).as_variant().unwrap();
+        assert_eq!(first.type_().as_str(), "(ia{sv}av)");
     }
 
     #[test]
@@ -400,6 +404,12 @@ mod tests {
         assert_eq!(
             reply("GetProperty", (OPEN, "label").to_variant()).as_deref(),
             Some("(v)")
+        );
+        let label = menu_reply(&app, "GetProperty", &(OPEN, "label").to_variant())
+            .and_then(|reply| reply.child_value(0).as_variant());
+        assert_eq!(
+            label.and_then(|l| l.str().map(str::to_owned)).as_deref(),
+            Some("Open Pipedeck")
         );
         assert_eq!(
             reply(

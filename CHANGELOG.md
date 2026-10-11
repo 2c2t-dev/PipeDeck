@@ -11,6 +11,11 @@ follow [Semantic Versioning](https://semver.org/).
 - The notification area shows Pipedeck's logo in colour, rather than the
   monochrome faders KDE picked from the icon theme.
 
+### Fixed
+
+- The menu of Pipedeck's icon in the notification area was empty on KDE:
+  each entry was sent wrapped twice, which KDE does not read.
+
 ## [0.2.0] - 2026-10-11
 
 ### Added
