@@ -10,6 +10,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 - The notification area shows Pipedeck's logo in colour, rather than the
   monochrome faders KDE picked from the icon theme.
+- Its menu is laid out as OpenDeck's: Pipedeck's name and logo, Show and
+  Hide for the window, then Quit.
 
 ### Fixed
 

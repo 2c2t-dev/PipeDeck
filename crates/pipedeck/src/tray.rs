@@ -66,9 +66,13 @@ const MENU_XML: &str = r#"<node>
   </interface>
 </node>"#;
 
-/// The menu's entries, by their id: the root is 0.
-const OPEN: i32 = 1;
+/// The menu's entries, by their id: the root is 0. In the order they are
+/// shown: the name, then the window, then quitting, apart.
+const TITLE: i32 = 3;
+const SHOW: i32 = 1;
+const HIDE: i32 = 4;
 const QUIT: i32 = 2;
+const MENU: [i32; 6] = [TITLE, 5, SHOW, HIDE, 6, QUIT];
 
 /// What is on the bus while the icon shows.
 struct Shown {
@@ -81,39 +85,43 @@ thread_local! {
     static SHOWN: RefCell<Option<Shown>> = const { RefCell::new(None) };
 }
 
-/// One entry of the menu, with what a dbusmenu says of it.
-fn entry(id: i32, label: &str) -> glib::Variant {
-    let mut props: HashMap<String, glib::Variant> = HashMap::new();
-    props.insert("label".into(), label.to_variant());
-    props.insert("enabled".into(), true.to_variant());
-    props.insert("visible".into(), true.to_variant());
-    (id, props, Vec::<glib::Variant>::new()).to_variant()
-}
-
+/// What a dbusmenu says of one entry of the menu: the name at the top,
+/// greyed with the logo, as a title; the lines between the others.
 fn properties(id: i32) -> HashMap<String, glib::Variant> {
     let mut props: HashMap<String, glib::Variant> = HashMap::new();
-    match id {
-        OPEN => {
-            props.insert("label".into(), "Open Pipedeck".to_variant());
-        }
-        QUIT => {
-            props.insert("label".into(), "Quit".to_variant());
-        }
-        _ => {
+    let label = match id {
+        0 => {
             props.insert("children-display".into(), "submenu".to_variant());
+            return props;
         }
-    }
+        TITLE => {
+            props.insert("enabled".into(), false.to_variant());
+            if let Some((_, png)) = crate::launcher::SIZES.iter().find(|(size, _)| *size == 16) {
+                props.insert("icon-data".into(), png.to_vec().to_variant());
+            }
+            "Pipedeck"
+        }
+        SHOW => "Show",
+        HIDE => "Hide",
+        QUIT => "Quit",
+        _ => {
+            props.insert("type".into(), "separator".to_variant());
+            return props;
+        }
+    };
+    props.insert("label".into(), label.to_variant());
     props
 }
 
-/// The whole menu: a root holding the two entries.
+/// The whole menu: a root holding its entries.
 fn layout() -> glib::Variant {
     // Each in a variant: an array of variants wraps its items itself, and
     // wrapped twice they are no entries to KDE.
-    let children = vec![entry(OPEN, "Open Pipedeck"), entry(QUIT, "Quit")];
-    let mut root: HashMap<String, glib::Variant> = HashMap::new();
-    root.insert("children-display".into(), "submenu".to_variant());
-    (0i32, root, children).to_variant()
+    let children: Vec<glib::Variant> = MENU
+        .iter()
+        .map(|id| (*id, properties(*id), Vec::<glib::Variant>::new()).to_variant())
+        .collect();
+    (0i32, properties(0), children).to_variant()
 }
 
 /// The logo as pictures, which is how the area is given it: each size small
@@ -335,7 +343,10 @@ fn happened(app: &adw::Application, id: i32, event: &str) {
         return;
     }
     match id {
-        OPEN => app.activate(),
+        SHOW => app.activate(),
+        // Closed, the mixer's window hides, as it does with the mixer kept
+        // running.
+        HIDE => app.windows().iter().for_each(|window| window.close()),
         QUIT => app.quit(),
         _ => {}
     }
@@ -370,7 +381,34 @@ mod tests {
     fn the_menu_is_laid_out_as_dbusmenu_has_it() {
         let reply = glib::Variant::tuple_from_iter([1u32.to_variant(), layout()]);
         assert_eq!(reply.type_().as_str(), "(u(ia{sv}av))");
-        assert_eq!(layout().child_value(2).n_children(), 2);
+        assert_eq!(layout().child_value(2).n_children(), MENU.len());
+        // As OpenDeck's: the name greyed with the logo, a line, the
+        // window, a line, quitting.
+        let entries: Vec<HashMap<String, glib::Variant>> = (0..MENU.len())
+            .map(|i| {
+                layout()
+                    .child_value(2)
+                    .child_value(i)
+                    .as_variant()
+                    .unwrap()
+                    .child_value(1)
+                    .get()
+                    .unwrap()
+            })
+            .collect();
+        let said = |entry: &HashMap<String, glib::Variant>, key: &str| {
+            entry
+                .get(key)
+                .and_then(|value| value.str().map(str::to_owned))
+        };
+        assert_eq!(said(&entries[0], "label").as_deref(), Some("Pipedeck"));
+        assert_eq!(entries[0]["enabled"].get::<bool>(), Some(false));
+        assert!(entries[0]["icon-data"].n_children() > 0);
+        assert_eq!(said(&entries[1], "type").as_deref(), Some("separator"));
+        assert_eq!(said(&entries[2], "label").as_deref(), Some("Show"));
+        assert_eq!(said(&entries[3], "label").as_deref(), Some("Hide"));
+        assert_eq!(said(&entries[4], "type").as_deref(), Some("separator"));
+        assert_eq!(said(&entries[5], "label").as_deref(), Some("Quit"));
         // An entry is a variant holding the entry itself, not another
         // variant: KDE reads no entry from that.
         let first = layout().child_value(2).child_value(0).as_variant().unwrap();
@@ -396,20 +434,20 @@ mod tests {
         assert_eq!(
             reply(
                 "GetGroupProperties",
-                (vec![OPEN, QUIT], Vec::<String>::new()).to_variant()
+                (vec![SHOW, QUIT], Vec::<String>::new()).to_variant()
             )
             .as_deref(),
             Some("(a(ia{sv}))")
         );
         assert_eq!(
-            reply("GetProperty", (OPEN, "label").to_variant()).as_deref(),
+            reply("GetProperty", (SHOW, "label").to_variant()).as_deref(),
             Some("(v)")
         );
-        let label = menu_reply(&app, "GetProperty", &(OPEN, "label").to_variant())
+        let label = menu_reply(&app, "GetProperty", &(SHOW, "label").to_variant())
             .and_then(|reply| reply.child_value(0).as_variant());
         assert_eq!(
             label.and_then(|l| l.str().map(str::to_owned)).as_deref(),
-            Some("Open Pipedeck")
+            Some("Show")
         );
         assert_eq!(
             reply(
@@ -634,7 +672,12 @@ mod tests {
                 let service = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
                 assert_eq!(
                     seen,
-                    (service.clone(), "pipedeck".into(), MENU_PATH.into(), 2)
+                    (
+                        service.clone(),
+                        "pipedeck".into(),
+                        MENU_PATH.into(),
+                        MENU.len()
+                    )
                 );
 
                 hide();
