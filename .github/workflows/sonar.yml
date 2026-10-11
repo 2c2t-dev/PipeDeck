@@ -42,7 +42,7 @@ jobs:
             'https://mirror.rackspace.com/archlinux/$repo/os/$arch' >> /etc/pacman.d/mirrorlist
           for attempt in 1 2 3; do
             pacman -Syu --noconfirm --needed \
-              base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup unzip \
+              base-devel clang git gtk4 libadwaita libpipewire opus pkgconf rustup unzip \
               pipewire pipewire-audio wireplumber dbus \
               python python-pillow python-cairosvg python-coverage && break
             [ "$attempt" = 3 ] && exit 1

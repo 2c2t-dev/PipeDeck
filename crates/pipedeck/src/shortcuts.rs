@@ -69,6 +69,35 @@ fn wanted(sounds: &[SoundConfig]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Tell the portal which application this is, outside a sandbox, where
+/// it does not learn it from the sandbox: it is what the desktop files the
+/// shortcuts under. On the session bus GTK and the application share, and
+/// before anything else asks the portal anything on it, as the portal takes
+/// the name only then.
+pub fn register_with_portal(app_id: &str) {
+    if crate::launcher::sandboxed() {
+        return;
+    }
+    let Ok(connection) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+        return;
+    };
+    let registered = connection.call_sync(
+        Some(PORTAL),
+        PATH,
+        "org.freedesktop.host.portal.Registry",
+        "Register",
+        Some(&(app_id, HashMap::<String, glib::Variant>::new()).to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        2000,
+        gio::Cancellable::NONE,
+    );
+    if let Err(e) = registered {
+        // Started by the desktop, the portal knows it already.
+        log::debug!("not registered with the portal: {e}");
+    }
+}
+
 /// Reach the portal, and hear the shortcuts pressed from then on. None
 /// where the desktop has no such portal.
 pub async fn start(app: &adw::Application, engine: EngineLink) -> Option<Rc<Shortcuts>> {
@@ -92,29 +121,6 @@ pub async fn start(app: &adw::Application, engine: EngineLink) -> Option<Rc<Shor
         log::info!("the desktop offers no global shortcuts");
         return None;
     };
-    // Outside a sandbox, the portal is told which application this is,
-    // which it otherwise learns from the sandbox: it is what the desktop
-    // files the shortcuts under.
-    if !crate::launcher::sandboxed() {
-        if let Some(id) = app.application_id() {
-            let registered = connection
-                .call_future(
-                    Some(PORTAL),
-                    PATH,
-                    "org.freedesktop.host.portal.Registry",
-                    "Register",
-                    Some(&(id.as_str(), HashMap::<String, glib::Variant>::new()).to_variant()),
-                    None,
-                    gio::DBusCallFlags::NONE,
-                    5000,
-                )
-                .await;
-            if let Err(e) = registered {
-                log::debug!("not registered with the portal: {e}");
-            }
-        }
-    }
-
     let session: Rc<RefCell<Option<String>>> = Rc::default();
     let pressed = connection.subscribe_to_signal(
         Some(PORTAL),

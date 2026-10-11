@@ -57,10 +57,14 @@ fn main() -> glib::ExitCode {
     // Before any thread exists, so every thread inherits the mask.
     signals::block_termination_signals();
 
+    let app_id = std::env::var("PIPEDECK_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
+    // Before GTK starts, which asks the portal for the colour scheme: the
+    // portal takes the application's name only first thing.
+    shortcuts::register_with_portal(&app_id);
+
     ignore_prefer_dark_theme();
     load_icons();
 
-    let app_id = std::env::var("PIPEDECK_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
     // In the launcher, and under its icon in the task bar; not for a test
     // run under an id of its own.
     if app_id == APP_ID {

@@ -21,7 +21,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential clang pkg-config \
-            libgtk-4-dev libadwaita-1-dev libpipewire-0.3-dev curl ca-certificates git
+            libgtk-4-dev libadwaita-1-dev libpipewire-0.3-dev libopus-dev curl ca-certificates git
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@v7
@@ -40,7 +40,7 @@ jobs:
       - name: Install the build dependencies
         run: |
           dnf install -y gcc clang pkgconf-pkg-config gtk4-devel libadwaita-devel \
-            pipewire-devel rpm-build curl git
+            pipewire-devel opus-devel rpm-build curl git
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@v7
@@ -61,7 +61,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential clang pkg-config \
-            libgtk-4-dev libadwaita-1-dev libpipewire-0.3-dev curl ca-certificates git \
+            libgtk-4-dev libadwaita-1-dev libpipewire-0.3-dev libopus-dev curl ca-certificates git \
             file librsvg2-common libgdk-pixbuf2.0-bin
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"

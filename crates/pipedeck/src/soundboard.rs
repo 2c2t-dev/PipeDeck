@@ -439,10 +439,12 @@ impl Soundboard {
             "audio/x-flac",
             "audio/wav",
             "audio/x-wav",
+            "audio/x-opus+ogg",
+            "audio/opus",
         ] {
             filter.add_mime_type(mime);
         }
-        for pattern in ["*.mp3", "*.ogg", "*.oga", "*.flac", "*.wav"] {
+        for pattern in ["*.mp3", "*.ogg", "*.oga", "*.opus", "*.flac", "*.wav"] {
             filter.add_pattern(pattern);
         }
         let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();

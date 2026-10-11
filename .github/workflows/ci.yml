@@ -30,7 +30,7 @@ jobs:
             'https://mirror.rackspace.com/archlinux/$repo/os/$arch' >> /etc/pacman.d/mirrorlist
           for attempt in 1 2 3; do
             pacman -Syu --noconfirm --needed \
-              base-devel clang git gtk4 libadwaita libpipewire pkgconf rustup \
+              base-devel clang git gtk4 libadwaita libpipewire opus pkgconf rustup \
               python python-pillow python-cairosvg dbus appstream && break
             [ "$attempt" = 3 ] && exit 1
             echo "::warning::Installing the packages failed; trying again"

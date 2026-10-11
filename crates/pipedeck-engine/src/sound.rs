@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{CodecRegistry, Decoder, DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::MediaSourceStream;
@@ -26,6 +26,18 @@ pub const CHANNELS: usize = 2;
 const AHEAD: Duration = Duration::from_millis(500);
 /// How long the decoding waits for room in the buffer before looking again.
 const NAP: Duration = Duration::from_millis(10);
+
+/// The decoders: symphonia's own, and the system's libopus for Opus,
+/// which symphonia does not decode and Discord's soundboards are often in.
+fn codecs() -> &'static CodecRegistry {
+    static CODECS: std::sync::OnceLock<CodecRegistry> = std::sync::OnceLock::new();
+    CODECS.get_or_init(|| {
+        let mut codecs = CodecRegistry::new();
+        symphonia::default::register_enabled_codecs(&mut codecs);
+        codecs.register_all::<symphonia_adapter_libopus::OpusDecoder>();
+        codecs
+    })
+}
 
 /// A file opened, ready to be decoded.
 pub struct Opened {
@@ -61,7 +73,7 @@ pub fn open(path: &Path) -> Result<Opened, String> {
         .iter()
         .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
         .ok_or_else(|| format!("{} holds no sound", file_name(path)))?;
-    let decoder = symphonia::default::get_codecs()
+    let decoder = codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(unknown)?;
     Ok(Opened {
@@ -288,6 +300,35 @@ pub(crate) mod tests {
         // It stopped well before the end.
         assert!(consumer.slots() < 48_000 * 2);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn opus_is_decoded_as_discord_hands_it_out() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/tone.opus");
+        let opened = open(&path).unwrap();
+        let (feed, mut consumer) = feed(opened);
+        let mut read = Vec::new();
+        let start = std::time::Instant::now();
+        while !(feed.done.load(Ordering::Acquire) && consumer.slots() == 0) {
+            let available = consumer.slots();
+            if let Ok(chunk) = consumer.read_chunk(available) {
+                read.extend(chunk);
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "the decoding never ended"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Half a second at Opus's 48 kHz, give or take its padding, of a
+        // tone an eighth of full scale, as ffmpeg's sine makes it.
+        assert!(
+            read.len() / CHANNELS > 20_000,
+            "{} frames",
+            read.len() / CHANNELS
+        );
+        let peak = read.iter().fold(0f32, |peak, s| peak.max(s.abs()));
+        assert!(peak > 0.08 && peak < 0.2, "peak {peak}");
     }
 
     #[test]

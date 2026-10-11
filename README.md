@@ -58,7 +58,7 @@ script that says which application is in front.
 ## Building
 
 Requirements: PipeWire ≥ 1.2 (with headers), GTK ≥ 4.18, libadwaita ≥ 1.7,
-clang (for bindgen), pkg-config and Rust ≥ 1.92.
+libopus (with headers), clang (for bindgen), pkg-config and Rust ≥ 1.92.
 
 ```sh
 cargo build --release
@@ -129,7 +129,7 @@ of delay.
 ## Soundboard
 
 The button beside the output in the header bar opens the soundboard: add
-sounds (MP3, Ogg Vorbis, FLAC or WAV), or take some from the soundboards of
+sounds (MP3, Ogg Vorbis or Opus, FLAC or WAV), or take some from the soundboards of
 your Discord servers with **From Discord…** (through Vesktop's plugin, with
 Vesktop running), and a click plays one from its start,
 even while it plays; the square stops them all. The last button opens it in
