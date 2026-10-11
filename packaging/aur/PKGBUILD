@@ -1,15 +1,15 @@
 # Maintainer: Fabien MILLET <zipname80 at gmail dot com>
 
 pkgname=pipedeck
-pkgver=0.1.3
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link'
 arch=('x86_64')
 url='https://pipedeck.2c2t.dev'
 license=('MIT')
 depends=(
-  'cairo' 'glib2' 'glibc' 'graphene' 'gtk4' 'libadwaita' 'libgcc' 'libpipewire' 'pango'
-  'pipewire' 'pipewire-session-manager'
+  'cairo' 'glib2' 'glibc' 'graphene' 'gtk4' 'libadwaita' 'libgcc' 'libpipewire' 'opus'
+  'pango' 'pipewire' 'pipewire-session-manager'
 )
 makedepends=('cargo' 'clang')
 checkdepends=('dbus')
@@ -22,7 +22,7 @@ source=("$pkgname-$pkgver.tar.gz::https://github.com/2c2t-dev/PipeDeck/archive/r
 # The libspa crate wraps PipeWire's inline functions in C, which the link
 # cannot read as LTO bitcode.
 options=('!lto')
-sha256sums=('cd46686a3f8de90c3036ff4984b15e4a5b907a5eae00982458eecfecccd858d4')
+sha256sums=('957bec02a0629286c03392f560ac9ec7b1b44623f7d36f021ccb097c5c420e02')
 
 prepare() {
   cd "PipeDeck-$pkgver"

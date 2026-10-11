@@ -1,6 +1,6 @@
 pkgbase = pipedeck
 	pkgdesc = PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link
-	pkgver = 0.1.3
+	pkgver = 0.2.0
 	pkgrel = 1
 	url = https://pipedeck.2c2t.dev
 	arch = x86_64
@@ -16,6 +16,7 @@ pkgbase = pipedeck
 	depends = libadwaita
 	depends = libgcc
 	depends = libpipewire
+	depends = opus
 	depends = pango
 	depends = pipewire
 	depends = pipewire-session-manager
@@ -23,7 +24,7 @@ pkgbase = pipedeck
 	optdepends = git: building the plugin that splits Discord calls in Vesktop
 	optdepends = npm: building the plugin that splits Discord calls in Vesktop
 	options = !lto
-	source = pipedeck-0.1.3.tar.gz::https://github.com/2c2t-dev/PipeDeck/archive/refs/tags/v0.1.3.tar.gz
-	sha256sums = cd46686a3f8de90c3036ff4984b15e4a5b907a5eae00982458eecfecccd858d4
+	source = pipedeck-0.2.0.tar.gz::https://github.com/2c2t-dev/PipeDeck/archive/refs/tags/v0.2.0.tar.gz
+	sha256sums = 957bec02a0629286c03392f560ac9ec7b1b44623f7d36f021ccb097c5c420e02
 
 pkgname = pipedeck
