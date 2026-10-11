@@ -1,7 +1,7 @@
 # Maintainer: Fabien MILLET <zipname80 at gmail dot com>
 
 pkgname=pipedeck
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc='PipeWire mixer for Linux streamers, in the spirit of Elgato Wave Link'
 arch=('x86_64')
@@ -22,7 +22,7 @@ source=("$pkgname-$pkgver.tar.gz::https://github.com/2c2t-dev/PipeDeck/archive/r
 # The libspa crate wraps PipeWire's inline functions in C, which the link
 # cannot read as LTO bitcode.
 options=('!lto')
-sha256sums=('957bec02a0629286c03392f560ac9ec7b1b44623f7d36f021ccb097c5c420e02')
+sha256sums=('19e3da51fc05d61b6b5701124b8536d441df11393cf3047a4018618b6129d08a')
 
 prepare() {
   cd "PipeDeck-$pkgver"
