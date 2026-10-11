@@ -117,9 +117,9 @@ fn layout() -> glib::Variant {
     (0i32, root, children).to_variant()
 }
 
-/// The icon as pictures, for an area that finds no icon by its name: each
-/// size small enough for a panel, as ARGB with the alpha first, which is
-/// what StatusNotifierItem asks for.
+/// The logo as pictures, which is how the area is given it: each size small
+/// enough for a panel, as ARGB with the alpha first, which is what
+/// StatusNotifierItem asks for.
 fn pixmaps() -> Vec<(i32, i32, Vec<u8>)> {
     crate::launcher::SIZES
         .iter()
@@ -253,11 +253,11 @@ fn item_property(app_id: &str, property: &str) -> glib::Variant {
         "Id" => "pipedeck".to_variant(),
         "Title" => "Pipedeck".to_variant(),
         "Status" => "Active".to_variant(),
-        "IconName" => app_id.to_variant(),
-        // The icon is in the themes' usual folders. A folder named here
-        // would be taken for a theme of its own, which has no index there,
-        // and KDE then draws an empty square.
-        "IconThemePath" => "".to_variant(),
+        // The logo as pictures, and no name: by its name, KDE would show
+        // the monochrome variant the theme has beside it. A folder named
+        // here would be taken for a theme of its own, which has no index
+        // there, and KDE then draws an empty square.
+        "IconName" | "IconThemePath" => "".to_variant(),
         "IconPixmap" => pixmaps().to_variant(),
         "ItemIsMenu" => false.to_variant(),
         "Menu" => glib::variant::ObjectPath::try_from(MENU_PATH)
@@ -426,7 +426,7 @@ mod tests {
         );
         assert_eq!(
             item_property("dev._2c2t.Pipedeck", "IconName").str(),
-            Some("dev._2c2t.Pipedeck")
+            Some("")
         );
         assert_eq!(menu_property("Version").get::<u32>(), Some(3));
     }
