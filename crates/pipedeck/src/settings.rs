@@ -50,6 +50,9 @@ pub struct Settings {
     /// with the session leaves the window closed.
     #[serde(default)]
     pub keep_running: bool,
+    /// Whether GitHub is asked once a day if a newer Pipedeck is out.
+    #[serde(default = "yes")]
+    pub check_updates: bool,
 }
 
 fn yes() -> bool {
@@ -64,6 +67,7 @@ impl Default for Settings {
             stream_deck_profiles: true,
             software_rendering: false,
             keep_running: false,
+            check_updates: true,
         }
     }
 }

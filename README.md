@@ -142,8 +142,10 @@ you are looking at to a channel.
 
 - **General**: colour theme, start at login, keep running in the
   notification area when the window is closed (`pipedeck --background`
-  starts it that way, Ctrl+Q quits), and drawing without the graphics card
-  if text shows up damaged.
+  starts it that way, Ctrl+Q quits), drawing without the graphics card
+  if text shows up damaged, and checking for updates: once a day Pipedeck
+  asks GitHub for its latest release, and says when it is newer. The
+  Flatpak does not ask, as it updates with your other applications.
 - **Audio**: the quantum Pipedeck's nodes ask for, 512 frames by default.
   Raise it if you get xruns. **Export** writes the mixer to a file, to keep
   or to bring to another computer, without the Stereo Tool key; **Import**

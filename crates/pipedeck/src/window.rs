@@ -207,6 +207,29 @@ impl Window {
         });
     }
 
+    /// Say a newer Pipedeck is out, its release's page a click away.
+    pub fn offer_update(&self, version: &str, page: &str) {
+        let toast = adw::Toast::new(&format!("Pipedeck {version} is out"));
+        toast.set_timeout(0);
+        toast.set_button_label(Some("What's New"));
+        toast.connect_button_clicked({
+            let window = self.window.clone();
+            let page = page.to_owned();
+            move |_| {
+                gtk::UriLauncher::new(&page).launch(
+                    Some(&window),
+                    gtk::gio::Cancellable::NONE,
+                    |opened| {
+                        if let Err(e) = opened {
+                            log::warn!("cannot open the release's page: {e}");
+                        }
+                    },
+                );
+            }
+        });
+        self.toasts.add_toast(toast);
+    }
+
     /// Have closing the window hide it, the mixer running on, or close it.
     pub fn set_keep_running(&self, on: bool) {
         self.window.set_hide_on_close(on);

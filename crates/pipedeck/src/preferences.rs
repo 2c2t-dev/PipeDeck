@@ -981,6 +981,22 @@ fn general_page() -> adw::PreferencesPage {
         }
     });
     session.add(&software);
+
+    // A Flatpak is updated with the desktop's other applications.
+    if !crate::launcher::sandboxed() {
+        let updates = adw::SwitchRow::new();
+        updates.set_title("Check for updates");
+        updates.set_subtitle("Once a day, on GitHub, and say when a new version is out");
+        updates.set_active(saved.borrow().check_updates);
+        updates.connect_active_notify({
+            let saved = saved.clone();
+            move |row| {
+                saved.borrow_mut().check_updates = row.is_active();
+                saved.borrow().save();
+            }
+        });
+        session.add(&updates);
+    }
     page.add(&session);
 
     page

@@ -22,6 +22,7 @@ mod settings;
 mod signals;
 mod streamdeck;
 mod tray;
+mod updates;
 mod vesktop;
 mod widgets;
 mod window;
@@ -174,6 +175,10 @@ fn activate(app: &adw::Application) {
     window.set_keep_running(keep_running);
     // Somewhere to open the window from, and to quit, while it is closed.
     tray::show(app, keep_running);
+    updates::watch({
+        let window = window.clone();
+        move |release| window.offer_update(&release.version, &release.page)
+    });
 
     // Quitting for good, mixer and all, which closing the window no longer
     // does when it keeps running.

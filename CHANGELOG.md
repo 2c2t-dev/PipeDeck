@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Pipedeck says when a newer version is out, asking GitHub once a day.
+  It can be turned off in the settings, and the Flatpak does not ask.
+
+### Fixed
+
+- Pipedeck's icon in KDE's notification area was an empty square.
+
 ## [0.1.3] - 2026-10-05
 
 ### Added

@@ -571,7 +571,7 @@ fn managed_nodes(
 }
 
 /// A version, as major, minor and patch.
-type Version = (u32, u32, u32);
+pub(crate) type Version = (u32, u32, u32);
 
 /// What a program prints, when it runs and succeeds.
 fn command_output(program: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> Option<String> {
@@ -587,7 +587,7 @@ fn command_output(program: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> Option
 
 /// A version as `node --version` writes it, `v20.20.2`, or as a range's
 /// bound, `22.13`.
-fn version_in(text: &str) -> Option<Version> {
+pub(crate) fn version_in(text: &str) -> Option<Version> {
     let mut parts = text
         .trim()
         .trim_start_matches('v')
