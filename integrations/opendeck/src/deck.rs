@@ -26,6 +26,11 @@
 //! - **Channel Effect**: one effect of a channel, switched off or on.
 //! - **Add to Channel**: an application put on a channel, or taken off it.
 //!
+//! And the soundboard's:
+//!
+//! - **Play Sound**: one of its sounds, from its start, lit while it plays;
+//!   or every sound stopped.
+//!
 //! Everything is kept by id, so renaming a channel does not lose its key,
 //! and shown as Pipedeck says it is, whoever changed it.
 
@@ -54,6 +59,7 @@ pub enum Action {
     CallVoice,
     ChannelEffect,
     AddApp,
+    PlaySound,
 }
 
 /// The profiles laid out for the mixer and for the call. See
@@ -75,6 +81,7 @@ impl Action {
             "voice" => Some(Action::CallVoice),
             "effect" => Some(Action::ChannelEffect),
             "app" => Some(Action::AddApp),
+            "sound" => Some(Action::PlaySound),
             _ => None,
         }
     }
@@ -123,6 +130,9 @@ struct Settings {
     effect: Option<String>,
     /// An application, by its key, or [`FRONT`] for the one in front.
     app: Option<String>,
+    /// A sound of the soundboard, by its id, or every sound stopped.
+    sound: Option<u32>,
+    stop: bool,
     /// What it was called, shown while Pipedeck is away.
     label: String,
 }
@@ -159,9 +169,11 @@ impl Settings {
                 })
             }
             Action::MixLevel => Some(Target::Mix { id: self.mix? }),
-            Action::MonitorMix | Action::MainOutput | Action::ChannelEffect | Action::AddApp => {
-                None
-            }
+            Action::MonitorMix
+            | Action::MainOutput
+            | Action::ChannelEffect
+            | Action::AddApp
+            | Action::PlaySound => None,
         }
     }
 
@@ -360,6 +372,7 @@ impl Deck {
                 Reply::Order(json!({ "what": "effect", "channel": channel, "index": index, "bypass": "toggle" }))
             }),
             Action::AddApp => app_order(settings, view).map(Reply::Order),
+            Action::PlaySound => sound_order(settings, view).map(Reply::Order),
             Action::ChannelLevel | Action::MixLevel | Action::CallVoice => {
                 level_reply(instance.action, settings, view, press)
             }
@@ -482,6 +495,18 @@ fn app_order(settings: &Settings, view: &View) -> Option<Value> {
     Some(json!({ "what": "app", "app": app, "channel": channel, "release": here }))
 }
 
+/// Play a sound from its start, or stop every one.
+fn sound_order(settings: &Settings, view: &View) -> Option<Value> {
+    if settings.stop {
+        return Some(json!({ "what": "sound", "stop": true }));
+    }
+    let id = settings.sound?;
+    view.sounds
+        .iter()
+        .any(|sound| sound.id == id)
+        .then(|| json!({ "what": "sound", "id": id }))
+}
+
 /// Move a level, set it, or mute it. A dial moves the level and mutes it,
 /// whatever a key does.
 fn level_reply(action: Action, settings: &Settings, view: &View, press: Press) -> Option<Reply> {
@@ -554,6 +579,7 @@ fn catalogue(view: Option<&View>) -> Value {
         "mixes": view.mixes.iter().map(|m| json!({ "id": m.id, "name": m.name })).collect::<Vec<_>>(),
         "cells": view.cells.iter().map(|c| json!([c.channel, c.mix])).collect::<Vec<_>>(),
         "outputs": view.outputs.iter().map(|o| json!({ "name": o.name, "description": o.description })).collect::<Vec<_>>(),
+        "sounds": view.sounds.iter().map(|s| json!({ "id": s.id, "name": s.name })).collect::<Vec<_>>(),
     })
 }
 
@@ -611,6 +637,7 @@ fn picture(
     match action {
         Action::ChannelEffect => effect_picture(settings, view),
         Action::AddApp => app_picture(settings, view),
+        Action::PlaySound => sound_picture(settings, view),
         // Nobody there: the place shows it is free.
         Action::CallVoice if settings.target(action, Some(view)).is_none() => {
             Ok(free_place(settings))
@@ -686,6 +713,33 @@ fn app_picture(settings: &Settings, view: &View) -> Result<Drawn, &'static str> 
         (format!("On {}", channel.name), "#ffffff")
     } else {
         (format!("To {}", channel.name), draw::FAINT)
+    };
+    Ok(drawn)
+}
+
+/// A sound of the soundboard, lit while it plays; or the key stopping
+/// them all, lit while any does.
+fn sound_picture(settings: &Settings, view: &View) -> Result<Drawn, &'static str> {
+    let look = draw::look(Some("sfx"), false, false);
+    if settings.stop {
+        let any = view.sounds.iter().any(|sound| sound.playing);
+        let mut drawn = Drawn::new("Stop sounds", look);
+        drawn.state.dim = !any;
+        drawn.below = if any {
+            ("Stop".to_owned(), "#ffffff")
+        } else {
+            ("Silent".to_owned(), draw::FAINT)
+        };
+        return Ok(drawn);
+    }
+    let id = settings.sound.ok_or(UNSET)?;
+    let sound = view.sounds.iter().find(|s| s.id == id).ok_or("Gone")?;
+    let mut drawn = Drawn::new(sound.name.clone(), look);
+    drawn.state.dim = !sound.playing;
+    drawn.below = if sound.playing {
+        ("Playing".to_owned(), "#ffffff")
+    } else {
+        ("Play".to_owned(), draw::FAINT)
     };
     Ok(drawn)
 }
@@ -1225,6 +1279,45 @@ mod tests {
         );
         view.channels[0].apps = vec!["spotify".into()];
         assert_eq!(app_order(&front, &view).unwrap()["release"], true);
+    }
+
+    #[test]
+    fn a_sound_is_played_and_lit_while_it_plays() {
+        let mut view = view();
+        view.sounds = vec![crate::mixer::Sound {
+            id: 4,
+            name: "Airhorn".into(),
+            playing: false,
+        }];
+        let airhorn = Settings {
+            sound: Some(4),
+            ..Settings::default()
+        };
+        assert_eq!(
+            sound_order(&airhorn, &view),
+            Some(json!({"what": "sound", "id": 4}))
+        );
+        let stop = Settings {
+            stop: true,
+            ..Settings::default()
+        };
+        assert_eq!(
+            sound_order(&stop, &view),
+            Some(json!({"what": "sound", "stop": true}))
+        );
+        let gone = Settings {
+            sound: Some(9),
+            ..Settings::default()
+        };
+        assert!(sound_order(&gone, &view).is_none());
+
+        let quiet = sound_picture(&airhorn, &view).ok().unwrap();
+        assert!(quiet.state.dim && quiet.below.0 == "Play");
+        view.sounds[0].playing = true;
+        let playing = sound_picture(&airhorn, &view).ok().unwrap();
+        assert!(!playing.state.dim && playing.below.0 == "Playing");
+        assert_eq!(sound_picture(&stop, &view).ok().unwrap().below.0, "Stop");
+        assert_eq!(catalogue(Some(&view))["sounds"][0]["name"], "Airhorn");
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::process::{Command as Process, ExitCode};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use pipedeck_engine::{spawn, Command, Device, Event, MixId, SourceId, StateSnapshot};
+use pipedeck_engine::{spawn, Command, Device, Event, MixId, SoundId, SourceId, StateSnapshot};
 
 /// The PipeWire graph, as objects.
 fn pw_dump() -> Vec<serde_json::Value> {
@@ -238,10 +238,9 @@ fn record_peak(serial: i64, seconds: u32, into: &std::path::Path) -> f32 {
 
 /// A quiet tone, loud enough to move a meter. Nothing is attached to the
 /// mix in this test, so it reaches no device and makes no sound.
-fn tone_wav(path: &std::path::Path) {
+fn tone_wav(path: &std::path::Path, seconds: u32) {
     const RATE: u32 = 48_000;
-    const SECONDS: u32 = 20;
-    let frames = RATE * SECONDS;
+    let frames = RATE * seconds;
     let data = frames * 4;
     let mut wav = Vec::with_capacity(44 + data as usize);
     wav.extend_from_slice(b"RIFF");
@@ -379,10 +378,13 @@ fn main() -> ExitCode {
         .join(format!("pipedeck-smoke-{}", std::process::id()));
     let control_path = control_dir.join("control.sock");
     std::env::set_var("PIPEDECK_CONTROL_SOCKET", &control_path);
+    let dir = std::env::temp_dir().join(format!("pipedeck-smoke-{}", std::process::id()));
+    // The soundboard's sounds are kept in the scratch folder, not among
+    // the user's.
+    std::env::set_var("XDG_DATA_HOME", dir.join("data"));
     env_logger::init();
     let mut failures = 0;
 
-    let dir = std::env::temp_dir().join(format!("pipedeck-smoke-{}", std::process::id()));
     let config_path = dir.join("config.toml");
 
     let (tx, rx) = mpsc::channel();
@@ -557,7 +559,7 @@ fn main() -> ExitCode {
     // and muting the cell has to stop the mix hearing it while the channel
     // still does.
     let tone = dir.join("tone.wav");
-    tone_wav(&tone);
+    tone_wav(&tone, 20);
     let alone = !another_mixer_running(&pw_dump());
     if !alone {
         println!("[skip] another Pipedeck holds the same node names, so what the meters hear is not this test's to predict");
@@ -2152,6 +2154,143 @@ fn main() -> ExitCode {
         &format!("removing the mix takes its output with it: {nodes:?}"),
         &mut failures,
     );
+
+    // The soundboard: a sound added is copied among the mixer's own, on a
+    // row of its own fed to every mix, and plays into it from its start.
+    engine.send(Command::AddMix).unwrap();
+    let state = wait_state(&rx, "a mix for the soundboard", |s| !s.mixes.is_empty());
+    let board_mix = state.mixes[0].id;
+    let clip = dir.join("clip.wav");
+    tone_wav(&clip, 3);
+    engine
+        .send(Command::AddSound {
+            path: clip.clone(),
+            name: Some("Clip".into()),
+        })
+        .unwrap();
+    let state = wait_state(&rx, "the sound added", |s| {
+        !s.sounds.is_empty() && s.soundboard.is_some()
+    });
+    let sound: SoundId = state.sounds[0].id;
+    let board = state.soundboard.expect("a soundboard row");
+    check(
+        state.sounds[0].name == "Clip"
+            && state
+                .sources
+                .iter()
+                .any(|row| row.id == board && row.name == "Soundboard"),
+        &format!(
+            "a sound comes with the soundboard's row: {:?}",
+            state.sounds
+        ),
+        &mut failures,
+    );
+    let kept = dir.join("data/pipedeck/sounds").join(&state.sounds[0].file);
+    check(
+        kept.is_file(),
+        &format!(
+            "the sound is copied among the mixer's own: {}",
+            kept.display()
+        ),
+        &mut failures,
+    );
+    check(
+        state
+            .links
+            .iter()
+            .any(|link| link.source == board && link.mix == board_mix),
+        "the soundboard feeds every mix",
+        &mut failures,
+    );
+    settle();
+    drain(&rx);
+    engine.send(Command::PlaySound(sound)).unwrap();
+    wait_for(
+        &rx,
+        "the sound playing",
+        |e| matches!(e, Event::Playing { sounds } if sounds == &[sound]),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let dump = pw_dump();
+    let player = format!("pipedeck-smoke.sound.{sound}");
+    let plays_in = node_id(&dump, &player)
+        .zip(node_id(&dump, &format!("pipedeck-smoke.src.{board}")))
+        .is_some_and(|ends| links(&dump).contains(&ends));
+    check(
+        plays_in,
+        &format!("the sound plays into the soundboard's row: {player}"),
+        &mut failures,
+    );
+    let heard = node_serial(&dump, &format!("pipedeck-smoke.mix.{board_mix}"))
+        .map(|serial| record_peak(serial, 1, &dir.join("board.wav")))
+        .unwrap_or(0.0);
+    let what = format!("a recorder hears the sound in the mix: {heard:.3}");
+    if !another_mixer_running(&dump) {
+        check(heard > 0.05, &what, &mut failures);
+    } else {
+        println!("[skip] {what}");
+    }
+    let ended = wait_for(
+        &rx,
+        "the sound over",
+        |e| matches!(e, Event::Playing { sounds } if sounds.is_empty()),
+    );
+    check(
+        matches!(ended, Event::Playing { .. }),
+        "a sound played to its end is said so",
+        &mut failures,
+    );
+    settle();
+    check(
+        !node_names(&pw_dump()).contains(&player),
+        "a sound played to its end leaves the graph",
+        &mut failures,
+    );
+    engine.send(Command::PlaySound(sound)).unwrap();
+    wait_for(
+        &rx,
+        "the sound again",
+        |e| matches!(e, Event::Playing { sounds } if sounds == &[sound]),
+    );
+    engine.send(Command::StopSounds).unwrap();
+    wait_for(
+        &rx,
+        "the sound stopped",
+        |e| matches!(e, Event::Playing { sounds } if sounds.is_empty()),
+    );
+    // Its row removed, the soundboard gets one again as a sound is played.
+    engine.send(Command::RemoveSource(board)).unwrap();
+    wait_state(&rx, "the soundboard's row removed", |s| {
+        s.soundboard.is_none()
+    });
+    engine.send(Command::PlaySound(sound)).unwrap();
+    let state = wait_state(&rx, "the soundboard's row again", |s| {
+        s.soundboard.is_some()
+    });
+    let board = state.soundboard.expect("a soundboard row");
+    let again = wait_for(
+        &rx,
+        "the sound playing again",
+        |e| matches!(e, Event::Playing { sounds } if sounds == &[sound]),
+    );
+    check(
+        matches!(again, Event::Playing { .. }),
+        "a sound plays into a row made again for it",
+        &mut failures,
+    );
+    engine.send(Command::StopSounds).unwrap();
+    engine.send(Command::RemoveSound(sound)).unwrap();
+    wait_state(&rx, "the sound removed", |s| s.sounds.is_empty());
+    check(
+        !kept.exists(),
+        "a sound taken off the soundboard takes its copy with it",
+        &mut failures,
+    );
+    engine.send(Command::RemoveSource(board)).unwrap();
+    engine.send(Command::RemoveMix(board_mix)).unwrap();
+    wait_state(&rx, "the soundboard gone", |s| {
+        s.sources.iter().all(|row| row.id != board) && s.mixes.is_empty()
+    });
 
     // A mixer imported from a file takes this one's place, cells and all;
     // exported, it comes out as the file had it.

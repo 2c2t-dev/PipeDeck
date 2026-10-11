@@ -48,7 +48,13 @@
 //! {"do": {"what": "app", "app": "spotify", "channel": 1}}
 //! {"do": {"what": "app", "app": "spotify", "channel": 1, "release": true}}
 //! {"do": {"what": "app", "focused": true, "channel": 1}}
+//! {"do": {"what": "sound", "id": 3}}
+//! {"do": {"what": "sound", "id": 3, "stop": true}}
+//! {"do": {"what": "sound", "stop": true}}
 //! ```
+//!
+//! A sound of the soundboard plays from its start, even when it plays
+//! already; `stop` stops it, or every sound when none is named.
 //!
 //! An effect is told by its place in the channel's chain; bypassed, the
 //! sound goes past it. An application is told by its key, as the state
@@ -75,7 +81,7 @@ use pipewire as pw;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{Command, Event, StateSnapshot, Watch};
-use crate::types::{voice_labels, CallMember, Device, MixId, SourceId};
+use crate::types::{voice_labels, CallMember, Device, MixId, SoundId, SourceId};
 
 /// Where the socket is: `PIPEDECK_CONTROL_SOCKET` when set, for a test
 /// running beside the user's own mixer, which answers on the usual one.
@@ -179,6 +185,13 @@ enum Action {
         #[serde(default)]
         release: bool,
     },
+    /// A sound of the soundboard played, or stopped; every sound stopped.
+    Sound {
+        #[serde(default)]
+        id: Option<u32>,
+        #[serde(default)]
+        stop: bool,
+    },
 }
 
 impl Switch {
@@ -203,6 +216,15 @@ pub struct View {
     pub apps: Vec<AppView>,
     /// The one playing in the window that has the focus.
     pub focused: Option<AppView>,
+    /// The sounds of the soundboard.
+    pub sounds: Vec<SoundView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SoundView {
+    pub id: u32,
+    pub name: String,
+    pub playing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -280,6 +302,8 @@ struct Model {
     outputs: Vec<Device>,
     apps: Vec<crate::types::App>,
     focused: Option<crate::types::App>,
+    /// The sounds playing.
+    playing: Vec<SoundId>,
     /// The clients that asked to hear of every change.
     subscribers: Vec<mpsc::Sender<()>>,
     /// The clients that asked for the meters, and are handed every
@@ -422,6 +446,7 @@ impl Model {
             Event::Devices { outputs, .. } => self.outputs = outputs,
             Event::Apps { running } => self.apps = running,
             Event::Focused { app } => self.focused = app,
+            Event::Playing { sounds } => self.playing = sounds,
             Event::SourceEffects { id, effects } => {
                 if let Some(source) = self.source_mut(id.0) {
                     source.effects = effects;
@@ -549,6 +574,15 @@ impl Model {
                 key: app.key.clone(),
                 name: app.name.clone(),
             }),
+            sounds: state
+                .sounds
+                .iter()
+                .map(|sound| SoundView {
+                    id: sound.id.0,
+                    name: sound.name.clone(),
+                    playing: self.playing.contains(&sound.id),
+                })
+                .collect(),
         })
     }
 
@@ -671,6 +705,24 @@ impl Model {
                     _ => return Err("an application, or the one in front".into()),
                 };
                 Ok(move_app(state, app, channel, release))
+            }
+            Action::Sound { id, stop } => {
+                let Some(id) = id else {
+                    return if stop {
+                        Ok(vec![Command::StopSounds])
+                    } else {
+                        Err("a sound to play".into())
+                    };
+                };
+                if !state.sounds.iter().any(|sound| sound.id.0 == id) {
+                    return Err(format!("no sound {id}"));
+                }
+                let id = SoundId(id);
+                Ok(vec![if stop {
+                    Command::StopSound(id)
+                } else {
+                    Command::PlaySound(id)
+                }])
             }
         }
     }
@@ -1168,12 +1220,57 @@ mod tests {
             mixes: vec![MixConfig::new(MixId(1), "Stream")],
             sources: vec![SourceConfig::virtual_sink(SourceId(2), "Music")],
             links: vec![LinkConfig::new(SourceId(2), MixId(1))],
+            sounds: vec![pipedeck_sound(4, "Airhorn")],
+            soundboard: None,
         };
         state.sources[0].gain = 0.5;
         Model {
             state: Some(state),
             ..Model::default()
         }
+    }
+
+    fn pipedeck_sound(id: u32, name: &str) -> crate::types::SoundConfig {
+        crate::types::SoundConfig {
+            id: SoundId(id),
+            name: name.into(),
+            file: format!("{id}.wav"),
+        }
+    }
+
+    #[test]
+    fn a_sound_is_played_and_stopped() {
+        let mut model = model();
+        assert_eq!(
+            act(&mut model, r#"{"do": {"what": "sound", "id": 4}}"#),
+            Ok(vec![Command::PlaySound(SoundId(4))])
+        );
+        assert_eq!(
+            act(
+                &mut model,
+                r#"{"do": {"what": "sound", "id": 4, "stop": true}}"#
+            ),
+            Ok(vec![Command::StopSound(SoundId(4))])
+        );
+        assert_eq!(
+            act(&mut model, r#"{"do": {"what": "sound", "stop": true}}"#),
+            Ok(vec![Command::StopSounds])
+        );
+        assert!(act(&mut model, r#"{"do": {"what": "sound", "id": 9}}"#).is_err());
+        assert!(act(&mut model, r#"{"do": {"what": "sound"}}"#).is_err());
+
+        model.hear(Event::Playing {
+            sounds: vec![SoundId(4)],
+        });
+        let view = model.view().unwrap();
+        assert_eq!(
+            view.sounds,
+            [SoundView {
+                id: 4,
+                name: "Airhorn".into(),
+                playing: true
+            }]
+        );
     }
 
     fn act(model: &mut Model, json: &str) -> Result<Vec<Command>, String> {

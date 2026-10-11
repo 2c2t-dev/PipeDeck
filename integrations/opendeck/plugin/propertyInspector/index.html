@@ -67,6 +67,11 @@
 			<p class="note">A press puts it on the channel, or takes it off again.</p>
 		</div>
 
+		<div id="sound-rows" hidden>
+			<label class="row">Sound <select id="sound"></select></label>
+			<p class="note">A press plays it from its start, even while it plays.</p>
+		</div>
+
 		<div id="level-rows" hidden>
 			<label class="row">
 				Display
@@ -184,6 +189,7 @@
 				$("voice-rows").hidden = action !== "voice";
 				$("effect-rows").hidden = action !== "effect";
 				$("app-rows").hidden = action !== "app";
+				$("sound-rows").hidden = action !== "sound";
 				panels[action]?.(view);
 				if (level) showLevel();
 			}
@@ -192,6 +198,7 @@
 			const panels = {
 				effect: showEffect,
 				app: showApp,
+				sound: showSound,
 				voice: showVoice,
 				channel: showChannel,
 				mix: ({ mixes }) => fill($("mix"), mixes.map((mix) => [String(mix.id), mix.name]), settings.mix, settings.label),
@@ -213,6 +220,11 @@
 				for (const c of channels) for (const key of c.apps ?? []) if (!apps.has(key)) apps.set(key, key);
 				fill($("app"), [["@front", "The application in front"], ...[...apps].map(([key, name]) => [key, name])], settings.app, settings.label);
 				fill($("app-channel"), channels.map((c) => [String(c.id), c.name]), settings.channel);
+			}
+
+			function showSound() {
+				const sounds = (mixer?.sounds ?? []).map((sound) => [String(sound.id), sound.name]);
+				fill($("sound"), [["stop", "Stop every sound"], ...sounds], settings.stop ? "stop" : settings.sound, settings.label);
 			}
 
 			function showVoice() {
@@ -325,6 +337,19 @@
 				if (!$("app").value) return;
 				settings.app = $("app").value;
 				settings.label = $("app").selectedOptions[0].text;
+				save();
+			};
+			$("sound").onchange = () => {
+				const value = $("sound").value;
+				if (!value) return;
+				if (value === "stop") {
+					settings.stop = true;
+					delete settings.sound;
+				} else {
+					settings.sound = Number(value);
+					delete settings.stop;
+				}
+				settings.label = $("sound").selectedOptions[0].text;
 				save();
 			};
 			$("app-channel").onchange = () => {

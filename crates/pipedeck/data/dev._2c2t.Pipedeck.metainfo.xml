@@ -25,6 +25,7 @@
       <li>Meters on every channel, mix and cell</li>
       <li>Stream Deck support through OpenDeck or StreamController, with keys and dials that look like the mixer</li>
       <li>Discord calls split into one track per person, with Vesktop</li>
+      <li>A soundboard, played from the window, a keyboard shortcut or a Stream Deck key</li>
       <li>Lives through PipeWire and WirePlumber restarts</li>
     </ul>
   </description>

@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{ChainState, LinkConfig, MixConfig, MixId, SourceConfig, SourceId};
+use crate::types::{
+    ChainState, LinkConfig, MixConfig, MixId, SoundConfig, SoundId, SourceConfig, SourceId,
+};
 
 /// Quantum requested on our own nodes, as `frames/rate`.
 ///
@@ -65,12 +67,18 @@ pub struct Config {
     /// in for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listen_device: Option<String>,
+    /// The row the soundboard plays into, made with the first sound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soundboard: Option<SourceId>,
     #[serde(default, rename = "mix")]
     pub mixes: Vec<MixConfig>,
     #[serde(default, rename = "source")]
     pub sources: Vec<SourceConfig>,
     #[serde(default, rename = "link")]
     pub links: Vec<LinkConfig>,
+    /// The sounds of the soundboard, in the order they are shown.
+    #[serde(default, rename = "sound")]
+    pub sounds: Vec<SoundConfig>,
     /// True when this config was just converted from an older layout, so the
     /// engine knows to write it back in the current shape. Never stored.
     #[serde(skip)]
@@ -87,9 +95,11 @@ impl Default for Config {
             latency: default_latency(),
             stereotool_license: None,
             listen_device: None,
+            soundboard: None,
             mixes: Vec::new(),
             sources: Vec::new(),
             links: Vec::new(),
+            sounds: Vec::new(),
             migrated: false,
         }
     }
@@ -232,6 +242,7 @@ impl Config {
             sources,
             links,
             migrated: true,
+            ..Self::default()
         }
     }
 
@@ -259,6 +270,19 @@ impl Config {
 
     pub fn next_mix_id(&self) -> MixId {
         MixId(self.mixes.iter().map(|m| m.id.0 + 1).max().unwrap_or(1))
+    }
+
+    pub fn next_sound_id(&self) -> SoundId {
+        SoundId(self.sounds.iter().map(|s| s.id.0 + 1).max().unwrap_or(1))
+    }
+
+    pub fn sound(&self, id: SoundId) -> Option<&SoundConfig> {
+        self.sounds.iter().find(|s| s.id == id)
+    }
+
+    /// The soundboard's row, if it still exists.
+    pub fn soundboard(&self) -> Option<SourceId> {
+        self.soundboard.filter(|id| self.source(*id).is_some())
     }
 
     pub fn source(&self, id: SourceId) -> Option<&SourceConfig> {

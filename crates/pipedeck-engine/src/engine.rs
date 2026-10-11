@@ -24,8 +24,8 @@ use crate::config::Config;
 use crate::error::EngineError;
 use crate::pw::Graph;
 use crate::types::{
-    self, App, ChainState, Device, Effect, LinkConfig, MixConfig, MixId, SourceConfig, SourceId,
-    MAX_MIXES,
+    self, App, ChainState, Device, Effect, LinkConfig, MixConfig, MixId, SoundConfig, SoundId,
+    SourceConfig, SourceId, MAX_MIXES,
 };
 
 /// Requests from a client to the engine.
@@ -245,6 +245,29 @@ pub enum Command {
     /// Put the mixer a file holds in place of this one: the session is
     /// closed and made again from it. The Stereo Tool key is kept.
     ImportConfig(PathBuf),
+    /// Add a sound to the soundboard: the file is copied among Pipedeck's
+    /// own, under the name given, or its own. The soundboard's row is made
+    /// with the first sound, fed to every mix.
+    AddSound {
+        path: PathBuf,
+        name: Option<String>,
+    },
+    /// Take a sound off the soundboard, and its copy with it.
+    RemoveSound(SoundId),
+    RenameSound {
+        id: SoundId,
+        name: String,
+    },
+    /// Put a sound at another place on the soundboard.
+    MoveSound {
+        id: SoundId,
+        to: usize,
+    },
+    /// Play a sound from its start, cutting it short if it plays already.
+    PlaySound(SoundId),
+    /// Stop one sound, or every one.
+    StopSound(SoundId),
+    StopSounds,
     /// Tear the graph down and stop the thread.
     Shutdown,
 }
@@ -290,6 +313,9 @@ pub struct StateSnapshot {
     pub mixes: Vec<MixConfig>,
     pub sources: Vec<SourceConfig>,
     pub links: Vec<LinkConfig>,
+    /// The sounds of the soundboard, and the row they play into.
+    pub sounds: Vec<SoundConfig>,
+    pub soundboard: Option<SourceId>,
 }
 
 /// Notifications from the engine to its clients.
@@ -345,6 +371,9 @@ pub enum Event {
     /// One row's effects, settings and all, after a control moved: sent
     /// instead of the whole matrix, which nothing about a setting changes.
     SourceEffects { id: SourceId, effects: Vec<Effect> },
+    /// The sounds of the soundboard playing now, sent as one starts or
+    /// stops.
+    Playing { sounds: Vec<SoundId> },
     /// Non-fatal problem worth showing to the user.
     Error(String),
     /// Something worth saying that is not a problem: the connection to the
@@ -392,6 +421,7 @@ impl Watch {
             | Event::LinkChanged { .. }
             | Event::SourceEffects { .. }
             | Event::Apps { .. }
+            | Event::Playing { .. }
             | Event::Focused { .. } => event.clone(),
             Event::Levels {
                 sources,
@@ -1070,6 +1100,40 @@ fn handle_command(
                     )));
                 })
         }
+        Command::AddSound { path, name } => add_sound(&mut g, &path, name),
+        Command::RemoveSound(id) => remove_sound(&mut g, id),
+        Command::RenameSound { id, name } => rename_sound(&mut g, id, name),
+        Command::MoveSound { id, to } => {
+            let sounds = &mut g.config_mut().sounds;
+            match sounds.iter().position(|sound| sound.id == id) {
+                Some(from) => {
+                    let sound = sounds.remove(from);
+                    sounds.insert(to.min(sounds.len()), sound);
+                    Ok(())
+                }
+                None => Err(EngineError::UnknownSound(id)),
+            }
+        }
+        // A soundboard whose row was removed gets one again: the matrix is
+        // sent again only then.
+        Command::PlaySound(id) => {
+            structural = g.config().soundboard().is_none();
+            if g.config().sound(id).is_none() {
+                Err(EngineError::UnknownSound(id))
+            } else {
+                soundboard(&mut g).and_then(|_| g.play_sound(id))
+            }
+        }
+        Command::StopSound(id) => {
+            structural = false;
+            g.stop_sound(id);
+            Ok(())
+        }
+        Command::StopSounds => {
+            structural = false;
+            g.stop_sounds();
+            Ok(())
+        }
         // The session takes it before it comes here, to end itself.
         Command::ImportConfig(_) => {
             structural = false;
@@ -1125,6 +1189,90 @@ fn add_source(
     .with_icon(icon);
     g.create_source(&cfg)?;
     g.config_mut().sources.push(cfg);
+    Ok(())
+}
+
+/// The soundboard's row, made if there is none: fed to every mix, which
+/// is where a sound is wanted more often than not, the cells there to turn
+/// it down where it is not.
+fn soundboard(g: &mut Graph) -> Result<SourceId, EngineError> {
+    if let Some(id) = g.config().soundboard() {
+        return Ok(id);
+    }
+    let id = g.config().next_source_id();
+    let cfg = SourceConfig::virtual_sink(id, "Soundboard").with_icon(Some("sfx".into()));
+    g.create_source(&cfg)?;
+    let config = g.config_mut();
+    config.sources.push(cfg);
+    config.soundboard = Some(id);
+    let mixes: Vec<MixId> = g.config().mixes.iter().map(|mix| mix.id).collect();
+    for mix in mixes {
+        set_link(g, id, mix, true)?;
+    }
+    Ok(id)
+}
+
+/// Copy a sound among Pipedeck's own and put it on the soundboard, once it
+/// is known to be one.
+fn add_sound(g: &mut Graph, path: &Path, name: Option<String>) -> Result<(), EngineError> {
+    crate::sound::open(path).map_err(EngineError::Sound)?;
+    let dir = types::sounds_dir()
+        .ok_or_else(|| EngineError::Sound("no folder to keep sounds in".into()))?;
+    let id = g.config().next_sound_id();
+    let file = match path.extension().and_then(|e| e.to_str()) {
+        Some(extension) => format!("{id}.{}", extension.to_lowercase()),
+        None => id.to_string(),
+    };
+    let copied = std::fs::create_dir_all(&dir).and_then(|()| std::fs::copy(path, dir.join(&file)));
+    if let Err(e) = copied {
+        return Err(EngineError::Sound(format!(
+            "cannot copy the sound into {}: {e}",
+            dir.display()
+        )));
+    }
+    let name = name
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| format!("Sound {id}"));
+    g.config_mut().sounds.push(SoundConfig { id, name, file });
+    soundboard(g)?;
+    Ok(())
+}
+
+/// Take a sound off the soundboard, and forget its copy.
+fn remove_sound(g: &mut Graph, id: SoundId) -> Result<(), EngineError> {
+    let sound = g
+        .config()
+        .sound(id)
+        .cloned()
+        .ok_or(EngineError::UnknownSound(id))?;
+    g.stop_sound(id);
+    g.config_mut().sounds.retain(|sound| sound.id != id);
+    if let Some(path) = sound.path() {
+        if let Err(e) = std::fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("cannot remove {}: {e}", path.display());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rename_sound(g: &mut Graph, id: SoundId, name: String) -> Result<(), EngineError> {
+    let name = name.trim().to_owned();
+    if name.is_empty() {
+        return Ok(());
+    }
+    g.config_mut()
+        .sounds
+        .iter_mut()
+        .find(|sound| sound.id == id)
+        .ok_or(EngineError::UnknownSound(id))?
+        .name = name;
     Ok(())
 }
 

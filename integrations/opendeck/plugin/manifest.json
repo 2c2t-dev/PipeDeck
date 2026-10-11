@@ -1,6 +1,6 @@
 {
   "Name": "Pipedeck",
-  "Description": "Control Pipedeck, the PipeWire mixer: mute channels, mixes and the people of a call, move their levels with keys or dials, choose the mix heard in your headphones and the device it is heard on.",
+  "Description": "Control Pipedeck, the PipeWire mixer: mute channels, mixes and the people of a call, move their levels with keys or dials, choose the mix heard in your headphones and the device it is heard on, and play the soundboard's sounds.",
   "Author": "Fabien Millet",
   "URL": "https://github.com/2c2t-dev/PipeDeck",
   "Version": "0.1.3",
@@ -194,6 +194,22 @@
           "Touch": "Move"
         }
       },
+      "SupportedInMultiActions": true,
+      "PropertyInspectorPath": "propertyInspector/index.html"
+    },
+    {
+      "UUID": "dev.2c2t.pipedeck.sound",
+      "Name": "Play Sound",
+      "Tooltip": "Play a sound of the soundboard from its start, or stop every sound",
+      "Icon": "icons/sound",
+      "States": [
+        {
+          "Image": "icons/sound"
+        }
+      ],
+      "Controllers": [
+        "Keypad"
+      ],
       "SupportedInMultiActions": true,
       "PropertyInspectorPath": "propertyInspector/index.html"
     }

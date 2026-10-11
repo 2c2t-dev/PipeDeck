@@ -19,7 +19,9 @@ mod mix_dialog;
 mod preferences;
 mod presets;
 mod settings;
+mod shortcuts;
 mod signals;
+mod soundboard;
 mod streamdeck;
 mod tray;
 mod updates;
@@ -175,6 +177,18 @@ fn activate(app: &adw::Application) {
     window.set_keep_running(keep_running);
     // Somewhere to open the window from, and to quit, while it is closed.
     tray::show(app, keep_running);
+    // The soundboard's keyboard shortcuts, from the desktop, when it has
+    // them to give.
+    glib::spawn_future_local({
+        let app = app.clone();
+        let window = window.clone();
+        let engine = engine.clone();
+        async move {
+            if let Some(shortcuts) = shortcuts::start(&app, engine).await {
+                window.soundboard.set_shortcuts(shortcuts);
+            }
+        }
+    });
     updates::watch({
         let window = window.clone();
         move |release| window.offer_update(&release.version, &release.page)

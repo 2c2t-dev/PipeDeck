@@ -8,6 +8,9 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A soundboard: sounds played into the mixes, through a channel of their
+  own, from the window, a keyboard shortcut or a Stream Deck key (the Play
+  Sound action, in both plugins).
 - Pipedeck says when a newer version is out, asking GitHub once a day.
   It can be turned off in the settings, and the Flatpak does not ask.
 

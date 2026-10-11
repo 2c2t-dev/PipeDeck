@@ -23,6 +23,7 @@ use crate::listen::Listen;
 use crate::mix_dialog::MixDialog;
 use crate::preferences;
 use crate::presets;
+use crate::soundboard::Soundboard;
 use crate::vesktop;
 use crate::widgets;
 
@@ -46,6 +47,8 @@ pub struct Window {
     state: RefCell<StateSnapshot>,
     /// The sound card switch in the header bar.
     listen: Rc<Listen>,
+    /// The soundboard's button in the header bar.
+    pub soundboard: Rc<Soundboard>,
     outputs: RefCell<Vec<Device>>,
     inputs: RefCell<Vec<Device>>,
     /// Applications currently playing, for the channel windows.
@@ -88,6 +91,8 @@ impl Window {
         // one thing up here you reach for mid-stream.
         let listen = Listen::new(&engine);
         header.pack_end(&listen.widget());
+        let soundboard = Soundboard::new(&engine);
+        header.pack_end(&soundboard.widget());
 
         let grid = gtk::Grid::new();
         // Cards keep their size in a wide window instead of stretching: a
@@ -130,6 +135,7 @@ impl Window {
             toasts,
             stopped: StdCell::new(false),
             listen,
+            soundboard,
             state: RefCell::new(StateSnapshot {
                 latency: String::new(),
                 stereotool_license: None,
@@ -137,6 +143,8 @@ impl Window {
                 mixes: Vec::new(),
                 sources: Vec::new(),
                 links: Vec::new(),
+                sounds: Vec::new(),
+                soundboard: None,
             }),
             outputs: RefCell::new(Vec::new()),
             inputs: RefCell::new(Vec::new()),
@@ -265,6 +273,7 @@ impl Window {
                 self.lay_out_stream_decks();
                 self.listen
                     .refresh(&self.state.borrow(), &self.outputs.borrow());
+                self.soundboard.refresh(&self.state.borrow().sounds);
                 self.rebuild();
                 self.refresh_settings();
                 self.refresh_dialogs();
@@ -308,6 +317,7 @@ impl Window {
             Event::SourceChanged { id, state } => self.source_changed(id, state),
             Event::OutputChanged { id, index, state } => self.output_changed(id, index, state),
             Event::SourceEffects { id, effects } => self.effects_changed(id, effects),
+            Event::Playing { sounds } => self.soundboard.set_playing(&sounds),
             Event::Error(message) => self.toast(&message),
             Event::Notice(message) => {
                 log::info!("{message}");

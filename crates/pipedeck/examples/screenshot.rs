@@ -61,8 +61,12 @@ mod preferences;
 mod presets;
 #[path = "../src/settings.rs"]
 mod settings;
+#[path = "../src/shortcuts.rs"]
+mod shortcuts;
 #[path = "../src/signals.rs"]
 mod signals;
+#[path = "../src/soundboard.rs"]
+mod soundboard;
 #[path = "../src/streamdeck.rs"]
 mod streamdeck;
 #[path = "../src/tray.rs"]
@@ -271,6 +275,8 @@ fn main() -> gtk::glib::ExitCode {
         mixes: config.mixes.clone(),
         sources: config.sources.clone(),
         links: config.links.clone(),
+        sounds: Vec::new(),
+        soundboard: None,
     };
 
     let engine = pipedeck_engine::spawn(scratch.join("pipedeck/config.toml"), |_| {});

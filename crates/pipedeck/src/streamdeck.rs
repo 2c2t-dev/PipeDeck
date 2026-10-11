@@ -663,6 +663,8 @@ mod tests {
                 "Music",
             )],
             links: Vec::new(),
+            sounds: Vec::new(),
+            soundboard: None,
         };
         let before = layout_of(&state, &[]);
         state.sources[0].name = "Tunes".into();

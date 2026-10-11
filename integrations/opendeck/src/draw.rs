@@ -446,6 +446,7 @@ pub fn catalogue_icons() -> Vec<(&'static str, String)> {
         ("voice", badge_only("pd-people-symbolic", "#5b8cf5", plain)),
         ("effect", badge_only("pd-sfx-symbolic", "#f08a24", plain)),
         ("app", badge_only("pd-browser-symbolic", "#9b6ef3", plain)),
+        ("sound", badge_only("pd-fun-symbolic", "#f08a24", plain)),
         ("monitor", badge_only("pd-listen-symbolic", WHITE, plain)),
         (
             "output",

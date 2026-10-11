@@ -1,5 +1,5 @@
 use crate::config::ConfigError;
-use crate::types::{MixId, SourceId};
+use crate::types::{MixId, SoundId, SourceId};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -33,6 +33,10 @@ pub enum EngineError {
     NoPlugin,
     #[error("no output device to listen on")]
     NoListenDevice,
+    #[error("there is no sound {0}")]
+    UnknownSound(SoundId),
+    #[error("{0}")]
+    Sound(String),
     #[error("the engine thread is no longer running")]
     Stopped,
 }

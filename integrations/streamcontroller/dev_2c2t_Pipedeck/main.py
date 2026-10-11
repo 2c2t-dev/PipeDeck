@@ -1,7 +1,7 @@
 """Pipedeck on a Stream Deck, the way Elgato's Wave Link plugin puts Wave
 Link there: channel and mix levels with their meters, the mix heard in the
-headphones and the device it is heard on, through Pipedeck's control
-socket."""
+headphones and the device it is heard on, and the soundboard's sounds,
+through Pipedeck's control socket."""
 
 from gi.repository import GLib, Gtk
 from loguru import logger as log
@@ -24,6 +24,7 @@ from .actions import (
     MainOutput,
     MixLevel,
     MonitorMix,
+    PlaySound,
     switch_page,
 )
 from .client import Pipedeck
@@ -52,6 +53,7 @@ class PipedeckPlugin(PluginBase):
             (CallVoice, "CallVoice", "Call Voice"),
             (ChannelEffect, "ChannelEffect", "Channel Effect"),
             (AddApp, "AddApp", "Add to Channel"),
+            (PlaySound, "PlaySound", "Play Sound"),
             (CallPage, "CallPage", "Call"),
         ]:
             self.add_action_holder(

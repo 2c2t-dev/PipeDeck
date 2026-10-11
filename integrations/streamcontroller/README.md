@@ -16,6 +16,7 @@ changes, whoever changed it.
 | **Call Voice** | a place in the Discord call: the first, the second… | as Channel Level, for whoever is there | the same |
 | **Channel Effect** | a channel and one of its effects | switches the effect off or on | press, the same |
 | **Add to Channel** | an application, or the one in front, and a channel | puts the application on the channel, or takes it off | press, the same |
+| **Play Sound** | a sound of the soundboard, or every sound | plays it from its start, lit while it plays; or stops them all | press, the same |
 | **Call** | the page it goes to | goes to the call's page, saying how many are in it, or back | press, the same |
 
 A person of a call wears their Discord picture, as Vesktop's plugin

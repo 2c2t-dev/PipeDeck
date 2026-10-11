@@ -197,6 +197,48 @@ impl MixId {
     }
 }
 
+/// Stable identifier of a sound of the soundboard, which a shortcut or a
+/// Stream Deck key is bound to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SoundId(pub u32);
+
+impl std::fmt::Display for SoundId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// A sound of the soundboard: a file of Pipedeck's own, copied in when it
+/// was added, which the mixer plays into the soundboard's row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SoundConfig {
+    pub id: SoundId,
+    pub name: String,
+    /// Its file's name, in [`sounds_dir`].
+    pub file: String,
+}
+
+/// Where the sounds of the soundboard are kept:
+/// `$XDG_DATA_HOME/pipedeck/sounds`, falling back to
+/// `~/.local/share/pipedeck/sounds`.
+pub fn sounds_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share"))
+        })
+        .map(|data| data.join("pipedeck").join("sounds"))
+}
+
+impl SoundConfig {
+    /// Its file, where it is kept.
+    pub fn path(&self) -> Option<std::path::PathBuf> {
+        Some(sounds_dir()?.join(&self.file))
+    }
+}
+
 impl std::fmt::Display for SourceId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

@@ -18,6 +18,8 @@ call are separate balances.
 - **Stream Deck** support through OpenDeck or StreamController, with keys
   and dials that look like the mixer.
 - **Discord calls** split into one track per person, with Vesktop.
+- **A soundboard**, played into the mixes from the window, a Stream Deck
+  key or a keyboard shortcut.
 - Lives through PipeWire and WirePlumber restarts.
 
 <p align="center">
@@ -123,6 +125,20 @@ kept, in `~/.local/share/pipedeck/stereotool/`. Its own window opens from the
 effect (X11 builds only), or load a preset exported from it. Without a
 licence key it inserts speech and beeps into the audio. It adds 50 to 100 ms
 of delay.
+
+## Soundboard
+
+The button beside the output in the header bar opens the soundboard: add
+sounds (MP3, Ogg Vorbis, FLAC or WAV), and a click plays one from its start,
+even while it plays; the square stops them all. The files are copied into
+`~/.local/share/pipedeck/sounds/`, so moving the originals loses nothing.
+
+The sounds play into a channel of their own, **Soundboard**, made with the
+first sound and fed to every mix: its cells decide who hears them, as for
+any channel. **Keyboard Shortcuts…** opens the desktop's settings for the
+keys that play each sound, which work with the window closed or under a
+game; on KDE, the desktop asks once about each new sound's shortcut. On a
+Stream Deck, **Play Sound** puts one on a key.
 
 ## Stream Deck and Discord
 

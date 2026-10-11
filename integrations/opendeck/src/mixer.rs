@@ -32,6 +32,16 @@ pub struct View {
     /// The one playing in the window that has the focus.
     #[serde(default)]
     pub focused: Option<App>,
+    /// The sounds of the soundboard.
+    #[serde(default)]
+    pub sounds: Vec<Sound>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Sound {
+    pub id: u32,
+    pub name: String,
+    pub playing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

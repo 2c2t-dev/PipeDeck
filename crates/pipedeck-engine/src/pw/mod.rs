@@ -20,6 +20,7 @@ mod focus;
 pub mod loopback;
 pub mod meter;
 pub mod module;
+mod player;
 pub mod plugin_chain;
 pub mod props;
 mod voices;
@@ -49,7 +50,7 @@ use crate::error::EngineError;
 use crate::types::{node_prefix, voice_app};
 use crate::types::{
     App, CallMember, ChainState, Device, Effect, EffectKind, LinkConfig, MixConfig, MixId,
-    MixOutput, SourceConfig, SourceId,
+    MixOutput, SoundId, SourceConfig, SourceId,
 };
 use crate::vst3::Plugin;
 
@@ -57,6 +58,7 @@ use filter_chain::ChainSpec;
 use loopback::{LoopbackSpec, AUDIO_POSITION, CHANNELS};
 use meter::Meter;
 use module::LoadedModule;
+use player::Player;
 use plugin_chain::{PluginChain, Request};
 use voices::{StreamTargets, Voice};
 
@@ -401,6 +403,13 @@ pub struct Graph {
     own_pid: Option<String>,
     /// Stages announced before `own_pid` was known, bound once it is.
     waiting_stages: Vec<(StageRef, GlobalObject<PropertiesBox>)>,
+    /// The sounds of the soundboard playing now.
+    players: HashMap<SoundId, Player>,
+    /// Sounds asked for before the soundboard's row was on the graph, and
+    /// since when: played once it is, forgotten if it never comes.
+    waiting_sounds: Vec<(SoundId, Instant)>,
+    /// The sounds playing, as last said.
+    playing_said: Vec<SoundId>,
     registry: RegistryRc,
     core: CoreRc,
     context: ContextRc,
@@ -461,6 +470,9 @@ impl Graph {
                 .is_none()
                 .then(|| std::process::id().to_string()),
             waiting_stages: Vec::new(),
+            players: HashMap::new(),
+            waiting_sounds: Vec::new(),
+            playing_said: Vec::new(),
             registry,
             core,
             context,
@@ -487,6 +499,8 @@ impl Graph {
             mixes: self.config.mixes.clone(),
             sources: self.config.sources.clone(),
             links: self.config.links.clone(),
+            sounds: self.config.sounds.clone(),
+            soundboard: self.config.soundboard(),
         }
     }
 
@@ -1182,6 +1196,10 @@ impl Graph {
     }
 
     pub fn remove_source(&mut self, id: SourceId) -> Result<(), EngineError> {
+        // The sounds play into the soundboard's sink, so they go before it.
+        if self.config.soundboard() == Some(id) {
+            self.stop_sounds();
+        }
         // Its applications are handed back first: left aimed at a sink that
         // is about to go, they would stay aimed at its name, which another
         // mixer, or the next row given this id, answers to.
@@ -2636,6 +2654,7 @@ impl Graph {
     /// Periodic housekeeping from the engine timer: debounced config saves
     /// and device list updates.
     pub fn tick(&mut self) {
+        self.tend_sounds();
         self.hook_up_links();
         self.hook_up_plugins();
         self.hook_up_meters();
@@ -2659,6 +2678,104 @@ impl Graph {
         self.flush_config();
     }
 }
+
+impl Graph {
+    // --- soundboard ---------------------------------------------------------
+
+    /// Play a sound of the soundboard from its start, cutting it short if it
+    /// was playing already.
+    ///
+    /// It plays into the soundboard's sink, by the id the server gave it:
+    /// a row made a moment ago may not have one yet, and the sound then
+    /// waits for it, rather than play wherever the session manager would
+    /// put a stream with no sink to go to.
+    pub fn play_sound(&mut self, id: SoundId) -> Result<(), EngineError> {
+        let sound = self.config.sound(id).ok_or(EngineError::UnknownSound(id))?;
+        let row = self
+            .config
+            .soundboard()
+            .ok_or_else(|| EngineError::Sound("the soundboard has no channel".into()))?;
+        let path = sound
+            .path()
+            .ok_or_else(|| EngineError::Sound("no folder to keep sounds in".into()))?;
+        let target = row.sink_node_name();
+        self.players.remove(&id);
+        self.waiting_sounds.retain(|(waiting, _)| *waiting != id);
+        let Some(target_id) = self.sink_ids.get(&target).copied() else {
+            self.waiting_sounds.push((id, Instant::now()));
+            return Ok(());
+        };
+        let opened = crate::sound::open(&path).map_err(EngineError::Sound)?;
+        let player = Player::new(
+            &self.core,
+            &format!("{}.sound.{id}", node_prefix()),
+            &format!("Pipedeck: {}", sound.name),
+            opened,
+            &target,
+            Some(target_id),
+            &self.config.latency,
+        )?;
+        self.players.insert(id, player);
+        self.say_playing();
+        Ok(())
+    }
+
+    /// Stop every sound playing, or about to.
+    pub fn stop_sounds(&mut self) {
+        self.players.clear();
+        self.waiting_sounds.clear();
+        self.say_playing();
+    }
+
+    /// Stop one sound, if it plays.
+    pub fn stop_sound(&mut self, id: SoundId) {
+        self.players.remove(&id);
+        self.waiting_sounds.retain(|(waiting, _)| *waiting != id);
+        self.say_playing();
+    }
+
+    /// Take the sounds that ended off the graph, and play the ones that
+    /// waited for the soundboard's row if it has come.
+    fn tend_sounds(&mut self) {
+        self.players.retain(|_, player| !player.ended());
+        let waiting = std::mem::take(&mut self.waiting_sounds);
+        for (id, since) in waiting {
+            if since.elapsed() > SOUND_WAIT {
+                log::warn!("sound {id} was not played: the soundboard's row never came");
+                continue;
+            }
+            let row = self.config.soundboard().map(SourceId::sink_node_name);
+            if row.is_some_and(|row| self.sink_ids.contains_key(&row)) {
+                if let Err(e) = self.play_sound(id) {
+                    log::error!("{e}");
+                    self.emit(Event::Error(e.to_string()));
+                }
+            } else {
+                self.waiting_sounds.push((id, since));
+            }
+        }
+        self.say_playing();
+    }
+
+    /// Tell the clients which sounds play, when that changed.
+    fn say_playing(&mut self) {
+        let mut playing: Vec<SoundId> = self
+            .players
+            .keys()
+            .copied()
+            .chain(self.waiting_sounds.iter().map(|(id, _)| *id))
+            .collect();
+        playing.sort();
+        playing.dedup();
+        if playing != self.playing_said {
+            self.playing_said = playing.clone();
+            self.emit(Event::Playing { sounds: playing });
+        }
+    }
+}
+
+/// How long a sound waits for the soundboard's row to be on the graph.
+const SOUND_WAIT: Duration = Duration::from_secs(3);
 
 /// The Flatpak instance this runs in, if it runs in one, as the sandbox's
 /// own description has it.

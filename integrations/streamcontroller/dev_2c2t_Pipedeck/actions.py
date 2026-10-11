@@ -15,6 +15,8 @@ the OpenDeck plugin has them too (`integrations/opendeck/src/deck.rs`):
   the first, the second, and on, following the call as people come and go.
 - **Channel Effect**: one effect of a channel, switched off or on.
 - **Add to Channel**: an application put on a channel, or taken off it.
+- **Play Sound**: a sound of the soundboard, from its start, lit while it
+  plays; or every sound stopped.
 - **Call**: to the call's page, saying how many are in the call, or back
   to the mixer's; see `main.py` for the decks following calls by
   themselves.
@@ -612,6 +614,59 @@ class AddApp(PressAction):
         )
         self.picked(app, lambda value, label: self.save(app=value, label=label))
         return [app, self.channel_row(settings)]
+
+
+# What Play Sound is set to for stopping every sound.
+STOP = "@stop"
+
+
+class PlaySound(PressAction):
+    """A sound of the soundboard, played from its start, lit while it plays;
+    or every sound stopped, lit while any plays."""
+
+    def sounds(self) -> list:
+        return (self.pipedeck.state or {}).get("sounds", [])
+
+    def order(self, settings: dict):
+        sound = settings.get("sound")
+        if sound == STOP:
+            return {"what": "sound", "stop": True}
+        if sound is None or not any(s["id"] == sound for s in self.sounds()):
+            return None
+        return {"what": "sound", "id": sound}
+
+    def picture(self, settings: dict) -> draw.Picture:
+        sound = settings.get("sound")
+        if sound is None:
+            raise LookupError(PICK_ONE)
+        if sound == STOP:
+            playing = any(s["playing"] for s in self.sounds())
+            return draw.Picture(
+                name="Stop sounds",
+                look=draw.look("sfx", False),
+                dim=not playing,
+                below=("Stop", draw.TEXT) if playing else ("Silent", draw.FAINT),
+            )
+        found = next((s for s in self.sounds() if s["id"] == sound), None)
+        if not found:
+            raise LookupError("Gone")
+        return draw.Picture(
+            name=found["name"],
+            look=draw.look("sfx", False),
+            dim=not found["playing"],
+            below=("Playing", draw.TEXT) if found["playing"] else ("Play", draw.FAINT),
+        )
+
+    def get_config_rows(self) -> list:
+        settings = self.settings()
+        sound = self.combo(
+            "Sound",
+            [(STOP, "Stop every sound")] + [(s["id"], s["name"]) for s in self.sounds()],
+            settings.get("sound"),
+            settings.get("label", GONE),
+        )
+        self.picked(sound, lambda value, label: self.save(sound=value, label=label))
+        return [sound]
 
 
 def switch_page(controller, name: str) -> bool:

@@ -6,7 +6,7 @@
   "id": "dev_2c2t_Pipedeck",
   "github": "https://github.com/2c2t-dev/PipeDeck",
   "descriptions": {
-    "en_US": "Control Pipedeck, the PipeWire mixer: mute channels, mixes and the people of a call, move their levels with keys or dials, choose the mix heard in your headphones and the device it is heard on."
+    "en_US": "Control Pipedeck, the PipeWire mixer: mute channels, mixes and the people of a call, move their levels with keys or dials, choose the mix heard in your headphones and the device it is heard on, and play the soundboard's sounds."
   },
   "short-descriptions": {
     "en_US": "Control the Pipedeck mixer."

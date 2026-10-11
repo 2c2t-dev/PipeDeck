@@ -14,6 +14,7 @@ pub mod dsp;
 pub mod engine;
 pub mod error;
 mod pw;
+mod sound;
 pub mod stereotool;
 pub mod types;
 pub mod vst3;
@@ -24,7 +25,7 @@ pub use engine::{
 };
 pub use error::EngineError;
 pub use types::{
-    new_mix, node_prefix, voice_app, voice_labels, App, CallMember, ChainState, Control, Device,
-    Effect, EffectKind, LinkConfig, MixConfig, MixId, MixOutput, SourceConfig, SourceId,
-    VoiceConfig, MAX_MIXES, NEW_MIXES,
+    new_mix, node_prefix, sounds_dir, voice_app, voice_labels, App, CallMember, ChainState,
+    Control, Device, Effect, EffectKind, LinkConfig, MixConfig, MixId, MixOutput, SoundConfig,
+    SoundId, SourceConfig, SourceId, VoiceConfig, MAX_MIXES, NEW_MIXES,
 };
