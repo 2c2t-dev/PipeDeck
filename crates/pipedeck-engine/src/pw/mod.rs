@@ -72,6 +72,9 @@ const NODE_PREFIX: &str = "pipedeck";
 const INSTANCE_KEY: &str = "pipedeck.instance";
 const ADAPTER_FACTORY: &str = "adapter";
 const NULL_SINK_FACTORY: &str = "support.null-audio-sink";
+/// Above any card's: WirePlumber gives them a few thousand at most, an
+/// input more than an output.
+const DRIVER_PRIORITY: &str = "20000";
 const LOOPBACK_MODULE: &str = "libpipewire-module-loopback";
 const FILTER_CHAIN_MODULE: &str = "libpipewire-module-filter-chain";
 
@@ -598,6 +601,14 @@ impl Graph {
                     // on every cell of it and a column's is its master. A
                     // source made this way carries its volume the same way.
                     "monitor.channel-volumes" => "true",
+                    // The mixer keeps time, not a device: a chain from one
+                    // card to another runs on whichever has the highest
+                    // priority, and a card whose clock wanders, a dock's
+                    // USB audio, then has the other resync over and over,
+                    // which is heard as crackling. Ours run on the system's
+                    // clock, and every card follows it at its own pace.
+                    "node.driver" => "true",
+                    "priority.driver" => DRIVER_PRIORITY,
                 },
             )
             .map_err(|source| EngineError::CreateObject {
