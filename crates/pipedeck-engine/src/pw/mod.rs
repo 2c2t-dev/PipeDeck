@@ -403,6 +403,11 @@ pub struct Graph {
     own_pid: Option<String>,
     /// Stages announced before `own_pid` was known, bound once it is.
     waiting_stages: Vec<(StageRef, GlobalObject<PropertiesBox>)>,
+    /// Cells and outputs whose loopback went by itself, its device gone:
+    /// made again once that device is back.
+    /// When each went, or was last tried again.
+    fallen_cells: HashMap<(SourceId, MixId), Instant>,
+    fallen_outputs: HashMap<(MixId, usize), Instant>,
     /// The sounds of the soundboard playing now.
     players: HashMap<SoundId, Player>,
     /// Sounds asked for before the soundboard's row was on the graph, and
@@ -470,6 +475,8 @@ impl Graph {
                 .is_none()
                 .then(|| std::process::id().to_string()),
             waiting_stages: Vec::new(),
+            fallen_cells: HashMap::new(),
+            fallen_outputs: HashMap::new(),
             players: HashMap::new(),
             waiting_sounds: Vec::new(),
             playing_said: Vec::new(),
@@ -656,6 +663,8 @@ impl Graph {
         output.enabled = enabled;
         let cfg = cfg.clone();
         self.dirty = true;
+        // Switched by hand: no longer waiting for its device to come back.
+        self.fallen_outputs.remove(&(id, index));
 
         let previous = self
             .mixes
@@ -1841,7 +1850,8 @@ impl Graph {
     }
 
     pub fn remove_link(&mut self, source: SourceId, mix: MixId) -> Result<(), EngineError> {
-        if !self.links.contains_key(&(source, mix)) {
+        let fallen = self.fallen_cells.remove(&(source, mix)).is_some();
+        if !self.links.contains_key(&(source, mix)) && !fallen {
             return Err(EngineError::UnknownLink(source, mix));
         }
         self.drop_link((source, mix));
@@ -1855,13 +1865,23 @@ impl Graph {
         mix: MixId,
         f: impl FnOnce(&mut ChainState),
     ) -> Result<(), EngineError> {
-        let link = self
-            .links
-            .get_mut(&(source, mix))
-            .ok_or(EngineError::UnknownLink(source, mix))?;
-        f(&mut link.wanted);
-        link.apply();
-        let state = link.wanted;
+        // A cell whose device is away keeps its level for when it is back.
+        let state = match self.links.get_mut(&(source, mix)) {
+            Some(link) => {
+                f(&mut link.wanted);
+                link.apply();
+                link.wanted
+            }
+            None => {
+                let mut state = self
+                    .config
+                    .link(source, mix)
+                    .ok_or(EngineError::UnknownLink(source, mix))?
+                    .state();
+                f(&mut state);
+                state
+            }
+        };
         if let Some(cfg) = self.config.link_mut(source, mix) {
             cfg.set_state(state);
         }
@@ -2654,6 +2674,7 @@ impl Graph {
     /// Periodic housekeeping from the engine timer: debounced config saves
     /// and device list updates.
     pub fn tick(&mut self) {
+        self.mend_stages();
         self.tend_sounds();
         self.hook_up_links();
         self.hook_up_plugins();
@@ -2680,6 +2701,141 @@ impl Graph {
 }
 
 impl Graph {
+    // --- loopbacks that went ------------------------------------------------
+
+    /// Take off the cells and outputs whose loopback destroyed itself, as a
+    /// loopback does when its device goes, and make them again once the
+    /// device is back: a dock unplugged and plugged in again, a card that
+    /// went to sleep.
+    fn mend_stages(&mut self) {
+        let fallen: Vec<(SourceId, MixId)> = self
+            .links
+            .iter()
+            .filter(|(_, stage)| stage._module.is_gone())
+            .map(|(cell, _)| *cell)
+            .collect();
+        for cell in fallen {
+            log::info!(
+                "cell {}.{} went with what it reads; made again once that is back",
+                cell.0,
+                cell.1
+            );
+            self.drop_link(cell);
+            self.fallen_cells.insert(cell, Instant::now());
+        }
+        let fallen: Vec<(MixId, usize)> = self
+            .mixes
+            .iter()
+            .flat_map(|(id, mix)| {
+                mix.outputs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, stage)| stage.as_ref().is_some_and(|s| s._module.is_gone()))
+                    .map(move |(index, _)| (*id, index))
+            })
+            .collect();
+        for (id, index) in fallen {
+            let stage = self
+                .mixes
+                .get_mut(&id)
+                .and_then(|mix| mix.outputs.get_mut(index))
+                .and_then(Option::take);
+            if let Some(mut stage) = stage {
+                log::info!(
+                    "output {index} of mix {id} went with its device; made again once it is back"
+                );
+                self.stage_index.remove(&stage.node_name);
+                self.retire(&mut stage);
+                self.fallen_outputs.insert((id, index), Instant::now());
+            }
+        }
+
+        // Not tried again at once: a device listed a moment before it takes
+        // streams would have the loopback fall again at every tick.
+        let cells: Vec<(SourceId, MixId)> = self
+            .fallen_cells
+            .iter()
+            .filter(|(_, since)| since.elapsed() >= MEND_AFTER)
+            .map(|(cell, _)| *cell)
+            .collect();
+        for cell in cells {
+            let link = self.config.link(cell.0, cell.1).copied();
+            let Some(link) = link else {
+                self.fallen_cells.remove(&cell);
+                continue;
+            };
+            if !self.source_reachable(cell.0) {
+                continue;
+            }
+            self.fallen_cells.remove(&cell);
+            if let Err(e) = self.create_link(&link) {
+                log::error!("{e}");
+            }
+        }
+        let outputs: Vec<(MixId, usize)> = self
+            .fallen_outputs
+            .iter()
+            .filter(|(_, since)| since.elapsed() >= MEND_AFTER)
+            .map(|(output, _)| *output)
+            .collect();
+        for (id, index) in outputs {
+            let Some(cfg) = self.config.mix(id).cloned() else {
+                self.fallen_outputs.remove(&(id, index));
+                continue;
+            };
+            let Some(output) = cfg.outputs.get(index) else {
+                self.fallen_outputs.remove(&(id, index));
+                continue;
+            };
+            if !output.enabled {
+                self.fallen_outputs.remove(&(id, index));
+                continue;
+            }
+            let loaded = self
+                .mixes
+                .get(&id)
+                .and_then(|mix| mix.outputs.get(index))
+                .is_some_and(Option::is_some);
+            if loaded {
+                self.fallen_outputs.remove(&(id, index));
+                continue;
+            }
+            if !self.device_present(&output.device, true) {
+                continue;
+            }
+            self.fallen_outputs.remove(&(id, index));
+            let stage = self.load_output(&cfg, index);
+            if let Some(slot) = self
+                .mixes
+                .get_mut(&id)
+                .and_then(|mix| mix.outputs.get_mut(index))
+            {
+                *slot = stage;
+            }
+        }
+    }
+
+    /// Whether what a row's cells read is on the graph: its device, or the
+    /// last sink of ours it ends on.
+    fn source_reachable(&self, id: SourceId) -> bool {
+        let Some(cfg) = self.config.source(id) else {
+            return false;
+        };
+        let (target, from_sink) = channel_output(cfg);
+        if from_sink && (target.starts_with(NODE_PREFIX) || target.starts_with(node_prefix())) {
+            self.sink_ids.contains_key(&target)
+        } else {
+            self.device_present(&target, from_sink)
+        }
+    }
+
+    /// Whether a device is on the graph now.
+    fn device_present(&self, name: &str, output: bool) -> bool {
+        self.devices
+            .values()
+            .any(|entry| entry.device.name == name && entry.is_output == output)
+    }
+
     // --- soundboard ---------------------------------------------------------
 
     /// Play a sound of the soundboard from its start, cutting it short if it
@@ -2773,6 +2929,9 @@ impl Graph {
         }
     }
 }
+
+/// How long a loopback that went is left before it is made again.
+const MEND_AFTER: Duration = Duration::from_secs(2);
 
 /// How long a sound waits for the soundboard's row to be on the graph.
 const SOUND_WAIT: Duration = Duration::from_secs(3);

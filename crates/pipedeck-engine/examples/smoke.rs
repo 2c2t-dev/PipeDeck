@@ -236,6 +236,31 @@ fn record_peak(serial: i64, seconds: u32, into: &std::path::Path) -> f32 {
         .fold(0.0f32, f32::max)
 }
 
+/// Plug a device in, as a dock is: a node that stays on the graph until it
+/// is unplugged.
+fn plug(name: &str, class: &str) {
+    let made = Process::new("pw-cli")
+        .arg("create-node")
+        .arg("adapter")
+        .arg(format!(
+            "{{ factory.name=support.null-audio-sink node.name={name} node.description={name} \
+             media.class={class} audio.position=[FL FR] object.linger=true }}"
+        ))
+        .output()
+        .expect("pw-cli must be installed");
+    assert!(made.status.success(), "cannot make {name}");
+}
+
+/// Unplug it: the node goes, and whatever read it or played to it with it.
+fn unplug(name: &str) {
+    if let Some(id) = any_node_id(&pw_dump(), name) {
+        let _ = Process::new("pw-cli")
+            .arg("destroy")
+            .arg(id.to_string())
+            .output();
+    }
+}
+
 /// A quiet tone, loud enough to move a meter. Nothing is attached to the
 /// mix in this test, so it reaches no device and makes no sound.
 fn tone_wav(path: &std::path::Path, seconds: u32) {
@@ -2292,6 +2317,111 @@ fn main() -> ExitCode {
     wait_state(&rx, "the soundboard gone", |s| {
         s.sources.iter().all(|row| row.id != board) && s.mixes.is_empty()
     });
+
+    // A dock unplugged takes its devices away, and the loopbacks reading or
+    // playing to them destroy themselves. The mixer takes them off without
+    // destroying them again, which crashed it, and makes them again once
+    // the dock is back.
+    engine.send(Command::AddMix).unwrap();
+    let state = wait_state(&rx, "a mix for the dock", |s| !s.mixes.is_empty());
+    let dock_mix = state.mixes[0].id;
+    let dock_out = "smoke-dock-out";
+    let dock_in = "smoke-dock-in";
+    plug(dock_out, "Audio/Sink");
+    plug(dock_in, "Audio/Source");
+    wait_for(&rx, "the dock's devices", |e| {
+        matches!(e, Event::Devices { outputs, inputs }
+            if outputs.iter().any(|d| d.name == dock_out) && inputs.iter().any(|d| d.name == dock_in))
+    });
+    engine
+        .send(Command::SetMixOutputs {
+            id: dock_mix,
+            devices: vec![dock_out.into()],
+        })
+        .unwrap();
+    engine
+        .send(Command::AddSource {
+            name: "Dock".into(),
+            device: Some(dock_in.into()),
+            icon: None,
+        })
+        .unwrap();
+    let state = wait_state(&rx, "the dock's row", |s| {
+        s.sources.iter().any(|row| row.name == "Dock")
+    });
+    let dock_row = state
+        .sources
+        .iter()
+        .find(|row| row.name == "Dock")
+        .expect("the dock's row")
+        .id;
+    engine
+        .send(Command::SetLink {
+            source: dock_row,
+            mix: dock_mix,
+            linked: true,
+        })
+        .unwrap();
+    wait_state(&rx, "the dock's cell", |s| {
+        s.links
+            .iter()
+            .any(|link| link.source == dock_row && link.mix == dock_mix)
+    });
+    settle();
+    let out_node = format!("pipedeck-smoke.out.{dock_mix}.0");
+    let cell_node = format!("pipedeck-smoke.link.{dock_row}.{dock_mix}");
+    let nodes = node_names(&pw_dump());
+    check(
+        nodes.contains(&out_node) && nodes.contains(&cell_node),
+        &format!("the dock's output and cell are on the graph: {nodes:?}"),
+        &mut failures,
+    );
+    unplug(dock_out);
+    unplug(dock_in);
+    std::thread::sleep(Duration::from_secs(1));
+    settle();
+    let nodes = node_names(&pw_dump());
+    check(
+        !nodes.contains(&out_node) && !nodes.contains(&cell_node),
+        &format!("unplugged, the dock's loopbacks went: {nodes:?}"),
+        &mut failures,
+    );
+    // Plugged in again: both come back by themselves.
+    plug(dock_out, "Audio/Sink");
+    plug(dock_in, "Audio/Source");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let back = |nodes: &[String]| nodes.contains(&out_node) && nodes.contains(&cell_node);
+    while !back(&node_names(&pw_dump())) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let nodes = node_names(&pw_dump());
+    check(
+        back(&nodes),
+        &format!("plugged in again, the dock's output and cell came back: {nodes:?}"),
+        &mut failures,
+    );
+    // Unplugged again, then what crashed the mixer: its output switched
+    // off, its row removed, each over a loopback that went by itself.
+    unplug(dock_out);
+    unplug(dock_in);
+    std::thread::sleep(Duration::from_millis(500));
+    engine
+        .send(Command::SetOutputEnabled {
+            id: dock_mix,
+            index: 0,
+            enabled: false,
+        })
+        .unwrap();
+    engine.send(Command::RemoveSource(dock_row)).unwrap();
+    engine.send(Command::RemoveMix(dock_mix)).unwrap();
+    let state = wait_state(&rx, "the dock's mix and row gone", |s| {
+        s.mixes.is_empty() && s.sources.iter().all(|row| row.id != dock_row)
+    });
+    check(
+        state.mixes.is_empty(),
+        "switching off and removing what went with the dock leaves the mixer running",
+        &mut failures,
+    );
 
     // A mixer imported from a file takes this one's place, cells and all;
     // exported, it comes out as the file had it.

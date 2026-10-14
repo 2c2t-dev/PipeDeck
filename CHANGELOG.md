@@ -6,6 +6,13 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Pipedeck crashed when a device it played to or read from went away, a
+  dock unplugged or a USB card waking up again, then a mix's output was
+  switched off or a channel removed. The loopbacks that went with the
+  device are now made again once it is back.
+
 ## [0.2.1] - 2026-10-11
 
 ### Changed
