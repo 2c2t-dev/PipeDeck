@@ -236,6 +236,33 @@ fn record_peak(serial: i64, seconds: u32, into: &std::path::Path) -> f32 {
         .fold(0.0f32, f32::max)
 }
 
+/// The quantum the graph a node is in runs at now, as `pw-top` says it:
+/// its driver's, the line above the node's followers.
+fn graph_quantum(name: &str) -> Option<u32> {
+    let out = Process::new("pw-top")
+        .args(["-b", "-n", "3"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let block = text.split("S   ID").last()?;
+    let mut driver_quantum = None;
+    for line in block.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let follower = fields.contains(&"+");
+        if !follower && fields.len() > 3 {
+            driver_quantum = fields[2].parse().ok();
+        }
+        if fields.last() == Some(&name) {
+            return if follower {
+                driver_quantum
+            } else {
+                fields.get(2)?.parse().ok()
+            };
+        }
+    }
+    None
+}
+
 /// Plug a device in, as a dock is: a node that stays on the graph until it
 /// is unplugged.
 fn plug(name: &str, class: &str) {
@@ -2350,6 +2377,7 @@ fn main() -> ExitCode {
     let state = wait_state(&rx, "the dock's row", |s| {
         s.sources.iter().any(|row| row.name == "Dock")
     });
+    let dock_latency = state.latency.clone();
     let dock_row = state
         .sources
         .iter()
@@ -2396,6 +2424,26 @@ fn main() -> ExitCode {
             .iter()
             .any(|node| node["id"].as_i64() == Some(id))
     };
+    // An application asking for a smaller quantum, as a call does, does
+    // not change the graph's: every card would resync as it changed.
+    let mut eager = Process::new("pw-play")
+        .arg("--latency=256")
+        .arg(format!("--target={dock_out}"))
+        .arg(&tone)
+        .spawn()
+        .expect("pw-play must be installed");
+    std::thread::sleep(Duration::from_millis(800));
+    let held = graph_quantum(&format!("pipedeck-smoke.mix.{dock_mix}"));
+    let _ = eager.kill();
+    let _ = eager.wait();
+    let asked: Option<u32> = dock_latency.split('/').next().and_then(|f| f.parse().ok());
+    check(
+        held.is_some() && held == asked,
+        &format!(
+            "a stream asking for 256 leaves the mixer's quantum as set: {held:?}, set {dock_latency}"
+        ),
+        &mut failures,
+    );
     let drivers = (driver_of(dock_out), driver_of(dock_in));
     check(
         matches!(drivers, (Some(a), Some(b)) if ours(a) && ours(b)),

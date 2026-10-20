@@ -83,7 +83,7 @@ pub struct LoopbackSpec {
 /// the string "false", otherwise the volume and target restore silently come
 /// back and fight the user's faders.
 fn common(name: String, latency: &str) -> Vec<(&'static str, Val)> {
-    vec![
+    let mut props = vec![
         ("node.name", Val::from(name)),
         ("pipedeck.instance", Val::from(crate::pw::instance())),
         ("audio.position", Val::Raw(AUDIO_POSITION.into())),
@@ -91,7 +91,21 @@ fn common(name: String, latency: &str) -> Vec<(&'static str, Val)> {
         ("node.dont-reconnect", Val::from(true)),
         ("state.restore-props", Val::from(false)),
         ("state.restore-target", Val::from(false)),
-    ]
+    ];
+    // The quantum asked for, held whatever else plays. Asked for alone, it
+    // is the smallest of everyone's: an application starting with a smaller
+    // one, a call's 480 rounded down to 256, changes the whole graph's, and
+    // every card filling and draining at the old pace resyncs, which is
+    // heard as a burst of crackling.
+    if let Some(frames) = quantum(latency) {
+        props.push(("node.force-quantum", Val::Raw(frames.to_string())));
+    }
+    props
+}
+
+/// The frames of a quantum written as `frames/rate`.
+fn quantum(latency: &str) -> Option<u32> {
+    latency.split('/').next()?.trim().parse().ok()
 }
 
 /// The capture side is classed like WirePlumber's own loopbacks so that
@@ -218,6 +232,16 @@ mod tests {
         assert!(args.contains("node.description = \"Pipedeck: Ga\\\"me to Stream Mix\""));
         assert_eq!(args.matches("state.restore-props = false").count(), 2);
         assert!(args.ends_with("} }"));
+    }
+
+    #[test]
+    fn the_quantum_asked_for_is_held() {
+        let source = SourceConfig::virtual_sink(SourceId(3), "Game");
+        let args = LoopbackSpec::for_link(&source, &mix(), "1024/48000").to_args();
+        // On both sides of the loopback.
+        assert_eq!(args.matches("node.force-quantum = 1024").count(), 2);
+        assert_eq!(quantum("512/48000"), Some(512));
+        assert_eq!(quantum("nonsense"), None);
     }
 
     #[test]

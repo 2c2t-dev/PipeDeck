@@ -15,6 +15,10 @@ follow [Semantic Versioning](https://semver.org/).
 - Crackling on one card while another, a dock's USB audio, fed the same
   mix: the card with the wandering clock kept time for the whole chain.
   Pipedeck's own nodes keep time now, and every card follows them.
+- Bursts of crackling as an application started or stopped playing, a
+  call's above all: its smaller quantum became the whole graph's, and the
+  cards resynced at each change. Pipedeck holds the quantum set in its
+  settings.
 
 ## [0.2.1] - 2026-10-11
 
