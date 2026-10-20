@@ -74,13 +74,17 @@ fn wanted(sounds: &[SoundConfig]) -> Vec<(String, String)> {
 /// shortcuts under. On the session bus GTK and the application share, and
 /// before anything else asks the portal anything on it, as the portal takes
 /// the name only then.
-pub fn register_with_portal(app_id: &str) {
+///
+/// The connection comes back, to be held for as long as the application
+/// runs: the bus is shared only while someone holds it, and let go now, it
+/// would be closed, and the application would open a new one, which the
+/// portal knows nothing of.
+#[must_use]
+pub fn register_with_portal(app_id: &str) -> Option<gio::DBusConnection> {
     if crate::launcher::sandboxed() {
-        return;
+        return None;
     }
-    let Ok(connection) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
-        return;
-    };
+    let connection = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok()?;
     let registered = connection.call_sync(
         Some(PORTAL),
         PATH,
@@ -96,6 +100,7 @@ pub fn register_with_portal(app_id: &str) {
         // Started by the desktop, the portal knows it already.
         log::debug!("not registered with the portal: {e}");
     }
+    Some(connection)
 }
 
 /// Reach the portal, and hear the shortcuts pressed from then on. None

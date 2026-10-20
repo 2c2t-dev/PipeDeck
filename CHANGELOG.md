@@ -19,6 +19,9 @@ follow [Semantic Versioning](https://semver.org/).
   call's above all: its smaller quantum became the whole graph's, and the
   cards resynced at each change. Pipedeck holds the quantum set in its
   settings.
+- The soundboard's keyboard shortcuts were refused when Pipedeck was
+  started from a terminal: the connection it told the portal its name on
+  was closed before the shortcuts were asked for on another.
 
 ## [0.2.1] - 2026-10-11
 
