@@ -12,9 +12,6 @@ follow [Semantic Versioning](https://semver.org/).
   dock unplugged or a USB card waking up again, then a mix's output was
   switched off or a channel removed. The loopbacks that went with the
   device are now made again once it is back.
-- Crackling on one card while another, a dock's USB audio, fed the same
-  mix: the card with the wandering clock kept time for the whole chain.
-  Pipedeck's own nodes keep time now, and every card follows them.
 - Bursts of crackling as an application started or stopped playing, a
   call's above all: its smaller quantum became the whole graph's, and the
   cards resynced at each change. Pipedeck holds the quantum set in its

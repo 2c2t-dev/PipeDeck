@@ -2405,25 +2405,7 @@ fn main() -> ExitCode {
         &format!("the dock's output and cell are on the graph: {nodes:?}"),
         &mut failures,
     );
-    // A card's clock, the dock's, does not run the chain from one card to
-    // the other: the mixer's does, and both cards follow it. A card that
-    // wanders then has no other one resync over and over.
     std::thread::sleep(Duration::from_millis(500));
-    let dump = pw_dump();
-    let driver_of = |name: &str| {
-        dump.iter()
-            .filter(|o| o["type"].as_str().is_some_and(|t| t.ends_with("Node")))
-            .find(|o| props(o)["node.name"].as_str() == Some(name))
-            .and_then(|node| {
-                let id = &props(node)["node.driver-id"];
-                id.as_i64().or_else(|| id.as_str()?.parse().ok())
-            })
-    };
-    let ours = |id: i64| {
-        our_nodes(&dump)
-            .iter()
-            .any(|node| node["id"].as_i64() == Some(id))
-    };
     // An application asking for a smaller quantum, as a call does, does
     // not change the graph's: every card would resync as it changed.
     let mut eager = Process::new("pw-play")
@@ -2444,12 +2426,7 @@ fn main() -> ExitCode {
         ),
         &mut failures,
     );
-    let drivers = (driver_of(dock_out), driver_of(dock_in));
-    check(
-        matches!(drivers, (Some(a), Some(b)) if ours(a) && ours(b)),
-        &format!("the mixer keeps time for the dock's devices, not the other way: {drivers:?}"),
-        &mut failures,
-    );
+
     unplug(dock_out);
     unplug(dock_in);
     std::thread::sleep(Duration::from_secs(1));
