@@ -1169,6 +1169,30 @@ fn main() -> ExitCode {
                 &format!("the tone comes out of all four: {:.3}", heard.0),
                 &mut failures,
             );
+            // The chain's two streams keep the same time as the channel and
+            // the mix: on two clocks, the ring between them runs dry or over
+            // as they drift, which is heard as crackling.
+            let dump = pw_dump();
+            let driver_of = |name: String| {
+                our_node(&dump, &name).and_then(|node| {
+                    let id = &props(node)["node.driver-id"];
+                    id.as_i64().or_else(|| id.as_str()?.parse().ok())
+                })
+            };
+            let clocks: Vec<Option<i64>> = [
+                format!("pipedeck-smoke.vst.{source}.in"),
+                format!("pipedeck-smoke.vst.{source}.out"),
+                format!("pipedeck-smoke.src.{source}"),
+                format!("pipedeck-smoke.mix.{mix}"),
+            ]
+            .into_iter()
+            .map(driver_of)
+            .collect();
+            check(
+                clocks[0].is_some() && clocks.iter().all(|clock| *clock == clocks[0]),
+                &format!("the chain runs on the clock of its channel and its mix: {clocks:?}"),
+                &mut failures,
+            );
 
             // The compressor says what it is doing as it runs, for its window
             // to draw: the level it hears, as its threshold is compared with.

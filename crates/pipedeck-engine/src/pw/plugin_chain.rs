@@ -510,17 +510,33 @@ fn stream_properties(
     pipewire::properties::PropertiesBox,
 ) {
     let common = |name: String, description: String| {
-        properties! {
+        let mut props = properties! {
             *pipewire::keys::MEDIA_TYPE => "Audio",
             *pipewire::keys::NODE_NAME => name,
             *pipewire::keys::NODE_DESCRIPTION => description,
             "audio.position" => AUDIO_POSITION,
             *pipewire::keys::NODE_LATENCY => latency,
             *pipewire::keys::NODE_DONT_RECONNECT => "true",
+            // The two streams on one clock. Nothing links them in the
+            // graph, so each would otherwise run on whichever drives what
+            // it reads or feeds, a channel's sink keeping time apart from
+            // the card the mix plays to, and the ring between them would run
+            // dry or over as the two drifted: crackling, on every channel
+            // with an effect.
+            "node.group" => node,
             "pipedeck.instance" => super::instance(),
             "state.restore-props" => "false",
             "state.restore-target" => "false",
+        };
+        // The quantum set, held as the loopbacks hold it.
+        if let Some(frames) = latency
+            .split('/')
+            .next()
+            .filter(|f| f.parse::<u32>().is_ok())
+        {
+            props.insert("node.force-quantum", frames);
         }
+        props
     };
 
     let mut capture_props = common(

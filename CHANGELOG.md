@@ -16,6 +16,10 @@ follow [Semantic Versioning](https://semver.org/).
   call's above all: its smaller quantum became the whole graph's, and the
   cards resynced at each change. Pipedeck holds the quantum set in its
   settings.
+- Crackling on every channel with an effect, Stereo Tool or not: the two
+  streams around the effects ran on two clocks, the channel's and the
+  mix's, and the buffer between them ran dry or over as they drifted.
+  They share one clock now.
 - The soundboard's keyboard shortcuts were refused when Pipedeck was
   started from a terminal: the connection it told the portal its name on
   was closed before the shortcuts were asked for on another.
