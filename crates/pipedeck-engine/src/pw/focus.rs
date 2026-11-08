@@ -73,12 +73,22 @@ pub(super) fn focused<'a>(
     playing
         .into_iter()
         .find(|(app, _)| {
-            let (key, name) = (app.key.to_lowercase(), app.name.to_lowercase());
-            let base = key.rsplit('/').next().unwrap_or(&key).to_owned();
-            (!class.is_empty() && (class == key || class == name || class == base))
-                || comm
-                    .as_deref()
-                    .is_some_and(|comm| comm == base || comm == name)
+            let name = app.name.to_lowercase();
+            if (!class.is_empty() && class == name) || comm.as_deref() == Some(name.as_str()) {
+                return true;
+            }
+            // A portal id can replace the executable as the canonical key.
+            // Keep window classes and host commands matching its older keys.
+            std::iter::once(&app.key)
+                .chain(app.aliases.iter())
+                .any(|key| {
+                    let key = key.to_lowercase();
+                    let base = key.rsplit('/').next().unwrap_or(&key);
+                    (!class.is_empty() && (class == key || class == base))
+                        || comm
+                            .as_deref()
+                            .is_some_and(|comm| comm == key || comm == base)
+                })
         })
         .map(|(app, _)| app.clone())
 }
@@ -117,6 +127,7 @@ mod tests {
     fn app(key: &str, name: &str) -> App {
         App {
             key: key.into(),
+            aliases: vec![],
             name: name.into(),
             icon: None,
         }
@@ -156,6 +167,43 @@ mod tests {
             class: "org.kde.dolphin".into(),
         };
         assert_eq!(focused(&focus, [(&app("spotify", "Spotify"), None)]), None);
+    }
+
+    #[test]
+    fn flatpak_focus_falls_back_to_binary_aliases() {
+        for alias in ["msedge", "/app/bin/msedge"] {
+            let mut edge = app("com.microsoft.Edge", "Microsoft Edge");
+            edge.aliases = vec![alias.into()];
+            let focus = Focus {
+                pid: u32::MAX,
+                class: "MsEdGe".into(),
+            };
+            assert_eq!(focused(&focus, [(&edge, None)]), Some(edge.clone()));
+            let unrelated = Focus {
+                pid: u32::MAX,
+                class: "org.kde.dolphin".into(),
+            };
+            assert_eq!(focused(&unrelated, [(&edge, None)]), None);
+        }
+    }
+
+    #[test]
+    fn process_command_aliases_work_without_overriding_pid_matches() {
+        let me = std::process::id();
+        let mut edge = app("com.microsoft.Edge", "Microsoft Edge");
+        edge.aliases = vec![command(me).unwrap().to_uppercase()];
+        let focus = Focus {
+            pid: me,
+            class: "unrelated-window-class".into(),
+        };
+        // No stream pid: only the host process command can identify the app.
+        assert_eq!(focused(&focus, [(&edge, None)]), Some(edge.clone()));
+        let spotify = app("spotify", "Spotify");
+        // A known stream pid takes precedence over another app's alias.
+        assert_eq!(
+            focused(&focus, [(&edge, None), (&spotify, Some(me))]),
+            Some(spotify)
+        );
     }
 
     #[test]

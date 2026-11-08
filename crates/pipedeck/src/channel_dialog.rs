@@ -54,7 +54,7 @@ pub struct ChannelDialog {
     gone: Rc<StdCell<bool>>,
     /// The applications drawn, and the ones playing the picker was made
     /// with: drawn again only when these change, not under the pointer.
-    drawn_apps: RefCell<Option<(Vec<String>, Vec<String>)>>,
+    drawn_apps: RefCell<Option<(Vec<String>, Vec<App>)>>,
     /// The people of past calls on the row carrying them, each with a way
     /// to forget them, and who was drawn there.
     past: gtk::Box,
@@ -434,7 +434,7 @@ impl ChannelDialog {
         // Drawn again only when what is assigned or what plays changed: an
         // application starting anywhere says so, and the list and its
         // picker made again each time would close the picker as it is used.
-        let playing: Vec<String> = running.iter().map(|app| app.key.clone()).collect();
+        let playing = running.to_vec();
         let now = (source.apps.clone(), playing);
         if self.drawn_apps.borrow().as_ref() == Some(&now) {
             self.syncing.set(false);
@@ -457,7 +457,7 @@ impl ChannelDialog {
         for key in &source.apps {
             // An assigned application that is not playing right now is still
             // listed, since the assignment is what outlives the stream.
-            let row = self.app_row(key, running.iter().find(|app| &app.key == key));
+            let row = self.app_row(key, running.iter().find(|app| app.matches(key)));
             self.apps.append(&row);
         }
 
@@ -592,7 +592,14 @@ impl ChannelDialog {
         // rebuilds the list.
         let mut rows: Vec<(String, gtk::Widget)> = Vec::new();
 
-        let held = |key: &str| source.apps.iter().any(|app| app == key);
+        let held = |key: &str| {
+            source.apps.iter().any(|assigned| {
+                assigned == key
+                    || running
+                        .iter()
+                        .any(|app| app.matches(key) && app.matches(assigned))
+            })
+        };
         let playing: Vec<&App> = running.iter().filter(|app| !held(&app.key)).collect();
         if !playing.is_empty() {
             rows.push((String::new(), section("Playing now")));
@@ -607,7 +614,7 @@ impl ChannelDialog {
         let installed: Vec<&DesktopApp> = self
             .installed
             .iter()
-            .filter(|app| !held(&app.key) && !running.iter().any(|r| r.key == app.key))
+            .filter(|app| !held(&app.key) && !running.iter().any(|r| r.matches(&app.key)))
             .collect();
         if !installed.is_empty() {
             rows.push((String::new(), section("Installed")));
@@ -698,4 +705,68 @@ fn section(label: &str) -> gtk::Widget {
     heading.set_margin_top(6);
     heading.set_margin_start(6);
     heading.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires a GTK display; run on the Broadway backend"]
+    fn legacy_assignments_follow_late_identity() {
+        adw::init().expect("GTK display available");
+        let app = adw::Application::builder()
+            .application_id("dev._2c2t.PipedeckAliasTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let parent = adw::ApplicationWindow::builder().application(&app).build();
+        let path =
+            std::env::temp_dir().join(format!("pipedeck-alias-ui-{}.toml", std::process::id()));
+        let engine = EngineLink::new(pipedeck_engine::spawn(path, |_| {}));
+        fn labels(root: &gtk::Widget) -> Vec<String> {
+            let mut text = Vec::new();
+            if let Some(label) = root.downcast_ref::<gtk::Label>() {
+                text.push(label.text().to_string());
+            }
+            let mut child = root.first_child();
+            while let Some(widget) = child {
+                text.extend(labels(&widget));
+                child = widget.next_sibling();
+            }
+            text
+        }
+        let mut source = SourceConfig::virtual_sink(SourceId(99), "Legacy music");
+        source.apps = vec!["Spotify".into()];
+        let mut running = vec![App {
+            key: "com.spotify.Client".into(),
+            aliases: vec![],
+            name: "Spotify".into(),
+            icon: None,
+        }];
+        let dialog = ChannelDialog::present(
+            &parent,
+            &engine,
+            &source,
+            &[],
+            &running,
+            &[],
+            &Status::Absent,
+        );
+        assert!(labels(dialog.apps.upcast_ref())
+            .iter()
+            .any(|text| text == "Not running"));
+        // The canonical key remains the same when late client aliases arrive.
+        running[0].aliases = vec!["Spotify".into(), "spotify".into()];
+        dialog.refresh(&source, &[], &running, &[], &Status::Absent);
+        let text = labels(dialog.apps.upcast_ref());
+        assert!(text.iter().any(|text| text == "Playing"));
+        assert!(!text.iter().any(|text| text == "Not running"));
+        let popover = dialog.app_popover(&source, &running);
+        assert!(!labels(popover.upcast_ref())
+            .iter()
+            .any(|text| text == "Playing now" || text == "Spotify"));
+        dialog.close_gone();
+        engine.shutdown();
+        parent.close();
+    }
 }

@@ -14,6 +14,7 @@
 //! Everything here belongs to this process' client connection: when the
 //! process dies, the server drops all of it. Nothing lingers.
 
+mod apps;
 pub mod args;
 pub mod filter_chain;
 mod focus;
@@ -34,6 +35,7 @@ use std::time::{Duration, Instant};
 use libspa::param::ParamType;
 use libspa::pod::Pod;
 use libspa::utils::dict::DictRef;
+use pipewire::client::{Client, ClientListener};
 use pipewire::context::ContextRc;
 use pipewire::core::CoreRc;
 use pipewire::link::Link;
@@ -54,6 +56,7 @@ use crate::types::{
 };
 use crate::vst3::Plugin;
 
+use apps::Identity;
 use filter_chain::ChainSpec;
 use loopback::{LoopbackSpec, AUDIO_POSITION, CHANNELS};
 use meter::Meter;
@@ -254,6 +257,9 @@ struct DeviceEntry {
 /// A playback stream belonging to some application.
 struct AppStream {
     app: App,
+    identity: Identity,
+    /// Retained so a client identity arriving after the node can resolve it.
+    global: GlobalObject<PropertiesBox>,
     /// The process playing it, as the application says.
     pid: Option<u32>,
     /// Sent by the application to one of our voice sinks: it is already
@@ -268,16 +274,6 @@ struct AppStream {
     /// For a stream of the call's application, the node bound to read what
     /// it was sent to, which the registry does not say.
     _watch: Option<(Node, NodeListener)>,
-}
-
-/// The key an assignment matches on: the binary when the server knows it,
-/// the application name otherwise, and the node name as a last resort.
-fn app_key(props: &DictRef) -> Option<String> {
-    props
-        .get("application.process.binary")
-        .or_else(|| props.get("application.name"))
-        .or_else(|| props.get("node.name"))
-        .map(str::to_owned)
 }
 
 /// Which of a row's hosted plug-ins the effect at `index` is: the chain
@@ -344,6 +340,10 @@ pub struct Graph {
     /// Proxies of nodes we are about to destroy. See [`Quarantine`].
     retired: Quarantine<Node>,
     devices: HashMap<u32, DeviceEntry>,
+    /// Device removals are handled on the tick: some PipeWire versions
+    /// leave their loopbacks alive, and modules cannot be dropped in a
+    /// registry callback.
+    lost_devices: Vec<DeviceEntry>,
     devices_dirty: bool,
     /// One measurement per row and per column. A cell needs none: it carries
     /// its channel's signal scaled by its own fader.
@@ -395,6 +395,11 @@ pub struct Graph {
     /// Which process each client is, as the server says. In a Flatpak,
     /// that is how this process's own clients are found.
     client_pids: HashMap<u32, String>,
+    /// Full client properties include the Flatpak portal id, which the
+    /// registry omits. Listeners only queue changes for the next tick.
+    clients: HashMap<u32, (Client, ClientListener)>,
+    client_props: HashMap<u32, PropertiesBox>,
+    client_updates: Rc<RefCell<Vec<(u32, PropertiesBox)>>>,
     /// The client that made each of the mixer's nodes, by the node's id.
     node_clients: HashMap<u32, u32>,
     /// This process as the server knows it: its own number outside a
@@ -452,6 +457,7 @@ impl Graph {
             written: HashMap::new(),
             retired: Quarantine::new(),
             devices: HashMap::new(),
+            lost_devices: Vec::new(),
             devices_dirty: false,
             plugins: crate::vst3::installed(),
             stereotool: crate::stereotool::Status::Absent,
@@ -470,6 +476,9 @@ impl Graph {
             voice_link_owner: HashMap::new(),
             own_clients: std::collections::HashSet::new(),
             client_pids: HashMap::new(),
+            clients: HashMap::new(),
+            client_props: HashMap::new(),
+            client_updates: Rc::new(RefCell::new(Vec::new())),
             node_clients: HashMap::new(),
             own_pid: flatpak_instance()
                 .is_none()
@@ -1218,7 +1227,7 @@ impl Graph {
             .map(|cfg| cfg.apps.clone())
             .unwrap_or_default();
         for key in &apps {
-            self.move_app(key, None);
+            self.reroute_app(key, Some(id));
         }
         // The voices play into the row's sink, so they go before it.
         let voices: Vec<(SourceId, String)> = self
@@ -2026,16 +2035,88 @@ impl Graph {
         }
     }
 
-    /// Keep the clients of this process, which made the nodes that are ours.
+    /// Keep ownership from the registry and bind the full application identity.
     fn remember_client(&mut self, global: &GlobalObject<&DictRef>) {
         // The server fills this in from the socket, so it cannot be claimed
         // by anyone else.
-        let Some(pid) = global.props.and_then(|p| p.get("pipewire.sec.pid")) else {
+        if let Some(props) = global.props {
+            if let Some(pid) = props.get("pipewire.sec.pid") {
+                self.client_pids.insert(global.id, pid.to_owned());
+                if self.own_pid.as_deref() == Some(pid) {
+                    self.own_clients.insert(global.id);
+                }
+            }
+            self.client_props
+                .insert(global.id, PropertiesBox::from_dict(props));
+        }
+        match self.registry.bind::<Client, _>(global) {
+            Ok(client) => {
+                let updates = self.client_updates.clone();
+                let id = global.id;
+                let listener = client
+                    .add_listener_local()
+                    .info(move |info| {
+                        if let Some(props) = info.props() {
+                            updates
+                                .borrow_mut()
+                                .push((id, PropertiesBox::from_dict(props)));
+                        }
+                    })
+                    .register();
+                self.clients.insert(id, (client, listener));
+            }
+            Err(e) => log::warn!(
+                "cannot read application identity for client {}: {e}",
+                global.id
+            ),
+        }
+    }
+
+    /// Full client info is asynchronous: resolve and reroute nodes already
+    /// announced too, rather than waiting for an application to play again.
+    fn absorb_clients(&mut self) {
+        let updates: Vec<_> = self.client_updates.borrow_mut().drain(..).collect();
+        if updates.is_empty() {
             return;
-        };
-        self.client_pids.insert(global.id, pid.to_owned());
-        if self.own_pid.as_deref() == Some(pid) {
-            self.own_clients.insert(global.id);
+        }
+        for (id, props) in updates {
+            if self.clients.contains_key(&id) {
+                self.client_props.insert(id, props);
+            }
+        }
+        let mut watches = Vec::new();
+        let mut changed = false;
+        for (id, stream) in &mut self.streams {
+            let Some(props) = stream.global.props.as_ref() else {
+                continue;
+            };
+            let client = props
+                .get("client.id")
+                .and_then(|id| id.parse::<u32>().ok())
+                .and_then(|id| self.client_props.get(&id));
+            let Some(identity) = Identity::read(props.as_ref(), client.map(AsRef::as_ref)) else {
+                continue;
+            };
+            if stream.identity == identity {
+                continue;
+            }
+            stream.app.key = identity.key.clone();
+            stream.app.aliases = identity.aliases.clone();
+            stream.identity = identity;
+            if stream.identity.matches(voice_app()) && stream._watch.is_none() {
+                watches.push((*id, stream.global.to_owned()));
+            }
+            changed = true;
+        }
+        for (id, global) in watches {
+            let watch = self.watch_stream_target(&global);
+            if let Some(stream) = self.streams.get_mut(&id) {
+                stream._watch = watch;
+            }
+        }
+        if changed {
+            self.streams_dirty = true;
+            self.reassign_apps();
         }
     }
 
@@ -2145,11 +2226,16 @@ impl Graph {
 
     /// An application playing: sent to its channel when it has one.
     fn remember_stream(&mut self, global: &GlobalObject<&DictRef>, props: &DictRef) {
-        let Some(key) = app_key(props) else {
+        let client = props
+            .get("client.id")
+            .and_then(|id| id.parse::<u32>().ok())
+            .and_then(|id| self.client_props.get(&id));
+        let Some(identity) = Identity::read(props, client.map(AsRef::as_ref)) else {
             return;
         };
         let app = App {
-            key,
+            key: identity.key.clone(),
+            aliases: identity.aliases.clone(),
             name: app_name(props),
             icon: props
                 .get("application.icon-name")
@@ -2160,12 +2246,12 @@ impl Graph {
         // theirs, and its own mix wherever the user assigned it. Which is
         // which is in the stream's own properties, which the registry leaves
         // out: the node is bound to read them before it is moved.
-        let watch = if app.key == voice_app() {
+        let watch = if identity.matches(voice_app()) {
             self.watch_stream_target(global)
         } else {
             // An application the user has assigned lands on its row's sink
             // as soon as it starts playing.
-            if let Some(source) = self.source_for_app(&app.key) {
+            if let Some(source) = identity.source(&self.config.sources) {
                 self.move_stream(global.id, &app.name, Some(source));
             }
             None
@@ -2177,6 +2263,8 @@ impl Graph {
             global.id,
             AppStream {
                 app,
+                identity,
+                global: global.to_owned(),
                 pid,
                 pinned: false,
                 voice: None,
@@ -2243,9 +2331,9 @@ impl Graph {
         for (id, stream) in &self.streams {
             if let Some(voice) = &stream.voice {
                 self.pin_stream(*id, &stream.app.name, voice);
-            } else if stream.app.key == voice_app() && !stream.placed {
+            } else if stream.identity.matches(voice_app()) && !stream.placed {
                 // Where it was sent is not known yet; it is placed then.
-            } else if let Some(source) = self.source_for_app(&stream.app.key) {
+            } else if let Some(source) = stream.identity.source(&self.config.sources) {
                 self.move_stream(*id, &stream.app.name, Some(source));
             }
         }
@@ -2261,7 +2349,7 @@ impl Graph {
         };
         let mut any = false;
         for (id, stream) in &self.streams {
-            if stream.voice.is_some() || self.source_for_app(&stream.app.key).is_some() {
+            if stream.voice.is_some() || stream.identity.source(&self.config.sources).is_some() {
                 metadata.set_property(*id, "target.object", None, None);
                 any = true;
             }
@@ -2399,6 +2487,11 @@ impl Graph {
     pub fn on_global_remove(&mut self, global_id: u32) {
         self.own_clients.remove(&global_id);
         self.client_pids.remove(&global_id);
+        self.clients.remove(&global_id);
+        self.client_props.remove(&global_id);
+        self.client_updates
+            .borrow_mut()
+            .retain(|(id, _)| *id != global_id);
         self.node_clients.remove(&global_id);
         self.waiting_stages
             .retain(|(_, global)| global.id != global_id);
@@ -2443,7 +2536,8 @@ impl Graph {
             }
         }
         self.ports.remove(&global_id);
-        if self.devices.remove(&global_id).is_some() {
+        if let Some(device) = self.devices.remove(&global_id) {
+            self.lost_devices.push(device);
             self.devices_dirty = true;
         }
         if self.streams.remove(&global_id).is_some() {
@@ -2472,6 +2566,12 @@ impl Graph {
             .iter()
             .find(|source| source.apps.iter().any(|app| app == key))
             .map(|source| source.id)
+            .or_else(|| {
+                self.streams
+                    .values()
+                    .find(|stream| stream.identity.matches(key))
+                    .and_then(|stream| stream.identity.source(&self.config.sources))
+            })
     }
 
     /// Point a stream at a row's sink, the way a session manager does it.
@@ -2502,9 +2602,21 @@ impl Graph {
     /// Move every running stream of an application, or release them.
     fn move_app(&self, key: &str, source: Option<SourceId>) {
         for (id, stream) in self.streams.iter().filter(|(_, s)| !s.pinned) {
-            if stream.app.key == key {
+            if stream.identity.matches(key) {
                 self.move_stream(*id, &stream.app.name, source);
             }
+        }
+    }
+
+    /// Removing one spelling or row need not remove another valid assignment.
+    fn reroute_app(&self, key: &str, except: Option<SourceId>) {
+        for (id, stream) in self
+            .streams
+            .iter()
+            .filter(|(_, stream)| !stream.pinned && stream.identity.matches(key))
+        {
+            let source = stream.identity.source_except(&self.config.sources, except);
+            self.move_stream(*id, &stream.app.name, source);
         }
     }
 
@@ -2513,8 +2625,16 @@ impl Graph {
         if self.config.source(id).is_none() {
             return Err(EngineError::UnknownSource(id));
         }
+        let identities: Vec<_> = self
+            .streams
+            .values()
+            .filter(|stream| stream.identity.matches(&key))
+            .map(|stream| &stream.identity)
+            .collect();
         for source in &mut self.config.sources {
-            source.apps.retain(|app| app != &key);
+            source.apps.retain(|app| {
+                app != &key && !identities.iter().any(|identity| identity.matches(app))
+            });
         }
         let source = self
             .config
@@ -2534,7 +2654,7 @@ impl Graph {
             .ok_or(EngineError::UnknownSource(id))?;
         source.apps.retain(|app| app != key);
         self.dirty = true;
-        self.move_app(key, None);
+        self.reroute_app(key, None);
         self.sync_voices();
         Ok(())
     }
@@ -2543,7 +2663,13 @@ impl Graph {
     fn app_list(&self) -> Vec<App> {
         let mut apps: Vec<App> = Vec::new();
         for stream in self.streams.values() {
-            if !apps.iter().any(|app| app.key == stream.app.key) {
+            if let Some(app) = apps.iter_mut().find(|app| app.key == stream.app.key) {
+                for alias in &stream.app.aliases {
+                    if !app.aliases.contains(alias) {
+                        app.aliases.push(alias.clone());
+                    }
+                }
+            } else {
                 apps.push(stream.app.clone());
             }
         }
@@ -2674,6 +2800,7 @@ impl Graph {
     /// Periodic housekeeping from the engine timer: debounced config saves
     /// and device list updates.
     pub fn tick(&mut self) {
+        self.absorb_clients();
         self.mend_stages();
         self.tend_sounds();
         self.hook_up_links();
@@ -2703,15 +2830,24 @@ impl Graph {
 impl Graph {
     // --- loopbacks that went ------------------------------------------------
 
-    /// Take off the cells and outputs whose loopback destroyed itself, as a
-    /// loopback does when its device goes, and make them again once the
-    /// device is back: a dock unplugged and plugged in again, a card that
-    /// went to sleep.
+    /// Take off the cells and outputs whose device went, whether or not
+    /// PipeWire destroyed their loopbacks, and make them again once the
+    /// device is back. Queued registry removals also cover a device replaced
+    /// by one with the same name between two ticks.
     fn mend_stages(&mut self) {
+        let lost = std::mem::take(&mut self.lost_devices);
         let fallen: Vec<(SourceId, MixId)> = self
             .links
             .iter()
-            .filter(|(_, stage)| stage._module.is_gone())
+            .filter(|(cell, stage)| {
+                stage._module.is_gone()
+                    || self.config.source(cell.0).is_some_and(|source| {
+                        source.device.as_ref().is_some_and(|name| {
+                            lost.iter()
+                                .any(|device| !device.is_output && device.device.name == *name)
+                        })
+                    })
+            })
             .map(|(cell, _)| *cell)
             .collect();
         for cell in fallen {
@@ -2723,6 +2859,8 @@ impl Graph {
             self.drop_link(cell);
             self.fallen_cells.insert(cell, Instant::now());
         }
+        let config = &self.config;
+        let lost = &lost;
         let fallen: Vec<(MixId, usize)> = self
             .mixes
             .iter()
@@ -2730,7 +2868,19 @@ impl Graph {
                 mix.outputs
                     .iter()
                     .enumerate()
-                    .filter(|(_, stage)| stage.as_ref().is_some_and(|s| s._module.is_gone()))
+                    .filter(move |(index, stage)| {
+                        stage.as_ref().is_some_and(|stage| {
+                            stage._module.is_gone()
+                                || config
+                                    .mix(*id)
+                                    .and_then(|mix| mix.outputs.get(*index))
+                                    .is_some_and(|output| {
+                                        lost.iter().any(|device| {
+                                            device.is_output && device.device.name == output.device
+                                        })
+                                    })
+                        })
+                    })
                     .map(move |(index, _)| (*id, index))
             })
             .collect();
@@ -2821,6 +2971,13 @@ impl Graph {
         let Some(cfg) = self.config.source(id) else {
             return false;
         };
+        if cfg
+            .device
+            .as_ref()
+            .is_some_and(|device| !self.device_present(device, false))
+        {
+            return false;
+        }
         let (target, from_sink) = channel_output(cfg);
         if from_sink && (target.starts_with(NODE_PREFIX) || target.starts_with(node_prefix())) {
             self.sink_ids.contains_key(&target)

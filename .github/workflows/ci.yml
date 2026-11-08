@@ -52,6 +52,23 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+      - name: GTK application identity
+        run: |
+          export XDG_RUNTIME_DIR=$(mktemp -d)
+          export XDG_CONFIG_HOME=$(mktemp -d)
+          export GDK_BACKEND=broadway BROADWAY_DISPLAY=:5
+          export PIPEWIRE_REMOTE=pipedeck-ui-no-server
+          gtk4-broadwayd :5 > /tmp/pipedeck-broadway.log 2>&1 &
+          broadway_pid=$!
+          trap 'kill "$broadway_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 50); do
+            [ -S "$XDG_RUNTIME_DIR/broadway6.socket" ] && break
+            sleep 0.1
+          done
+          dbus-run-session cargo test -p pipedeck --bin pipedeck \
+            channel_dialog::tests::legacy_assignments_follow_late_identity \
+            -- --ignored --test-threads=1
+
       # What software centres read of Pipedeck, as they read it.
       - name: Software centre listing
         run: appstreamcli validate --no-net crates/pipedeck/data/dev._2c2t.Pipedeck.metainfo.xml

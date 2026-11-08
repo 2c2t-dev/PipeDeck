@@ -4,6 +4,7 @@
 //! the mix to a real device, then tears everything down and checks that no
 //! Pipedeck node is left behind. Run with
 //! `cargo run -p pipedeck-engine --example smoke` (needs a running PipeWire).
+//! Pass `-- --routing-regressions` to run only overlapping-alias cases.
 
 use std::process::{Command as Process, ExitCode};
 use std::sync::mpsc;
@@ -421,7 +422,212 @@ const PREFIX: &str = "pipedeck-smoke";
 /// nor the user's moved by this one.
 const VOICE_APP: &str = "pipedeck-smoke-vesktop";
 
+/// A silent application with identity on its client, as Flatpak supplies
+/// it. Keeping it off the node reproduces the installed-app routing bug.
+fn identity_player(args: &[String]) -> Result<(), pipewire::Error> {
+    use libspa::param::audio::{AudioFormat, AudioInfoRaw, MAX_CHANNELS};
+    use libspa::pod::{serialize::PodSerializer, Object, Pod, Value};
+    use libspa::utils::{Direction, SpaTypes};
+    use pipewire::properties::properties;
+    use pipewire::stream::{StreamBox, StreamFlags};
+
+    pipewire::init();
+    let mainloop = pipewire::main_loop::MainLoopRc::new(None)?;
+    let context = pipewire::context::ContextRc::new(&mainloop, None)?;
+    let core = context.connect_rc(Some(properties! {
+        "pipewire.access.portal.app_id" => args[0].as_str(),
+        "application.name" => args[1].as_str(),
+        "application.process.binary" => args[2].as_str(),
+    }))?;
+    let stream = StreamBox::new(
+        &core,
+        "identity-player",
+        properties! {
+            "media.type" => "Audio",
+            "media.category" => "Playback",
+            "media.role" => "Music",
+            "application.name" => args[1].as_str(),
+            "application.process.binary" => args[2].as_str(),
+            "node.name" => args[3].as_str(),
+        },
+    )?;
+    let _listener = stream
+        .add_local_listener_with_user_data(())
+        .process(|stream, _| {
+            let Some(mut buffer) = stream.dequeue_buffer() else {
+                return;
+            };
+            let Some(data) = buffer.datas_mut().first_mut() else {
+                return;
+            };
+            let size = data
+                .data()
+                .map(|bytes| {
+                    bytes.fill(0);
+                    bytes.len()
+                })
+                .unwrap_or(0);
+            let chunk = data.chunk_mut();
+            *chunk.offset_mut() = 0;
+            *chunk.stride_mut() = 4;
+            *chunk.size_mut() = size as u32;
+        })
+        .register()?;
+    let mut audio = AudioInfoRaw::new();
+    audio.set_format(AudioFormat::S16LE);
+    audio.set_rate(48_000);
+    audio.set_channels(2);
+    let mut position = [0; MAX_CHANNELS];
+    position[0] = libspa::sys::SPA_AUDIO_CHANNEL_FL;
+    position[1] = libspa::sys::SPA_AUDIO_CHANNEL_FR;
+    audio.set_position(position);
+    let bytes = PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &Value::Object(Object {
+            type_: SpaTypes::ObjectParamFormat.as_raw(),
+            id: libspa::param::ParamType::EnumFormat.as_raw(),
+            properties: audio.into(),
+        }),
+    )
+    .unwrap()
+    .0
+    .into_inner();
+    stream.connect(
+        Direction::Output,
+        None,
+        StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS,
+        &mut [Pod::from_bytes(&bytes).unwrap()],
+    )?;
+    mainloop.run();
+    Ok(())
+}
+
+/// Overlapping app identities must preserve whichever assignment remains.
+fn assignment_regressions(
+    engine: &pipedeck_engine::EngineHandle,
+    rx: &mpsc::Receiver<Event>,
+    dir: &std::path::Path,
+    failures: &mut u32,
+) {
+    std::fs::create_dir_all(dir).unwrap();
+    let fixture = dir.join("routing-regressions.toml");
+    std::fs::write(
+        &fixture,
+        r#"
+latency = "512/48000"
+[[mix]]
+id = 101
+name = "Routing test"
+[[source]]
+id = 101
+name = "Legacy assignment"
+apps = ["Spotify"]
+[[source]]
+id = 102
+name = "Canonical assignment"
+apps = ["com.spotify.Client"]
+"#,
+    )
+    .unwrap();
+    let reload = || {
+        drain(rx);
+        engine.send(Command::ImportConfig(fixture.clone())).unwrap();
+        wait_state(rx, "review fixture imported", |s| {
+            s.sources.iter().any(|source| source.id == SourceId(102))
+        });
+        settle();
+    };
+    reload();
+    let mut player = Process::new(std::env::current_exe().unwrap())
+        .args([
+            "--identity-player",
+            "com.spotify.Client",
+            "Spotify",
+            "spotify",
+            "review-alias-player",
+        ])
+        .spawn()
+        .unwrap();
+    let apps = wait_for(
+        rx,
+        "canonical identity and legacy aliases",
+        |event| matches!(event, Event::Apps { running } if running.iter().any(|app| app.key == "com.spotify.Client" && app.matches("Spotify"))),
+    );
+    check(
+        matches!(apps, Event::Apps { running } if running.iter().any(|app| app.matches("Spotify") && app.matches("spotify"))),
+        "the UI receives legacy aliases with the canonical app key",
+        failures,
+    );
+    let routed = |row: u32| {
+        let dump = pw_dump();
+        any_node_id(&dump, "review-alias-player")
+            .zip(node_id(&dump, &format!("pipedeck-smoke.src.{row}")))
+            .is_some_and(|pair| links(&dump).contains(&pair))
+    };
+    settle();
+    check(
+        routed(102),
+        "the canonical assignment takes precedence",
+        failures,
+    );
+    engine
+        .send(Command::ReleaseApp {
+            id: SourceId(101),
+            app: "Spotify".into(),
+        })
+        .unwrap();
+    settle();
+    check(
+        routed(102),
+        "releasing a legacy alias preserves the canonical route",
+        failures,
+    );
+    reload();
+    engine
+        .send(Command::ReleaseApp {
+            id: SourceId(102),
+            app: "com.spotify.Client".into(),
+        })
+        .unwrap();
+    settle();
+    check(
+        routed(101),
+        "releasing the canonical id falls back to the remaining legacy route",
+        failures,
+    );
+    engine
+        .send(Command::ReleaseApp {
+            id: SourceId(101),
+            app: "Spotify".into(),
+        })
+        .unwrap();
+    settle();
+    check(
+        !routed(101) && !routed(102),
+        "removing the last alias releases the stream",
+        failures,
+    );
+    reload();
+    engine.send(Command::RemoveSource(SourceId(101))).unwrap();
+    wait_state(rx, "legacy row removed", |s| {
+        s.sources.iter().all(|source| source.id != SourceId(101))
+    });
+    settle();
+    check(
+        routed(102),
+        "removing a legacy row preserves the canonical route",
+        failures,
+    );
+    let _ = player.kill();
+    let _ = player.wait();
+}
+
 fn main() -> ExitCode {
+    let args: Vec<_> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--identity-player") {
+        identity_player(&args[2..]).expect("the silent identity player runs");
+        return ExitCode::SUCCESS;
+    }
     std::env::set_var("PIPEDECK_NODE_PREFIX", PREFIX);
     std::env::set_var("PIPEDECK_VOICE_APP", VOICE_APP);
     // A control socket of its own, beside the user's mixer's.
@@ -448,6 +654,21 @@ fn main() -> ExitCode {
 
     // A fresh config starts with one mix and no source.
     let state = wait_state(&rx, "initial state", |_| true);
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--routing-regressions")
+    {
+        assignment_regressions(&engine, &rx, &dir, &mut failures);
+        engine.shutdown();
+        wait_for(&rx, "Stopped", |event| matches!(event, Event::Stopped));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&control_dir);
+        return if failures == 0 {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
     let mix: MixId = state.mixes.first().expect("one mix by default").id;
     // The first Devices event is empty: the registry has not replied yet, and
     // the real list follows on the next housekeeping tick.
@@ -898,6 +1119,90 @@ fn main() -> ExitCode {
     );
     let _ = player.kill();
     let _ = player.wait();
+
+    // Installed Flatpak entries are assigned by id, while registry nodes
+    // may only give a name or binary. The id is in the full client info.
+    // Exercise both an assignment made before playback and one made after.
+    for (suffix, name, binary, before) in [
+        ("Spotify", "Spotify", "spotify", true),
+        ("Browser", "Microsoft Edge", "msedge", false),
+    ] {
+        let id = format!("dev.pipedeck.Smoke{suffix}");
+        if before {
+            engine
+                .send(Command::AssignApp {
+                    id: source,
+                    app: id.clone(),
+                })
+                .unwrap();
+        }
+        let node_name = format!("identity-check-player-{suffix}");
+        let mut player = Process::new(std::env::current_exe().unwrap())
+            .args(["--identity-player", &id, name, binary, &node_name])
+            .spawn()
+            .expect("the silent identity player starts");
+        wait_for(
+            &rx,
+            "a Flatpak application's identity",
+            |event| matches!(event, Event::Apps { running } if running.iter().any(|app| app.key == id)),
+        );
+        if !before {
+            engine
+                .send(Command::AssignApp {
+                    id: source,
+                    app: id.clone(),
+                })
+                .unwrap();
+        }
+        settle();
+        let dump = pw_dump();
+        let joined = any_node_id(&dump, &node_name)
+            .zip(sink_node)
+            .is_some_and(|pair| links(&dump).contains(&pair));
+        check(
+            joined,
+            &format!("{name} routes by its Flatpak client id (assigned before playback: {before})"),
+            &mut failures,
+        );
+        if suffix == "Browser" {
+            // Sandboxed stream pids need not relate to the host window pid.
+            // OpenDeck's "In front" action must still identify the binary.
+            engine
+                .send(Command::SetFocus {
+                    pid: u32::MAX,
+                    class: "MsEdGe".into(),
+                })
+                .unwrap();
+            let focused = wait_for(
+                &rx,
+                "the focused Flatpak browser",
+                |event| matches!(event, Event::Focused { app: Some(app) } if app.key == id),
+            );
+            check(
+                matches!(focused, Event::Focused { app: Some(app) } if app.key == id && app.matches("msedge")),
+                "a window-class alias resolves the canonical Flatpak app for In front",
+                &mut failures,
+            );
+        }
+        engine
+            .send(Command::ReleaseApp {
+                id: source,
+                app: id,
+            })
+            .unwrap();
+        settle();
+        let dump = pw_dump();
+        let joined = any_node_id(&dump, &node_name)
+            .zip(sink_node)
+            .is_some_and(|pair| links(&dump).contains(&pair));
+        check(
+            !joined,
+            &format!("releasing {name}'s Flatpak id releases its stream"),
+            &mut failures,
+        );
+        let _ = player.kill();
+        let _ = player.wait();
+    }
 
     let cfg = std::fs::read_to_string(&config_path).unwrap_or_default();
     check(
@@ -2370,10 +2675,9 @@ fn main() -> ExitCode {
         s.sources.iter().all(|row| row.id != board) && s.mixes.is_empty()
     });
 
-    // A dock unplugged takes its devices away, and the loopbacks reading or
-    // playing to them destroy themselves. The mixer takes them off without
-    // destroying them again, which crashed it, and makes them again once
-    // the dock is back.
+    // A dock unplugged takes its devices away. Whether PipeWire destroys
+    // their loopbacks or leaves them running, the mixer takes them off
+    // safely and makes them again once the dock is back.
     engine.send(Command::AddMix).unwrap();
     let state = wait_state(&rx, "a mix for the dock", |s| !s.mixes.is_empty());
     let dock_mix = state.mixes[0].id;
@@ -2461,6 +2765,15 @@ fn main() -> ExitCode {
         &format!("unplugged, the dock's loopbacks went: {nodes:?}"),
         &mut failures,
     );
+    // Longer than the repair delay: an absent dock must not cause a loop
+    // of destroying and recreating streams against a device still away.
+    std::thread::sleep(Duration::from_secs(3));
+    let nodes = node_names(&pw_dump());
+    check(
+        !nodes.contains(&out_node) && !nodes.contains(&cell_node),
+        "the dock's loopbacks stay absent while its devices are away",
+        &mut failures,
+    );
     // Plugged in again: both come back by themselves.
     plug(dock_out, "Audio/Sink");
     plug(dock_in, "Audio/Source");
@@ -2473,6 +2786,29 @@ fn main() -> ExitCode {
     check(
         back(&nodes),
         &format!("plugged in again, the dock's output and cell came back: {nodes:?}"),
+        &mut failures,
+    );
+    // A quick replug may announce the replacement under the same name
+    // before the next engine tick. The old streams must still be replaced.
+    let old_output = node_serial(&pw_dump(), &out_node);
+    let old_cell = node_serial(&pw_dump(), &cell_node);
+    unplug(dock_out);
+    unplug(dock_in);
+    plug(dock_out, "Audio/Sink");
+    plug(dock_in, "Audio/Source");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let replaced = || {
+        let dump = pw_dump();
+        let output = node_serial(&dump, &out_node);
+        let cell = node_serial(&dump, &cell_node);
+        output.is_some() && cell.is_some() && output != old_output && cell != old_cell
+    };
+    while !replaced() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    check(
+        replaced(),
+        "a same-name replug replaces both dock loopbacks",
         &mut failures,
     );
     // Unplugged again, then what crashed the mixer: its output switched
@@ -2584,6 +2920,8 @@ fn main() -> ExitCode {
         "the mixer exported is the one running",
         &mut failures,
     );
+
+    assignment_regressions(&engine, &rx, &dir, &mut failures);
 
     engine.shutdown();
     wait_for(&rx, "Stopped", |e| matches!(e, Event::Stopped));

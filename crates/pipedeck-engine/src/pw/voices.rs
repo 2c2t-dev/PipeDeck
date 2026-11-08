@@ -111,9 +111,9 @@ fn meet(voices: &mut Vec<VoiceConfig>, member: &CallMember, today: u64) -> bool 
 
 impl Graph {
     /// Bind a stream to read where it was sent, and queue that for the tick.
-    pub(super) fn watch_stream_target(
+    pub(super) fn watch_stream_target<P: AsRef<DictRef>>(
         &self,
-        global: &GlobalObject<&DictRef>,
+        global: &GlobalObject<P>,
     ) -> Option<(Node, NodeListener)> {
         let node = match self.registry.bind::<Node, _>(global) {
             Ok(node) => node,
