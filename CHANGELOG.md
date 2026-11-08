@@ -8,6 +8,12 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Match Flatpak playback streams using client portal ids, retaining legacy
+  aliases for routing, focus matching, playing status and picker deduplication.
+- Preserve remaining application assignments when an alias or row is removed.
+- Explicitly retire loopbacks when dock devices disappear and restore them
+  on reconnection, including a replacement with the same name.
+
 - Pipedeck crashed when a device it played to or read from went away, a
   dock unplugged or a USB card waking up again, then a mix's output was
   switched off or a channel removed. The loopbacks that went with the

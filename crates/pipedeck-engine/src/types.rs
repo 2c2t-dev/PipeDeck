@@ -661,13 +661,22 @@ pub struct Effect {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct App {
     /// What an assignment matches on, stable across runs of the application:
-    /// its binary when the server knows it, its name otherwise.
+    /// its Flatpak id when available, otherwise its binary or name.
     pub key: String,
+    /// Older keys the same application may have been assigned under.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     /// What to show.
     pub name: String,
     /// Icon name the application advertises, if it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+}
+
+impl App {
+    pub fn matches(&self, key: &str) -> bool {
+        self.key == key || self.aliases.iter().any(|alias| alias == key)
+    }
 }
 
 /// An audio device the user can attach to a mix or turn into a source.
@@ -682,6 +691,22 @@ pub struct Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_aliases_match_legacy_assignments_and_old_events_still_decode() {
+        let mut app: App =
+            serde_json::from_str(r#"{"key":"com.spotify.Client","name":"Spotify"}"#).unwrap();
+        assert!(app.matches("com.spotify.Client"));
+        assert!(!app.matches("Spotify"));
+        app.aliases = vec!["Spotify".into(), "spotify".into()];
+        assert!(app.matches("Spotify"));
+        assert!(app.matches("spotify"));
+        assert!(!app.matches("Firefox"));
+        assert_eq!(
+            serde_json::from_str::<App>(&serde_json::to_string(&app).unwrap()).unwrap(),
+            app
+        );
+    }
 
     #[test]
     fn linear_volume_is_cubic_and_clamped() {

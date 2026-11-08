@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopApp {
     /// The key an assignment matches on, which must line up with what
-    /// PipeWire reports for the streams this application opens: the basename
-    /// of its executable.
+    /// PipeWire reports for the streams this application opens: its Flatpak
+    /// id, or the basename of its executable for a native application.
     pub key: String,
     pub name: String,
     /// Icon name, or an absolute path when the entry gives one.
@@ -42,8 +42,7 @@ fn entry_dirs() -> Vec<PathBuf> {
 /// Turn an `Exec=` line into the key PipeWire will report.
 ///
 /// Field codes such as `%U` are dropped, as is a leading `env VAR=value`.
-/// A Flatpak launcher runs the application from its own binary, so the
-/// application id is the closer match.
+/// Flatpak ids match the portal identity read from the PipeWire client.
 fn key_from_exec(exec: &str) -> Option<String> {
     let mut words = exec
         .split_whitespace()
