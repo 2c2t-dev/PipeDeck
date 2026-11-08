@@ -69,3 +69,20 @@ jobs:
           msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
           rustup toolchain install "$msrv" --profile minimal
           cargo "+$msrv" check --workspace --all-targets --locked
+
+      - name: GTK state synchronization
+        run: |
+          export XDG_RUNTIME_DIR=$(mktemp -d)
+          export XDG_CONFIG_HOME=$(mktemp -d)
+          export GDK_BACKEND=broadway BROADWAY_DISPLAY=:5
+          export PIPEWIRE_REMOTE=pipedeck-ui-no-server
+          gtk4-broadwayd :5 > /tmp/pipedeck-broadway.log 2>&1 &
+          broadway_pid=$!
+          trap 'kill "$broadway_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 50); do
+            [ -S "$XDG_RUNTIME_DIR/broadway6.socket" ] && break
+            sleep 0.1
+          done
+          dbus-run-session cargo test -p pipedeck --bin pipedeck \
+            window::tests::external_levels_update_visible_controls \
+            -- --ignored --test-threads=1

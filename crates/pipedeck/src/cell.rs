@@ -33,12 +33,7 @@ impl Cell {
         let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         root.append(&controls);
 
-        let mute = gtk::ToggleButton::new();
-        mute.set_icon_name("audio-volume-muted-symbolic");
-        mute.set_tooltip_text(Some("Mute"));
-        mute.add_css_class("flat");
-        mute.add_css_class("circular");
-        mute.set_active(state.muted);
+        let mute = crate::widgets::mute_button(state.muted, "Mute this channel in this mix");
         controls.append(&mute);
 
         let fader = crate::widgets::MeterFader::new(state.gain);

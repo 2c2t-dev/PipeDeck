@@ -82,6 +82,10 @@ be up to five mixes: Personal, Chat, Stream, Record and Aux.
 
 **Cells** connect a channel to a mix. A cell exists only once you press `+`
 on it, and it carries that pair's fader and mute.
+The channel and mix cards have master volume sliders and mute buttons,
+including changes made from a Stream Deck. These are separate from the levels
+in individual cells. Input masters adjust what Pipedeck sends to its mixes
+without changing the capture device's hardware volume.
 
 **The ear** on a mix card says whether you hear that mix in your
 headphones. The button in the header bar chooses which device your

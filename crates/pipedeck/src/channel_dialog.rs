@@ -29,15 +29,12 @@ pub struct ChannelDialog {
     look: gtk::Box,
     volume: gtk::Scale,
     mute: gtk::ToggleButton,
-    /// Hidden for an input row, which has no sink to trim.
+    /// Channel master, applied to the sink or to the input row's cells.
     trim: gtk::Box,
     /// What an input row captures, named the way the system names it.
     device: gtk::Label,
     /// The trim's fader, with the channel's level drawn in its track.
     fader: widgets::MeterFader,
-    /// The level alone, for a channel bound to a microphone, which has no
-    /// trim to draw it in.
-    meter: widgets::Meter,
     apps: gtk::Box,
     /// The effects tab, which a mix window has too.
     effects: Rc<EffectPanel>,
@@ -111,7 +108,6 @@ impl ChannelDialog {
             volume,
             mute,
             fader,
-            meter: widgets::Meter::new(),
             apps: gtk::Box::new(gtk::Orientation::Vertical, 8),
             effects: EffectPanel::new(engine, source.id),
             add_app,
@@ -164,24 +160,18 @@ impl ChannelDialog {
         self.look.append(&self.badge);
         left.append(&self.look);
 
-        let caption = gtk::Label::new(Some(if source.is_input() {
-            "Captured device"
-        } else {
-            "Channel volume"
-        }));
+        if source.is_input() {
+            let captured = gtk::Label::new(Some("Captured device"));
+            captured.add_css_class("dim-label");
+            captured.set_margin_top(12);
+            left.append(&captured);
+            left.append(&self.device);
+        }
+        let caption = gtk::Label::new(Some("Channel volume"));
         caption.add_css_class("dim-label");
         caption.set_margin_top(12);
         left.append(&caption);
-
-        // An input row owns no node to carry a trim, so the left pane says
-        // what it listens to instead of offering a fader.
-        if source.is_input() {
-            left.append(&self.device);
-            self.meter.root.set_margin_top(6);
-            left.append(&self.meter.root);
-        } else {
-            left.append(&self.trim);
-        }
+        left.append(&self.trim);
 
         let filler = gtk::Box::new(gtk::Orientation::Vertical, 0);
         filler.set_vexpand(true);
@@ -368,7 +358,6 @@ impl ChannelDialog {
     /// Move the meter of the object this window is about.
     pub fn set_level(&self, peak: f32) {
         self.fader.set_level(peak);
-        self.meter.set_level(peak);
     }
 
     pub fn id(&self) -> SourceId {
