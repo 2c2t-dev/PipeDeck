@@ -7,18 +7,122 @@ use libadwaita as adw;
 /// Fader travel in UI units; a gain is `value / FADER_MAX`.
 pub const FADER_MAX: f64 = 100.0;
 
+pub const LEVEL_CSS: &str = "
+    button.pd-mute:checked,
+    .pd-master.pd-muted { color: @error_color; }
+    button.pd-mute:checked { background-color: alpha(@error_color, 0.14); }
+    button.pd-mute:checked:hover { background-color: alpha(@error_color, 0.22); }
+";
+
+fn speaker_icon(muted: bool) -> &'static str {
+    if muted {
+        "audio-volume-muted-symbolic"
+    } else {
+        "audio-volume-high-symbolic"
+    }
+}
+
 pub fn mute_button(muted: bool, tooltip: &str) -> gtk::ToggleButton {
     let button = gtk::ToggleButton::new();
-    button.set_icon_name("audio-volume-muted-symbolic");
-    button.set_tooltip_text(Some(tooltip));
     button.add_css_class("flat");
     button.add_css_class("circular");
+    button.add_css_class("pd-mute");
+    let mute_tip = tooltip.to_owned();
+    let unmute_tip = tooltip
+        .strip_prefix("Mute")
+        .map(|rest| format!("Unmute{rest}"))
+        .unwrap_or_else(|| "Unmute".to_owned());
+    button.set_icon_name(speaker_icon(muted));
+    button.set_tooltip_text(Some(if muted { &unmute_tip } else { &mute_tip }));
     button.set_active(muted);
+    button.connect_toggled(move |button| {
+        button.set_icon_name(speaker_icon(button.is_active()));
+        button.set_tooltip_text(Some(if button.is_active() {
+            &unmute_tip
+        } else {
+            &mute_tip
+        }));
+    });
     button
 }
 
-/// A meter bar, thin enough to sit under a fader without crowding it.
-pub use crate::meter_fader::{Meter, MeterFader};
+/// The master controls stay outside the card's settings button, so dragging
+/// a slider neither opens settings nor starts a card reorder.
+pub struct MasterControl {
+    pub root: gtk::Box,
+    scale: gtk::Scale,
+    mute: gtk::ToggleButton,
+    syncing: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl MasterControl {
+    pub fn new(
+        state: pipedeck_engine::ChainState,
+        name: &str,
+        on_gain: impl Fn(f32) + 'static,
+        on_mute: impl Fn(bool) + 'static,
+    ) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        root.add_css_class("pd-master");
+        root.set_margin_start(6);
+        root.set_margin_end(8);
+        root.set_margin_bottom(4);
+        let mute = mute_button(state.muted, &format!("Mute {name}"));
+        let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, FADER_MAX, 1.0);
+        scale.set_hexpand(true);
+        scale.set_draw_value(true);
+        scale.set_value_pos(gtk::PositionType::Right);
+        scale.set_digits(0);
+        scale.set_format_value_func(|_, value| format!("{value:.0}%"));
+        scale.set_tooltip_text(Some(&format!("{name} master volume")));
+        root.append(&mute);
+        root.append(&scale);
+        let syncing = std::rc::Rc::new(std::cell::Cell::new(false));
+        scale.connect_value_changed({
+            let syncing = syncing.clone();
+            move |scale| {
+                if !syncing.get() {
+                    on_gain((scale.value() / FADER_MAX) as f32);
+                }
+            }
+        });
+        mute.connect_toggled({
+            let syncing = syncing.clone();
+            move |button| {
+                if !syncing.get() {
+                    on_mute(button.is_active());
+                }
+            }
+        });
+        let control = Self {
+            root,
+            scale,
+            mute,
+            syncing,
+        };
+        control.set_state(state);
+        control
+    }
+
+    /// Engine notifications must not echo back as new volume commands.
+    pub fn set_state(&self, state: pipedeck_engine::ChainState) {
+        self.syncing.set(true);
+        self.scale.set_value(f64::from(state.gain) * FADER_MAX);
+        self.mute.set_active(state.muted);
+        self.syncing.set(false);
+        let level = format!("Master {:.0}%", state.gain * 100.0);
+        if state.muted {
+            self.root.add_css_class("pd-muted");
+            self.root
+                .set_tooltip_text(Some(&format!("{level} (muted)")));
+        } else {
+            self.root.remove_css_class("pd-muted");
+            self.root.set_tooltip_text(Some(&level));
+        }
+    }
+}
+
+pub use crate::meter_fader::MeterFader;
 
 /// The mute and the fader side by side.
 pub fn level_row(mute: &gtk::ToggleButton, fader: &impl IsA<gtk::Widget>) -> gtk::Box {

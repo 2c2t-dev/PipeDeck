@@ -185,12 +185,19 @@ struct Stage {
     /// Kept alive as long as the stage exists. See [`LoadedModule`].
     _module: LoadedModule,
     wanted: ChainState,
+    /// Input rows have no sink to carry their master, so each cell applies
+    /// it here, after effects, without changing the cell's saved balance.
+    master: ChainState,
 }
 
 impl Stage {
     fn apply(&self) {
         if let Some(node) = &self.node {
-            apply_props(&node.proxy, &self.node_name, &self.wanted);
+            apply_props(
+                &node.proxy,
+                &self.node_name,
+                &self.wanted.with_master(self.master),
+            );
         }
     }
 }
@@ -632,6 +639,7 @@ impl Graph {
                 node: None,
                 _module: module,
                 wanted: output.state(),
+                master: ChainState::default(),
             }),
             Err(e) => {
                 log::error!("{e}");
@@ -886,7 +894,21 @@ impl Graph {
             sources: self
                 .source_meters
                 .iter()
-                .map(|(id, meter)| (*id, meter.take()))
+                .map(|(id, meter)| {
+                    let peak = meter.take();
+                    let peak = self
+                        .config
+                        .source(*id)
+                        .filter(|source| source.is_input())
+                        .map_or(peak, |source| {
+                            if source.muted {
+                                0.0
+                            } else {
+                                peak * source.state().linear_volume()
+                            }
+                        });
+                    (*id, peak)
+                })
                 .collect(),
             mixes: self
                 .mix_meters
@@ -1768,8 +1790,8 @@ impl Graph {
         Ok(())
     }
 
-    /// Trim of a row, applied to its sink. An input row has no sink, so it
-    /// keeps the value for the interface and changes nothing in the graph.
+    /// A virtual row's sink carries its master. For physical input rows,
+    /// apply the master to each cell without touching the hardware volume.
     pub fn update_source(
         &mut self,
         id: SourceId,
@@ -1782,10 +1804,19 @@ impl Graph {
         let mut state = cfg.state();
         f(&mut state);
         cfg.set_state(state);
+        let is_input = cfg.is_input();
         if let Some(sink) = self.sources.get(&id).and_then(|s| s.sink.as_ref()) {
             apply_props(sink, &id.sink_node_name(), &state);
             self.written
                 .insert(Owner::Source(id), std::time::Instant::now());
+        }
+        if is_input {
+            for ((source, _), link) in &mut self.links {
+                if *source == id {
+                    link.master = state;
+                    link.apply();
+                }
+            }
         }
         self.dirty = true;
         self.emit(Event::SourceChanged { id, state });
@@ -1817,6 +1848,11 @@ impl Graph {
         self.stage_index
             .insert(node_name.clone(), StageRef::Cell(link.source, link.mix));
 
+        let master = if source.is_input() {
+            source.state()
+        } else {
+            ChainState::default()
+        };
         let spec = LoopbackSpec::for_link(&source, &mix, &self.config.latency);
         let module = match LoadedModule::load(&self.context, LOOPBACK_MODULE, &spec.to_args()) {
             Ok(module) => module,
@@ -1834,6 +1870,7 @@ impl Graph {
                 node: None,
                 _module: module,
                 wanted: link.state(),
+                master,
             },
         );
         log::info!("{} feeds {}", source.name, mix.name);

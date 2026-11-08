@@ -6,6 +6,10 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Synchronized channel and mix master sliders with red muted speakers.
+
 ### Fixed
 
 - Pipedeck crashed when a device it played to or read from went away, a
@@ -23,6 +27,9 @@ follow [Semantic Versioning](https://semver.org/).
 - The soundboard's keyboard shortcuts were refused when Pipedeck was
   started from a terminal: the connection it told the portal its name on
   was closed before the shortcuts were asked for on another.
+
+- Physical input master gain and mute now apply to connected mixes,
+  preserving cell balances and the capture device's hardware controls.
 
 ## [0.2.1] - 2026-10-11
 

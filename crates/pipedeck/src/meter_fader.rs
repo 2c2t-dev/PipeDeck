@@ -104,13 +104,14 @@ impl MeterFader {
     }
 }
 
-/// A level alone, drawn as a fader's track is, for what has no fader: a
-/// channel bound to a microphone has nothing to trim.
+/// A level alone, drawn as a fader's track is, used by the standalone renderer.
+#[allow(dead_code)]
 pub struct Meter {
     pub root: gtk::DrawingArea,
     level: std::rc::Rc<std::cell::Cell<f64>>,
 }
 
+#[allow(dead_code)]
 impl Meter {
     pub fn new() -> Self {
         let level = std::rc::Rc::new(std::cell::Cell::new(0.0));

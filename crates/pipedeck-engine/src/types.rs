@@ -428,6 +428,15 @@ impl Default for ChainState {
 }
 
 impl ChainState {
+    /// Apply a master without losing the independent fader or mute state.
+    /// Cubic fader positions compose by multiplication, just as amplitudes do.
+    pub fn with_master(self, master: Self) -> Self {
+        Self {
+            gain: self.gain.clamp(0.0, 1.0) * master.gain.clamp(0.0, 1.0),
+            muted: self.muted || master.muted,
+        }
+    }
+
     /// Linear amplitude to write into `channelVolumes`.
     pub fn linear_volume(&self) -> f32 {
         self.gain.clamp(0.0, 1.0).powi(3)
@@ -773,5 +782,37 @@ mod tests {
         let virt = SourceConfig::virtual_sink(SourceId(1), "Game");
         assert!(!virt.is_input());
         assert!(!toml::to_string(&virt).unwrap().contains("device"));
+    }
+    #[test]
+    fn masters_compose_amplitudes_and_preserve_cell_mutes() {
+        let cell = ChainState {
+            gain: 0.8,
+            muted: false,
+        };
+        let master = ChainState {
+            gain: 0.5,
+            muted: false,
+        };
+        let combined = cell.with_master(master);
+        assert!(
+            (combined.linear_volume() - cell.linear_volume() * master.linear_volume()).abs() < 1e-6
+        );
+        assert!(
+            cell.with_master(ChainState {
+                muted: true,
+                ..master
+            })
+            .muted
+        );
+        assert!(
+            ChainState {
+                muted: true,
+                ..cell
+            }
+            .with_master(master)
+            .muted
+        );
+        assert_eq!(cell.gain, 0.8);
+        assert!(!cell.muted);
     }
 }

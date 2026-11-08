@@ -68,11 +68,7 @@ impl MixDialog {
         let fader = widgets::MeterFader::new(mix.gain);
         let volume = fader.scale.clone();
 
-        let mute = gtk::ToggleButton::new();
-        mute.set_icon_name("audio-volume-muted-symbolic");
-        mute.set_tooltip_text(Some("Mute the whole mix"));
-        mute.add_css_class("flat");
-        mute.add_css_class("circular");
+        let mute = widgets::mute_button(mix.muted, "Mute the whole mix");
 
         let outputs = gtk::Box::new(gtk::Orientation::Vertical, 8);
         let add_output = gtk::MenuButton::new();
@@ -468,11 +464,7 @@ impl MixDialog {
         inner.append(&top);
 
         let level = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let mute = gtk::ToggleButton::new();
-        mute.set_icon_name("audio-volume-muted-symbolic");
-        mute.add_css_class("flat");
-        mute.add_css_class("circular");
-        mute.set_active(state.muted);
+        let mute = widgets::mute_button(state.muted, "Mute this output");
         mute.connect_toggled({
             let this = Rc::downgrade(self);
             move |button| {

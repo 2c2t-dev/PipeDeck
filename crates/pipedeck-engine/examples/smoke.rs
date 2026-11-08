@@ -445,6 +445,18 @@ fn main() -> ExitCode {
         let _ = tx.send(ev);
     });
     engine.serve_control();
+    if std::env::args().any(|arg| arg == "--input-master-regressions") {
+        input_master_regressions(&engine, &rx, &dir, &mut failures);
+        engine.shutdown();
+        wait_for(&rx, "Stopped", |event| matches!(event, Event::Stopped));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&control_dir);
+        return if failures == 0 {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
 
     // A fresh config starts with one mix and no source.
     let state = wait_state(&rx, "initial state", |_| true);
@@ -2498,6 +2510,8 @@ fn main() -> ExitCode {
         &mut failures,
     );
 
+    input_master_regressions(&engine, &rx, &dir, &mut failures);
+
     // A mixer imported from a file takes this one's place, cells and all;
     // exported, it comes out as the file had it.
     let file = dir.join("imported.toml");
@@ -2604,4 +2618,184 @@ fn main() -> ExitCode {
         println!("SMOKE FAIL ({failures})");
         ExitCode::FAILURE
     }
+}
+
+/// Input master controls must change recorded audio, not the capture device.
+fn input_master_regressions(
+    engine: &pipedeck_engine::EngineHandle,
+    rx: &mpsc::Receiver<Event>,
+    dir: &std::path::Path,
+    failures: &mut u32,
+) {
+    std::fs::create_dir_all(dir).unwrap();
+    let input = format!("smoke-review-input-{}", std::process::id());
+    let tone = dir.join("input-tone.wav");
+    tone_wav(&tone, 120);
+    // A native producer presented as a capture source, with no hardware or
+    // default-output connection. Its consumers drive the processing clock.
+    let mut tone_player = Process::new("pw-play")
+        .arg("--target=0")
+        .arg(format!(
+            "--properties={{ media.class=Audio/Source node.name={input} }}"
+        ))
+        .arg(&tone)
+        .spawn()
+        .unwrap();
+    let fixture = dir.join("review-regressions.toml");
+    std::fs::write(
+        &fixture,
+        format!(
+            r#"
+latency = "512/48000"
+[[mix]]
+id = 101
+name = "Input test A"
+[[mix]]
+id = 102
+name = "Input test B"
+[[source]]
+id = 103
+name = "Synthetic input"
+device = "{input}"
+gain = 0.5
+muted = true
+[[link]]
+source = 103
+mix = 101
+gain = 0.8
+[[link]]
+source = 103
+mix = 102
+gain = 0.6
+muted = true
+"#
+        ),
+    )
+    .unwrap();
+    let reload = || {
+        drain(rx);
+        engine.send(Command::ImportConfig(fixture.clone())).unwrap();
+        wait_state(rx, "review fixture imported", |s| {
+            s.sources.iter().any(|source| source.id == SourceId(103))
+        });
+        settle();
+    };
+    reload();
+    let mic = SourceId(103);
+    let mix = MixId(101);
+    let cell = "pipedeck-smoke.link.103.101";
+    let other = "pipedeck-smoke.link.103.102";
+    let volume_is = |name: &str, gain: f32, muted: bool| {
+        node_volume(&pw_dump(), name).is_some_and(|(volumes, mute)| {
+            !volumes.is_empty()
+                && volumes
+                    .iter()
+                    .all(|value| (*value - gain.powi(3)).abs() < 1e-5)
+                && mute == muted
+        })
+    };
+    check(
+        volume_is(cell, 0.4, true) && volume_is(other, 0.3, true),
+        "input cells start with the saved master gain and mute",
+        failures,
+    );
+    engine
+        .send(Command::SetSourceMute {
+            id: mic,
+            muted: false,
+        })
+        .unwrap();
+    settle();
+    check(
+        volume_is(cell, 0.4, false) && volume_is(other, 0.3, true),
+        "unmuting the input master preserves the other cell's own mute",
+        failures,
+    );
+    engine
+        .send(Command::SetLinkGain {
+            source: mic,
+            mix,
+            gain: 0.4,
+        })
+        .unwrap();
+    engine
+        .send(Command::SetSourceGain { id: mic, gain: 0.8 })
+        .unwrap();
+    settle();
+    check(
+        volume_is(cell, 0.32, false) && volume_is(other, 0.48, true),
+        "input master and independent cell faders compose without compounding",
+        failures,
+    );
+
+    // Record actual mix samples, rather than relying on control state.
+    let mix_serial = node_serial(&pw_dump(), "pipedeck-smoke.mix.101").unwrap();
+    let open = record_peak(mix_serial, 1, &dir.join("input-open.wav"));
+    check(
+        open > 0.001,
+        &format!("a recorder hears the trimmed input: {open:.5}"),
+        failures,
+    );
+    engine
+        .send(Command::SetSourceMute {
+            id: mic,
+            muted: true,
+        })
+        .unwrap();
+    settle();
+    let muted = record_peak(mix_serial, 1, &dir.join("input-muted.wav"));
+    check(
+        muted < open * 0.1,
+        &format!("input master mute silences recorded audio: {muted:.5} vs {open:.5}"),
+        failures,
+    );
+    let hardware = pw_dump()
+        .into_iter()
+        .find(|node| props(node)["node.name"] == input)
+        .unwrap();
+    let param = &hardware["info"]["params"]["Props"][0];
+    check(
+        param["mute"] == false
+            && param["channelVolumes"]
+                .as_array()
+                .is_some_and(|values| values.iter().all(|value| value.as_f64() == Some(1.0))),
+        "input master controls leave the physical device controls unchanged",
+        failures,
+    );
+
+    let saved = dir.join("review-master-saved.toml");
+    engine.send(Command::ExportConfig(saved.clone())).unwrap();
+    wait_for(
+        rx,
+        "review state exported",
+        |event| matches!(event, Event::Notice(text) if text.contains("exported")),
+    );
+    let state: pipedeck_engine::Config =
+        toml::from_str(&std::fs::read_to_string(&saved).unwrap()).unwrap();
+    check(
+        state
+            .links
+            .iter()
+            .any(|link| link.source == mic && link.mix == mix && link.gain == 0.4 && !link.muted)
+            && state.links.iter().any(|link| {
+                link.source == mic && link.mix == MixId(102) && link.gain == 0.6 && link.muted
+            }),
+        "master changes preserve the saved independent cell balances",
+        failures,
+    );
+    drain(rx);
+    engine.send(Command::ImportConfig(saved)).unwrap();
+    wait_state(rx, "saved input master restored", |s| {
+        s.sources
+            .iter()
+            .any(|source| source.id == mic && source.gain == 0.8 && source.muted)
+    });
+    settle();
+    check(
+        volume_is(cell, 0.32, true) && volume_is(other, 0.48, true),
+        "restoring the graph preserves the input master and cell mutes",
+        failures,
+    );
+    let _ = tone_player.kill();
+    let _ = tone_player.wait();
 }

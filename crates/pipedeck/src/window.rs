@@ -29,10 +29,10 @@ use crate::widgets;
 
 const MIX_COLUMN_WIDTH: i32 = 240;
 const SOURCE_COLUMN_WIDTH: i32 = 180;
-const ROW_HEIGHT: i32 = 56;
+const ROW_HEIGHT: i32 = 80;
 /// A sub-track is a person of a call: a lighter row under its channel.
 const VOICE_ROW_HEIGHT: i32 = 44;
-const MIX_HEADER_HEIGHT: i32 = 72;
+const MIX_HEADER_HEIGHT: i32 = 80;
 const BADGE_ICON_SIZE: i32 = 16;
 const ADD_MIX_WIDTH: i32 = 56;
 
@@ -63,6 +63,8 @@ pub struct Window {
     /// Last peak of every channel, so a cell can draw what it passes on.
     channel_levels: RefCell<HashMap<SourceId, f32>>,
     cells: RefCell<HashMap<(SourceId, MixId), Cell>>,
+    source_masters: RefCell<HashMap<SourceId, widgets::MasterControl>>,
+    mix_masters: RefCell<HashMap<MixId, widgets::MasterControl>>,
     /// The object windows, while they are open, so engine changes reach them.
     mix_dialog: RefCell<Option<Rc<MixDialog>>>,
     channel_dialog: RefCell<Option<Rc<ChannelDialog>>>,
@@ -154,6 +156,8 @@ impl Window {
             preferences: RefCell::new(None),
             channel_levels: RefCell::new(HashMap::new()),
             cells: RefCell::new(HashMap::new()),
+            source_masters: RefCell::new(HashMap::new()),
+            mix_masters: RefCell::new(HashMap::new()),
             mix_dialog: RefCell::new(None),
             channel_dialog: RefCell::new(None),
             expanded: RefCell::new(HashSet::new()),
@@ -369,6 +373,9 @@ impl Window {
     /// A level can move outside the mixer: a media key, a volume applet,
     /// anything holding the same sink.
     fn mix_changed(&self, id: MixId, state: ChainState) {
+        if let Some(summary) = self.mix_masters.borrow().get(&id) {
+            summary.set_state(state);
+        }
         if let Some(mix) = self
             .state
             .borrow_mut()
@@ -386,6 +393,9 @@ impl Window {
     }
 
     fn source_changed(&self, id: SourceId, state: ChainState) {
+        if let Some(summary) = self.source_masters.borrow().get(&id) {
+            summary.set_state(state);
+        }
         if let Some(source) = self
             .state
             .borrow_mut()
@@ -454,6 +464,8 @@ impl Window {
             self.grid.remove(&child);
         }
         self.cells.borrow_mut().clear();
+        self.source_masters.borrow_mut().clear();
+        self.mix_masters.borrow_mut().clear();
         self.voice_faders.borrow_mut().clear();
 
         let state = self.state.borrow();
@@ -706,7 +718,7 @@ impl Window {
         labels.append(&title);
         // The outputs it plays to now, not those switched off in its list.
         let playing = mix.outputs.iter().filter(|output| output.enabled).count();
-        let subtitle = gtk::Label::new(Some(&output_label(playing)));
+        let subtitle = gtk::Label::new(Some(&format!("Master · {}", output_label(playing))));
         subtitle.add_css_class("caption");
         subtitle.add_css_class("dim-label");
         subtitle.set_xalign(0.0);
@@ -714,7 +726,23 @@ impl Window {
         labels.append(&subtitle);
         content.append(&labels);
 
-        let card = clickable_card(&content, MIX_COLUMN_WIDTH, MIX_HEADER_HEIGHT);
+        let master = widgets::MasterControl::new(
+            mix.state(),
+            &mix.name,
+            {
+                let engine = self.engine.clone();
+                let id = mix.id;
+                move |gain| engine.send(Command::SetMixGain { id, gain })
+            },
+            {
+                let engine = self.engine.clone();
+                let id = mix.id;
+                move |muted| engine.send(Command::SetMixMute { id, muted })
+            },
+        );
+        let (container, card) =
+            master_card(&content, &master.root, MIX_COLUMN_WIDTH, MIX_HEADER_HEIGHT);
+        self.mix_masters.borrow_mut().insert(mix.id, master);
         card.set_tooltip_text(Some("Rename this mix, choose its outputs, or remove it"));
         card.connect_clicked({
             let this = self.clone();
@@ -735,7 +763,8 @@ impl Window {
         ear.add_css_class("circular");
         ear.set_active(listening);
         ear.set_halign(gtk::Align::End);
-        ear.set_valign(gtk::Align::Center);
+        ear.set_valign(gtk::Align::Start);
+        ear.set_margin_top(10);
         ear.set_margin_end(10);
         ear.set_tooltip_text(Some(if listening {
             "Heard in your headphones; click to stop"
@@ -754,7 +783,7 @@ impl Window {
         });
 
         let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&card));
+        overlay.set_child(Some(&container));
         overlay.add_overlay(&ear);
         overlay.set_margin_bottom(6);
         // Dropped on the overlay rather than the card, or a drop landing on
@@ -786,16 +815,41 @@ impl Window {
         title.set_hexpand(true);
         title.set_xalign(0.0);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        content.append(&title);
+        let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        labels.set_hexpand(true);
+        labels.set_valign(gtk::Align::Center);
+        labels.append(&title);
+        let subtitle = gtk::Label::new(Some("Master"));
+        subtitle.add_css_class("caption");
+        subtitle.add_css_class("dim-label");
+        subtitle.set_xalign(0.0);
+        labels.append(&subtitle);
+        content.append(&labels);
 
-        let card = clickable_card(&content, SOURCE_COLUMN_WIDTH, ROW_HEIGHT);
+        let master = widgets::MasterControl::new(
+            source.state(),
+            &source.name,
+            {
+                let engine = self.engine.clone();
+                let id = source.id;
+                move |gain| engine.send(Command::SetSourceGain { id, gain })
+            },
+            {
+                let engine = self.engine.clone();
+                let id = source.id;
+                move |muted| engine.send(Command::SetSourceMute { id, muted })
+            },
+        );
+        let (container, card) =
+            master_card(&content, &master.root, SOURCE_COLUMN_WIDTH, ROW_HEIGHT);
+        self.source_masters.borrow_mut().insert(source.id, master);
         card.set_tooltip_text(Some("Rename this channel, set its levels, or remove it"));
         card.connect_clicked({
             let this = self.clone();
             let id = source.id;
             move |_| this.open_channel_dialog(id)
         });
-        reorderable(&card, &card, "source", source.id.0, index, {
+        reorderable(&card, &container, "source", source.id.0, index, {
             let engine = self.engine.clone();
             move |dragged, to| {
                 engine.send(Command::MoveSource {
@@ -808,7 +862,7 @@ impl Window {
         // A channel carrying a call unfolds into the people in it.
         let people = source.voices.iter().filter(|voice| voice.present).count();
         if people == 0 {
-            return card.upcast();
+            return container.upcast();
         }
         let open = self.expanded.borrow().contains(&source.id);
         let unfold = gtk::Button::new();
@@ -825,7 +879,8 @@ impl Window {
         unfold.add_css_class("flat");
         unfold.add_css_class("caption");
         unfold.set_halign(gtk::Align::End);
-        unfold.set_valign(gtk::Align::Center);
+        unfold.set_valign(gtk::Align::Start);
+        unfold.set_margin_top(10);
         unfold.set_margin_end(6);
         unfold.set_tooltip_text(Some(if open {
             "Fold the people of the call away"
@@ -846,7 +901,7 @@ impl Window {
             }
         });
         let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&card));
+        overlay.set_child(Some(&container));
         overlay.add_overlay(&unfold);
         overlay.upcast()
     }
@@ -1086,25 +1141,36 @@ fn badge_slot(badge: &gtk::Image) -> gtk::Overlay {
     slot
 }
 
-fn clickable_card(content: &gtk::Box, width: i32, height: i32) -> gtk::Button {
+/// The title opens settings and provides the drag handle. Master controls
+/// are siblings, keeping their pointer and keyboard interaction independent.
+fn master_card(
+    content: &gtk::Box,
+    master: &gtk::Box,
+    width: i32,
+    height: i32,
+) -> (gtk::Box, gtk::Button) {
     content.set_margin_top(8);
-    content.set_margin_bottom(8);
+    content.set_margin_bottom(2);
     content.set_margin_start(10);
     content.set_margin_end(10);
 
     let card = gtk::Button::new();
-    card.add_css_class("card");
     card.add_css_class("flat");
     card.add_css_class("pd-card");
     card.set_child(Some(content));
-    card.set_width_request(width);
-    card.set_height_request(height);
-    card
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    container.add_css_class("card");
+    container.set_width_request(width);
+    container.set_height_request(height);
+    container.append(&card);
+    container.append(master);
+    (container, card)
 }
 
 /// Install the stylesheet. Call once, after GTK is initialised.
 pub fn load_css() {
     const CSS: &str = "
+        .pd-card { padding: 0; }
         .pd-card .pd-hover-tools { opacity: 0; transition: opacity 120ms ease-out; }
         .pd-card .pd-badge-face { transition: opacity 120ms ease-out; }
         .pd-card:hover .pd-badge-face,
@@ -1134,8 +1200,9 @@ pub fn load_css() {
     ";
     let provider = gtk::CssProvider::new();
     provider.load_from_string(&format!(
-        "{CSS}{}{}",
+        "{CSS}{}{}{}",
         crate::meter_fader::CSS,
+        widgets::LEVEL_CSS,
         presets::css()
     ));
     if let Some(display) = gtk::gdk::Display::default() {
@@ -1163,6 +1230,159 @@ fn output_label(count: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires a GTK display; run on the Broadway backend"]
+    fn external_levels_update_visible_controls() {
+        use super::*;
+        use pipedeck_engine::LinkConfig;
+
+        adw::init().expect("GTK display available");
+        load_css();
+        let app = adw::Application::builder()
+            .application_id("dev._2c2t.PipedeckUiTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let path = std::env::temp_dir().join(format!("pipedeck-ui-{}.toml", std::process::id()));
+        let engine = EngineLink::new(pipedeck_engine::spawn(path, |_| {}));
+        let window = Window::new(&app, engine.clone());
+        let (source, mix) = (SourceId(1), MixId(1));
+        window.handle_event(Event::State(StateSnapshot {
+            latency: "512/48000".into(),
+            stereotool_license: None,
+            listen_device: None,
+            mixes: vec![MixConfig::new(mix, "Personal")],
+            sources: vec![SourceConfig::virtual_sink(source, "Music")],
+            links: vec![LinkConfig::new(source, mix)],
+            sounds: vec![],
+            soundboard: None,
+        }));
+        let cell = window.cells.borrow()[&(source, mix)].root.clone();
+        fn find<T: IsA<gtk::Widget>>(root: &gtk::Widget) -> Option<T> {
+            if let Ok(widget) = root.clone().downcast::<T>() {
+                return Some(widget);
+            }
+            let mut child = root.first_child();
+            while let Some(widget) = child {
+                if let Some(found) = find::<T>(&widget) {
+                    return Some(found);
+                }
+                child = widget.next_sibling();
+            }
+            None
+        }
+        let slider = find::<gtk::Scale>(cell.upcast_ref()).unwrap();
+        let mute = find::<gtk::ToggleButton>(cell.upcast_ref()).unwrap();
+        window.handle_event(Event::SourceChanged {
+            id: source,
+            state: ChainState {
+                gain: 0.41,
+                muted: true,
+            },
+        });
+        let summaries = window.source_masters.borrow();
+        let summary = &summaries[&source];
+        assert_eq!(
+            summary.root.tooltip_text().as_deref(),
+            Some("Master 41% (muted)")
+        );
+        assert!(summary.root.has_css_class("pd-muted"));
+        let source_slider = find::<gtk::Scale>(summary.root.upcast_ref()).unwrap();
+        let source_mute = find::<gtk::ToggleButton>(summary.root.upcast_ref()).unwrap();
+        assert!((source_slider.value() - 41.0).abs() < 0.001);
+        assert!(source_mute.is_active());
+        // Sliders live beside the settings button, never inside it.
+        let mut parent = summary.root.parent();
+        while let Some(widget) = parent {
+            assert!(!widget.is::<gtk::Button>());
+            parent = widget.parent();
+        }
+        drop(summaries);
+        // Master trim must not overwrite independent per-mix balances.
+        assert_eq!(slider.value(), 100.0);
+        window.handle_event(Event::MixChanged {
+            id: mix,
+            state: ChainState {
+                gain: 0.63,
+                muted: false,
+            },
+        });
+        assert_eq!(
+            window.mix_masters.borrow()[&mix]
+                .root
+                .tooltip_text()
+                .as_deref(),
+            Some("Master 63%")
+        );
+        let mix_slider =
+            find::<gtk::Scale>(window.mix_masters.borrow()[&mix].root.upcast_ref()).unwrap();
+        assert!((mix_slider.value() - 63.0).abs() < 0.001);
+        assert!((source_slider.value() - 41.0).abs() < 0.001);
+        window.handle_event(Event::LinkChanged {
+            source,
+            mix,
+            state: ChainState {
+                gain: 0.37,
+                muted: true,
+            },
+        });
+        assert!((slider.value() - 37.0).abs() < 0.001);
+        assert!(mute.is_active());
+        assert_eq!(
+            mute.icon_name().as_deref(),
+            Some("audio-volume-muted-symbolic")
+        );
+        assert!(mute.has_css_class("pd-mute"));
+        window.handle_event(Event::LinkChanged {
+            source,
+            mix,
+            state: ChainState {
+                gain: 0.37,
+                muted: false,
+            },
+        });
+        assert!(!mute.is_active());
+        assert_eq!(
+            mute.icon_name().as_deref(),
+            Some("audio-volume-high-symbolic")
+        );
+        assert_eq!(window.cells.borrow()[&(source, mix)].root, cell);
+        // Local interaction sends gain/mute once; engine feedback sends none.
+        let gains = Rc::new(RefCell::new(Vec::new()));
+        let mutes = Rc::new(RefCell::new(Vec::new()));
+        let master = widgets::MasterControl::new(
+            ChainState {
+                gain: 0.5,
+                muted: false,
+            },
+            "Test",
+            {
+                let gains = gains.clone();
+                move |gain| gains.borrow_mut().push(gain)
+            },
+            {
+                let mutes = mutes.clone();
+                move |muted| mutes.borrow_mut().push(muted)
+            },
+        );
+        master.set_state(ChainState {
+            gain: 0.25,
+            muted: true,
+        });
+        assert!(gains.borrow().is_empty());
+        assert!(mutes.borrow().is_empty());
+        find::<gtk::Scale>(master.root.upcast_ref())
+            .unwrap()
+            .set_value(72.0);
+        find::<gtk::ToggleButton>(master.root.upcast_ref())
+            .unwrap()
+            .set_active(false);
+        assert_eq!(&*gains.borrow(), &[0.72]);
+        assert_eq!(&*mutes.borrow(), &[false]);
+        engine.shutdown();
+        window.window.close();
+    }
+
     #[test]
     fn a_column_is_never_dropped_among_rows() {
         let mix = super::drag_payload("mix", 3);
